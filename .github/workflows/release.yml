@@ -26,7 +26,7 @@ jobs:
             goos: darwin
             goarch: arm64
             output: openuai-macos-arm64
-          - os: macos-13
+          - os: ubuntu-latest
             goos: darwin
             goarch: amd64
             output: openuai-macos-amd64
