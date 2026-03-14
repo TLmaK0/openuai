@@ -5,14 +5,23 @@ import "context"
 type Role string
 
 const (
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleSystem    Role = "system"
+	RoleUser       Role = "user"
+	RoleAssistant  Role = "assistant"
+	RoleSystem     Role = "system"
+	RoleToolResult Role = "tool_result"
 )
 
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role       Role       `json:"role"`
+	Content    string     `json:"content"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// ToolCallProvider extends Provider with native tool calling support
+type ToolCallProvider interface {
+	Provider
+	ChatWithTools(ctx context.Context, messages []Message, model string, toolDefs []ToolDefinition) (*Response, []ToolCall, error)
 }
 
 type Response struct {

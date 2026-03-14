@@ -14,6 +14,10 @@ export function GetDefaultModel() {
   return window['go']['main']['App']['GetDefaultModel']();
 }
 
+export function GetLogPath() {
+  return window['go']['main']['App']['GetLogPath']();
+}
+
 export function GetModels() {
   return window['go']['main']['App']['GetModels']();
 }
@@ -40,6 +44,10 @@ export function OpenAILogin() {
 
 export function ResetCosts() {
   return window['go']['main']['App']['ResetCosts']();
+}
+
+export function RespondPermission(arg1, arg2) {
+  return window['go']['main']['App']['RespondPermission'](arg1, arg2);
 }
 
 export function SendMessage(arg1) {

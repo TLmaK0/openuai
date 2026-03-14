@@ -9,6 +9,8 @@ export function GetCostSummary():Promise<llm.CostSummary>;
 
 export function GetDefaultModel():Promise<string>;
 
+export function GetLogPath():Promise<string>;
+
 export function GetModels():Promise<Array<string>>;
 
 export function GetProvider():Promise<string>;
@@ -22,6 +24,8 @@ export function OpenAIIsLoggedIn():Promise<boolean>;
 export function OpenAILogin():Promise<string>;
 
 export function ResetCosts():Promise<void>;
+
+export function RespondPermission(arg1:string,arg2:boolean):Promise<void>;
 
 export function SendMessage(arg1:string):Promise<main.ChatResponse>;
 

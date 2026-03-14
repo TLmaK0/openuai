@@ -53,6 +53,10 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) ConfigDir() string {
+	return filepath.Dir(c.path)
+}
+
 func (c *Config) Save() error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
