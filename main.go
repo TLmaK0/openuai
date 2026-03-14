@@ -1,36 +1,105 @@
 package main
 
 import (
-	"embed"
+	"fmt"
+	"os"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"openuai/internal/agent"
+	"openuai/internal/config"
+	"openuai/internal/llm"
+	"openuai/internal/logger"
+	"openuai/internal/tools"
+	"openuai/internal/tui"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-//go:embed all:frontend/dist
-var assets embed.FS
-
 func main() {
-	// Create an instance of the app structure
-	app := NewApp()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Println("Error loading config:", err)
+		cfg = &config.Config{Provider: "openai", DefaultModel: "gpt-5.1-codex"}
+	}
 
-	// Create application with options
-	err := wails.Run(&options.App{
-		Title:  "OpenUAI",
-		Width:  1024,
-		Height: 768,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        app.startup,
-		Bind: []interface{}{
-			app,
-		},
+	if err := logger.Init(cfg.ConfigDir()); err != nil {
+		fmt.Println("Error init logger:", err)
+	}
+	defer logger.Close()
+	logger.Info("OpenUAI starting up (TUI)")
+
+	// Claude provider
+	claude := llm.NewClaudeProvider(cfg.ClaudeAPIKey)
+
+	// OpenAI OAuth provider
+	oauth := llm.NewOAuthFlow(func(tokens *llm.OAuthTokens) {
+		logger.Info("OAuth tokens updated")
+		cfg.OpenAITokens = &config.OAuthTokens{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			ExpiresAt:    tokens.ExpiresAt,
+			AccountID:    tokens.AccountID,
+		}
+		cfg.Save()
 	})
 
-	if err != nil {
-		println("Error:", err.Error())
+	if cfg.OpenAITokens != nil {
+		logger.Info("Restoring saved OAuth tokens")
+		oauth.SetTokens(&llm.OAuthTokens{
+			AccessToken:  cfg.OpenAITokens.AccessToken,
+			RefreshToken: cfg.OpenAITokens.RefreshToken,
+			ExpiresAt:    cfg.OpenAITokens.ExpiresAt,
+			AccountID:    cfg.OpenAITokens.AccountID,
+		})
+	}
+
+	openai := llm.NewOpenAIProvider(oauth)
+
+	// Tools registry
+	registry := tools.NewRegistry()
+	registry.Register(tools.ReadFile{})
+	registry.Register(tools.WriteFile{})
+	registry.Register(tools.ListDir{})
+	registry.Register(tools.DeleteFile{})
+	registry.Register(tools.MoveFile{})
+	registry.Register(tools.SearchFiles{})
+	registry.Register(tools.Bash{})
+	registry.Register(tools.BashSudo{})
+	registry.Register(tools.GitStatus{})
+	registry.Register(tools.GitDiff{})
+	registry.Register(tools.GitLog{})
+	registry.Register(tools.GitAdd{})
+	registry.Register(tools.GitCommit{})
+	registry.Register(tools.GitBranch{})
+	registry.Register(tools.WebFetch{})
+	logger.Info("Registered %d tools", len(registry.Definitions()))
+
+	costTracker := llm.NewCostTracker()
+
+	// Permission channel for TUI <-> agent communication
+	permChan := make(chan tui.PermissionResponseMsg, 1)
+
+	// Permission manager with TUI callback
+	var program *tea.Program
+	permissions := agent.NewPermissionManager(
+		cfg.ConfigDir(),
+		func(tool, command string) (agent.PermissionLevel, bool) {
+			logger.Info("Permission request: tool=%s command=%s", tool, command)
+			if program != nil {
+				program.Send(tui.PermissionRequestMsg{Tool: tool, Command: command})
+			}
+			// Block until TUI responds
+			resp := <-permChan
+			logger.Info("Permission response: approved=%v level=%v", resp.Approved, resp.Level)
+			return resp.Level, resp.Approved
+		},
+	)
+
+	model := tui.NewModel(cfg, claude, openai, oauth, costTracker, registry, permissions, permChan)
+	program = tea.NewProgram(&model, tea.WithAltScreen())
+	model.SetProgram(program)
+
+	if _, err := program.Run(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
 	}
 }

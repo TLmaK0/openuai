@@ -130,7 +130,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			tool, ok := a.registry.Get(tc.Name)
 			if !ok {
 				errMsg := fmt.Sprintf("Unknown tool: %s", tc.Name)
-				logger.Error(errMsg)
+				logger.Error("%s", errMsg)
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,
 					ToolCallID: tc.ID,
