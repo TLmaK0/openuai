@@ -36,7 +36,7 @@ jobs:
           npm run build
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -tags webkit2_41 ./...
 
       - name: Build
-        run: wails build
+        run: wails build -tags webkit2_41

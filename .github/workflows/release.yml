@@ -17,15 +17,19 @@ jobs:
           - os: ubuntu-latest
             platform: linux/amd64
             output: openuai-linux-amd64
+            tags: webkit2_41
           - os: ubuntu-24.04-arm
             platform: linux/arm64
             output: openuai-linux-arm64
+            tags: webkit2_41
           - os: macos-latest
             platform: darwin/universal
             output: openuai-macos-universal
+            tags: ""
           - os: windows-latest
             platform: windows/amd64
             output: openuai-windows-amd64.exe
+            tags: ""
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -51,7 +55,8 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Build
-        run: wails build -platform ${{ matrix.platform }} -o ${{ matrix.output }}
+        run: wails build -platform ${{ matrix.platform }} -o ${{ matrix.output }} ${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }}
+        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
