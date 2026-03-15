@@ -46,10 +46,14 @@ OpenUAI combines the **autonomy of Cowork** with the **power of Claude Code**:
 
 ### Distribution
 
-- **Single executable** (single binary, zero dependencies). The user just downloads and runs it.
+- **Single executable** with minimal dependencies. The user downloads and runs it.
 - **Cross-platform**: Windows, macOS, Linux (amd64 + arm64)
 - No external runtime (no Node, no Python, no Docker)
 - Everything embedded: web server/UI, event bus, rules engine, connectors, LLM client
+- **Platform dependencies**:
+  - **macOS**: none (uses native WKWebView, included with macOS)
+  - **Windows**: none (uses WebView2, included with Windows 10+)
+  - **Linux**: requires `libwebkit2gtk-4.1` (pre-installed on most desktop distributions)
 - **Technology: Go**
   - Wails v2 for UI (native OS webview, embedded web frontend, no Electron)
   - `go:embed` for static assets
