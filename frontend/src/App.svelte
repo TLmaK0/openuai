@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission } from '../wailsjs/go/main/App';
+  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -34,6 +34,27 @@
   let permTool = '';
   let permCommand = '';
 
+  // Events panel
+  let showEvents = false;
+  let eventLog = [];
+  let eventStats = null;
+
+  // MCP servers
+  let mcpServers = [];
+
+  // Sessions
+  let showSessions = false;
+  let sessions = [];
+  let mcpNewName = '';
+  let mcpNewCommand = '';
+  let mcpNewArgs = '';
+  let mcpNewSubscribe = '';
+  let mcpAdding = false;
+  let mcpQrDialog = false;
+  let mcpQrImage = '';
+  let mcpQrLoading = false;
+  let mcpQrServer = '';
+
   $: isReady = provider === 'openai' ? openaiLoggedIn : hasKey;
 
   onMount(async () => {
@@ -48,6 +69,10 @@
     // Listen for agent steps — group consecutive tool calls into one collapsible block
     // Tool group uses 'active' flag to keep showing the last tool until the group is finished
     EventsOn('agent_step', (step) => {
+      if (step.type === 'event') {
+        // Silent event injection — don't show in chat
+        return;
+      }
       if (step.type === 'text' || step.type === 'done') {
         // Finalize any active tool group
         const last = messages[messages.length - 1];
@@ -93,6 +118,11 @@
         }
         messages = [...messages, { role: 'error', content: step.content }];
       }
+    });
+
+    // Listen for event bus events
+    EventsOn('event_received', (event) => {
+      eventLog = [...eventLog.slice(-99), event];
     });
 
     // Listen for permission requests
@@ -175,6 +205,117 @@
     totalTokens = 0;
   }
 
+  async function refreshEventStats() {
+    eventStats = await GetEventStats();
+  }
+
+  async function toggleEvents() {
+    showEvents = !showEvents;
+    if (showEvents) {
+      await refreshEventStats();
+      mcpServers = await GetMCPServers();
+    }
+  }
+
+  async function toggleSessions() {
+    showSessions = !showSessions;
+    if (showSessions) sessions = await GetSessions();
+  }
+
+  async function resumeSession(id) {
+    const err = await ResumeSession(id);
+    if (err) {
+      alert('Failed to resume: ' + err);
+      return;
+    }
+    messages = [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
+    showSessions = false;
+    totalCost = 0;
+    totalTokens = 0;
+  }
+
+  async function deleteSession(id) {
+    await DeleteSession(id);
+    sessions = await GetSessions();
+  }
+
+  async function refreshMCPServers() {
+    mcpServers = await GetMCPServers();
+  }
+
+  async function addMCPServer() {
+    if (!mcpNewName || !mcpNewCommand) return;
+    const args = mcpNewArgs ? mcpNewArgs.split(' ').filter(Boolean) : [];
+    const subscribe = mcpNewSubscribe ? mcpNewSubscribe.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const err = await AddMCPServer(mcpNewName, mcpNewCommand, args, {}, true, subscribe);
+    if (err) {
+      alert('Failed to add MCP server: ' + err);
+    } else {
+      mcpNewName = '';
+      mcpNewCommand = '';
+      mcpNewArgs = '';
+      mcpNewSubscribe = '';
+      mcpAdding = false;
+      await refreshMCPServers();
+    }
+  }
+
+  async function linkMCPServer(name) {
+    mcpQrServer = name;
+    mcpQrLoading = true;
+    mcpQrImage = '';
+    mcpQrDialog = true;
+    try {
+      // Generic auth convention: try get_auth_status first, fall back to get_qr_code
+      let result = await CallMCPTool(name, 'get_auth_status', {});
+      let parsed;
+      try { parsed = JSON.parse(result); } catch(e) { parsed = null; }
+
+      mcpQrLoading = false;
+      if (parsed && parsed.status) {
+        if (parsed.status === 'paired') {
+          mcpQrDialog = false;
+          alert('Already paired!');
+          await refreshMCPServers();
+        } else if (parsed.status === 'error') {
+          mcpQrDialog = false;
+          alert(parsed.message || 'Auth error');
+        } else if (parsed.data) {
+          // QR image data (base64 PNG)
+          mcpQrImage = parsed.data;
+        } else {
+          mcpQrDialog = false;
+          alert('Status: ' + parsed.status + '. Scan QR in the bridge terminal.');
+        }
+      } else {
+        // Fallback: try legacy get_qr_code tool
+        result = await CallMCPTool(name, 'get_qr_code', {});
+        mcpQrLoading = false;
+        const match = result.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+        if (match) {
+          mcpQrImage = match[0];
+        } else if (result.includes('Already paired')) {
+          mcpQrDialog = false;
+          alert('Already paired!');
+          await refreshMCPServers();
+        } else {
+          mcpQrDialog = false;
+          alert('This server does not support pairing via UI.');
+        }
+      }
+    } catch (e) {
+      mcpQrLoading = false;
+      mcpQrDialog = false;
+      alert('This server does not support pairing via UI.');
+    }
+  }
+
+  async function removeMCPServer(name) {
+    const err = await RemoveMCPServer(name);
+    if (err) alert('Failed to remove: ' + err);
+    await refreshMCPServers();
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -208,7 +349,9 @@
       <span class="cost-badge" title="Total tokens: {totalTokens}">
         ${totalCost.toFixed(4)}
       </span>
-      <button class="icon-btn" on:click={() => showSettings = !showSettings}>Settings</button>
+      <button class="icon-btn" class:icon-btn-active={showSessions} on:click={toggleSessions}>Sessions</button>
+      <button class="icon-btn" class:icon-btn-active={showEvents} on:click={toggleEvents}>Events{eventLog.length > 0 ? ` (${eventLog.length})` : ''}</button>
+      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) await refreshMCPServers(); }}>Settings</button>
     </div>
   </header>
 
@@ -249,6 +392,149 @@
             <option value={model}>{model}</option>
           {/each}
         </select>
+      </div>
+
+      <div class="mcp-settings">
+        <div class="mcp-settings-header">
+          <span class="mcp-settings-title">MCP Servers</span>
+          <button class="mcp-add-btn" on:click={() => mcpAdding = !mcpAdding}>{mcpAdding ? 'Cancel' : '+ Add'}</button>
+        </div>
+        {#if mcpAdding}
+          <div class="mcp-add-form">
+            <div class="setting-row">
+              <label>Name</label>
+              <input bind:value={mcpNewName} placeholder="whatsapp" />
+            </div>
+            <div class="setting-row">
+              <label>Command</label>
+              <input bind:value={mcpNewCommand} placeholder="uv" />
+            </div>
+            <div class="setting-row">
+              <label>Args</label>
+              <input bind:value={mcpNewArgs} placeholder="run main.py (space-separated)" />
+            </div>
+            <div class="setting-row">
+              <label>Subscribe</label>
+              <input bind:value={mcpNewSubscribe} placeholder="whatsapp://messages/inbox (optional)" />
+            </div>
+            <div class="setting-row">
+              <label></label>
+              <button on:click={addMCPServer} disabled={!mcpNewName || !mcpNewCommand}>Save</button>
+            </div>
+          </div>
+        {/if}
+        {#if mcpServers.length === 0 && !mcpAdding}
+          <div class="mcp-empty">No MCP servers configured</div>
+        {/if}
+        {#each mcpServers as srv}
+          <div class="mcp-settings-row">
+            <span class="mcp-srv-dot" class:mcp-srv-dot-on={srv.connected}></span>
+            <span class="mcp-srv-name">{srv.name}</span>
+            <span class="mcp-srv-detail">{srv.command}</span>
+            {#if srv.connected}
+              <span class="mcp-srv-stats">{srv.tools}T {srv.resources}R</span>
+            {/if}
+            <button class="mcp-link-btn" on:click={() => linkMCPServer(srv.name)}>Link</button>
+            <button class="mcp-remove-btn" on:click={() => removeMCPServer(srv.name)}>x</button>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if showEvents}
+    <div class="events-panel">
+      <div class="events-toolbar">
+        <button class="events-refresh-btn" on:click={refreshEventStats}>Refresh Stats</button>
+        <button class="events-clear-btn" on:click={() => { eventLog = []; }}>Clear Log</button>
+      </div>
+      {#if eventStats}
+        <div class="events-stats">
+          <span>Received: <b>{eventStats.events_received}</b></span>
+          <span>Handled: <b>{eventStats.events_handled}</b></span>
+          <span>Dropped: <b>{eventStats.events_dropped}</b></span>
+          <span>Errors: <b>{eventStats.errors}</b></span>
+        </div>
+      {/if}
+      {#if mcpServers.length > 0}
+        <div class="mcp-servers">
+          <div class="mcp-header">MCP Servers</div>
+          {#each mcpServers as srv}
+            <div class="mcp-server-entry">
+              <span class="mcp-server-name">{srv.name}</span>
+              <span class="mcp-server-status" class:mcp-connected={srv.connected}>{srv.connected ? 'connected' : 'disconnected'}</span>
+              <span class="mcp-server-info">{srv.tools} tools, {srv.resources} resources</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+      <div class="events-log">
+        {#if eventLog.length === 0}
+          <div class="events-empty">No events yet. Events from connectors will appear here.</div>
+        {/if}
+        {#each eventLog as evt}
+          {#if evt.type === 'message'}
+            {@const fromMe = evt.metadata && evt.metadata['is_from_me'] === 'true'}
+            {@const sender = evt.metadata && (evt.metadata['sender_name'] || evt.metadata['sender'] || '')}
+            {@const chat = evt.metadata && evt.metadata['chat_jid'] || ''}
+            <div class="event-msg" class:event-msg-out={fromMe} class:event-msg-in={!fromMe}>
+              <div class="event-msg-meta">
+                <span class="event-source">{evt.source}</span>
+                {#if fromMe}
+                  <span class="event-msg-dir out">→ sent</span>
+                {:else}
+                  <span class="event-msg-dir in">← {sender || chat}</span>
+                {/if}
+                <span class="event-time">{new Date(evt.timestamp).toLocaleTimeString()}</span>
+              </div>
+              <div class="event-msg-body">{evt.payload}</div>
+            </div>
+          {:else}
+            <div class="event-entry">
+              <span class="event-source">{evt.source}</span>
+              <span class="event-type">{evt.type}</span>
+              <span class="event-payload">{evt.payload}</span>
+              <span class="event-time">{new Date(evt.timestamp).toLocaleTimeString()}</span>
+            </div>
+          {/if}
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if showSessions}
+    <div class="sessions-panel">
+      {#if sessions.length === 0}
+        <div class="sessions-empty">No previous sessions</div>
+      {/if}
+      {#each sessions as sess}
+        <div class="session-entry">
+          <button class="session-resume" on:click={() => resumeSession(sess.id)}>
+            <span class="session-title">{sess.title}</span>
+            <span class="session-meta">{sess.messages} msgs · {sess.model} · {new Date(sess.updated_at).toLocaleDateString()}</span>
+          </button>
+          <button class="session-delete" on:click={() => deleteSession(sess.id)}>x</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if mcpQrDialog}
+    <div class="perm-overlay">
+      <div class="perm-dialog qr-dialog">
+        <h3>Link {mcpQrServer}</h3>
+        {#if mcpQrLoading}
+          <p class="qr-loading">Loading QR code...</p>
+        {:else if mcpQrImage}
+          <p class="qr-hint">Scan with WhatsApp: Linked Devices > Link a Device</p>
+          <img class="qr-image" src={mcpQrImage} alt="QR Code" />
+        {/if}
+        <div class="perm-actions">
+          <button class="perm-deny" on:click={() => { mcpQrDialog = false; }}>Close</button>
+          {#if !mcpQrLoading}
+            <button class="perm-session" on:click={() => linkMCPServer(mcpQrServer)}>Refresh QR</button>
+          {/if}
+        </div>
       </div>
     </div>
   {/if}
@@ -312,7 +598,11 @@
                     {/if}
                   </div>
                   {#if step.result}
-                    <pre class="tool-step-output">{step.result}</pre>
+                    {#if step.result.includes('![image](data:')}
+                      <div class="tool-step-output markdown">{@html marked(step.result)}</div>
+                    {:else}
+                      <pre class="tool-step-output">{step.result}</pre>
+                    {/if}
                   {/if}
                 </div>
               {/each}
@@ -392,6 +682,7 @@
   }
 
   .icon-btn:hover { background: #0f3460; }
+  .icon-btn-active { background: #0f3460; color: #53d769 !important; }
 
   .settings {
     padding: 0.75rem 1rem;
@@ -427,6 +718,180 @@
   .setting-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .status-ok { color: #53d769; font-size: 0.85rem; }
+
+  /* MCP Settings */
+  .mcp-settings {
+    border-top: 1px solid #0f3460;
+    padding-top: 0.5rem;
+    margin-top: 0.25rem;
+  }
+
+  .mcp-settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.35rem;
+  }
+
+  .mcp-settings-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #aaa;
+  }
+
+  .mcp-add-btn {
+    padding: 0.2rem 0.5rem;
+    background: #0f3460;
+    border: none;
+    color: #eee;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+  }
+
+  .mcp-add-form {
+    margin-bottom: 0.5rem;
+  }
+
+  .mcp-empty {
+    color: #555;
+    font-size: 0.8rem;
+    padding: 0.25rem 0;
+  }
+
+  .mcp-settings-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0;
+    font-size: 0.8rem;
+  }
+
+  .mcp-srv-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #555;
+    flex-shrink: 0;
+  }
+
+  .mcp-srv-dot-on { background: #53d769; }
+
+  .mcp-srv-name {
+    font-weight: 500;
+    color: #eee;
+    flex-shrink: 0;
+  }
+
+  .mcp-srv-detail {
+    color: #666;
+    font-size: 0.7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .mcp-srv-stats {
+    color: #888;
+    font-size: 0.7rem;
+    flex-shrink: 0;
+  }
+
+  .mcp-remove-btn {
+    padding: 0 0.35rem;
+    background: none;
+    border: 1px solid #333;
+    color: #666;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    flex-shrink: 0;
+  }
+
+  .mcp-link-btn {
+    padding: 0 0.35rem;
+    background: none;
+    border: 1px solid #0f3460;
+    color: #53d769;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1.2;
+    flex-shrink: 0;
+  }
+
+  .mcp-link-btn:hover { background: #0f3460; }
+
+  .mcp-remove-btn:hover { color: #e94560; border-color: #e94560; }
+
+  .qr-dialog { text-align: center; }
+  .qr-hint { color: #aaa; font-size: 0.85rem; margin: 0.5rem 0; }
+  .qr-loading { color: #888; font-style: italic; }
+  .qr-image { max-width: 256px; margin: 0.5rem auto; display: block; border-radius: 8px; background: white; padding: 8px; }
+
+  /* Sessions panel */
+  .sessions-panel {
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 0.25rem 0;
+  }
+
+  .sessions-empty {
+    color: #555;
+    font-size: 0.8rem;
+    padding: 0.75rem 1rem;
+    text-align: center;
+  }
+
+  .session-entry {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #111;
+  }
+
+  .session-resume {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.4rem 1rem;
+    background: none;
+    border: none;
+    color: #eee;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+  }
+
+  .session-resume:hover { background: #1a1a2e; }
+
+  .session-title {
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-meta {
+    font-size: 0.65rem;
+    color: #666;
+  }
+
+  .session-delete {
+    padding: 0.3rem 0.6rem;
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    font-size: 0.75rem;
+    flex-shrink: 0;
+  }
+
+  .session-delete:hover { color: #e94560; }
 
   /* Permission dialog */
   .perm-overlay {
@@ -684,6 +1149,180 @@
 
   .clear-btn { background: #0f3460 !important; }
 
+  /* Events panel */
+  .events-panel {
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    max-height: 250px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .events-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #0f3460;
+  }
+
+  .events-toolbar button {
+    padding: 0.3rem 0.6rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: white;
+  }
+
+  .events-refresh-btn { background: #0f3460; }
+  .events-clear-btn { background: #333; }
+
+  .events-stats {
+    display: flex;
+    gap: 1rem;
+    padding: 0.35rem 1rem;
+    font-size: 0.75rem;
+    color: #888;
+    border-bottom: 1px solid #0f3460;
+  }
+
+  .events-stats b { color: #eee; }
+
+  .events-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.25rem 0;
+  }
+
+  .events-empty {
+    color: #555;
+    font-size: 0.8rem;
+    padding: 1rem;
+    text-align: center;
+  }
+
+  .event-entry {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 1rem;
+    font-size: 0.75rem;
+    border-bottom: 1px solid #111;
+  }
+
+  .event-entry:hover { background: #1a1a2e; }
+
+  .event-source {
+    background: #0f3460;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-weight: 500;
+    color: #53d769;
+    flex-shrink: 0;
+  }
+
+  .event-type {
+    color: #e9a560;
+    flex-shrink: 0;
+  }
+
+  .event-payload {
+    color: #aaa;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .event-time {
+    color: #555;
+    flex-shrink: 0;
+    font-family: monospace;
+    font-size: 0.7rem;
+  }
+
+  /* Message-type events: show as mini conversation bubbles */
+  .event-msg {
+    padding: 0.3rem 1rem;
+    border-bottom: 1px solid #111;
+  }
+
+  .event-msg-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.15rem;
+  }
+
+  .event-msg-dir {
+    font-size: 0.7rem;
+    font-weight: 500;
+  }
+
+  .event-msg-dir.out { color: #888; }
+  .event-msg-dir.in  { color: #53d769; }
+
+  .event-msg-body {
+    font-size: 0.8rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    max-width: 90%;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .event-msg-out .event-msg-body {
+    background: #1e2a3a;
+    color: #aaa;
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .event-msg-in .event-msg-body {
+    background: #16302a;
+    color: #d4edd8;
+  }
+
+  /* MCP Servers */
+  .mcp-servers {
+    border-bottom: 1px solid #0f3460;
+    padding: 0.35rem 1rem;
+  }
+
+  .mcp-header {
+    font-size: 0.75rem;
+    color: #888;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .mcp-server-entry {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    padding: 0.15rem 0;
+  }
+
+  .mcp-server-name {
+    font-weight: 500;
+    color: #eee;
+  }
+
+  .mcp-server-status {
+    color: #e94560;
+    font-size: 0.7rem;
+  }
+
+  .mcp-connected {
+    color: #53d769;
+  }
+
+  .mcp-server-info {
+    color: #666;
+    font-size: 0.7rem;
+  }
+
   /* Markdown rendered content */
   .markdown :global(p) { margin: 0.25rem 0; }
   .markdown :global(p:first-child) { margin-top: 0; }
@@ -721,5 +1360,12 @@
     margin: 0.4rem 0;
     padding: 0.2rem 0.6rem;
     color: #aaa;
+  }
+  .markdown :global(img) {
+    max-width: 100%;
+    max-height: 300px;
+    border-radius: 6px;
+    margin: 0.35rem 0;
+    display: block;
   }
 </style>

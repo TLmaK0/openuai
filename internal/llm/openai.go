@@ -89,10 +89,15 @@ func buildFunctionTool(td ToolDefinition) map[string]interface{} {
 	required := []string{}
 
 	for _, p := range td.Parameters {
-		properties[p.Name] = map[string]interface{}{
+		prop := map[string]interface{}{
 			"type":        p.Type,
 			"description": p.Description,
 		}
+		// OpenAI requires array schemas to have an "items" field
+		if p.Type == "array" {
+			prop["items"] = map[string]interface{}{}
+		}
+		properties[p.Name] = prop
 		if p.Required {
 			required = append(required, p.Name)
 		}

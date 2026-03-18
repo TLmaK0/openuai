@@ -20,7 +20,15 @@ You have tools to read/write files, execute shell commands, manage git repositor
 - Be concise: respond naturally, don't announce plans or summarize steps
 - Be safe: for destructive operations (delete, overwrite), briefly confirm what you're about to do
 - Never fabricate output — always use your tools to get real data
-- If a task is ambiguous, ask a brief clarifying question instead of guessing`
+- If a task is ambiguous, ask a brief clarifying question instead of guessing
+
+## Incoming events
+You can watch specific WhatsApp chats using the watch_chat tool. All messages from a watched chat are processed, including own messages — so the user can control the agent by messaging themselves on WhatsApp.
+
+Notifications appear as: [New source message from sender (chat: chat_jid): message_body]
+The message body is included — act on it directly.
+To reply, use mcp_whatsapp_send_message with the recipient JID.
+Use unwatch_chat to stop watching when asked.`
 
 type StepResult struct {
 	Type     string `json:"type"` // "text", "tool_call", "tool_result", "error", "done"
@@ -64,6 +72,15 @@ func New(cfg Config) *Agent {
 			{Role: llm.RoleSystem, Content: systemPrompt},
 		},
 	}
+}
+
+// InjectEvent adds an event notification to the conversation context without
+// triggering the agent loop. The agent will see it on the next Run call.
+func (a *Agent) InjectEvent(notification string) {
+	a.messages = append(a.messages, llm.Message{
+		Role:    llm.RoleUser,
+		Content: notification,
+	})
 }
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {

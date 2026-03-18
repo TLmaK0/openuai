@@ -13,11 +13,23 @@ type OAuthTokens struct {
 	AccountID    string `json:"account_id"`
 }
 
+// MCPServerConfig configures a single MCP server connection.
+type MCPServerConfig struct {
+	Name      string            `json:"name"`
+	Command   string            `json:"command"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	AutoStart bool              `json:"auto_start"`
+	Subscribe []string          `json:"subscribe,omitempty"`
+}
+
 type Config struct {
-	Provider        string       `json:"provider"`
-	ClaudeAPIKey    string       `json:"claude_api_key,omitempty"`
-	DefaultModel    string       `json:"default_model"`
-	OpenAITokens    *OAuthTokens `json:"openai_tokens,omitempty"`
+	Provider        string            `json:"provider"`
+	ClaudeAPIKey    string            `json:"claude_api_key,omitempty"`
+	DefaultModel    string            `json:"default_model"`
+	OpenAITokens    *OAuthTokens      `json:"openai_tokens,omitempty"`
+	MCPServers      []MCPServerConfig `json:"mcp_servers,omitempty"`
+	WatchedChats    []string          `json:"watched_chats,omitempty"`
 	path            string
 }
 

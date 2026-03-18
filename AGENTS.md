@@ -1,6 +1,8 @@
 # Agents Research
 
-## OpenUAI — Project Vision
+## OpenUAI — Open Unmanned Artificial Intelligence
+
+**OpenUAI** stands for **Open Unmanned Artificial Intelligence** — an autonomous, open AI agent that operates independently with minimal human intervention.
 
 OpenUAI extends the Cowork model with a **real-time event subscription system**. Beyond executing tasks on demand, the agent can automatically react to external events (WhatsApp messages, emails, notifications, webhooks, etc.).
 

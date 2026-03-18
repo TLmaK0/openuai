@@ -69,13 +69,16 @@
 - **Scheduled triggers**: cron-style rules ("every Monday at 9am, generate report")
 - **Screen/clipboard triggers**: react to clipboard changes or screenshot content
 
-## Phase 8: First Connector — WhatsApp
+## Phase 8: First Connector — WhatsApp ✅
 
-- Integrate whatsmeow for WhatsApp connection via QR
-- Implement `EventSource` for WhatsApp (incoming messages)
-- Implement `Action` for WhatsApp (send messages)
-- Session persistence (don't ask for QR every time)
-- Flow: receive message → publish to event bus
+- ~~Integrate whatsmeow for WhatsApp connection via QR~~ → replaced with external MCP bridge (mcp-whatsapp)
+- WhatsApp MCP server subscribes to event bus: incoming messages → events
+- Agent tools: `watch_chat` / `unwatch_chat` to subscribe to specific JIDs
+- Event bridge: watched chats queue notifications that are prepended to the next agent turn
+- **Loop prevention**: `is_from_me=true` messages are ignored for unwatched chats (no noise from normal WA activity)
+- **Watched chats process all messages**: if a chat is explicitly watched, own messages are included too — the user can message themselves to control the agent
+- **Debug visibility**: Events panel renders `message`-type events as conversation bubbles (← incoming / → sent), showing message body and sender
+- **Notifications include message body**: agent receives the full message content directly in the notification, no need to call list_messages again
 
 ## Phase 9: Memory System
 
@@ -99,7 +102,8 @@
 - Email (go-imap for receiving, net/smtp for sending)
 - Telegram (bot API)
 - Generic webhooks (embedded HTTP server)
-- Slack / Teams (via APIs)
+- **Teams** (via MCP bridge — same pattern as WhatsApp): read channels/chats, send messages, react to mentions
+- Slack (via MCP or API)
 - Filesystem watcher (monitor folder changes)
 
 ## Phase 12: MCP Compatible + API Mode

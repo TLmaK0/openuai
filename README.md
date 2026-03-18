@@ -1,4 +1,4 @@
-# OpenUAI
+# OpenUAI — Open Unmanned Artificial Intelligence
 
 Autonomous AI agent with full system access — file management, shell execution, git operations, web browsing, and more. Powered by OpenAI and Claude APIs.
 
