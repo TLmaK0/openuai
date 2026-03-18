@@ -28,7 +28,12 @@ You can watch specific WhatsApp chats using the watch_chat tool. All messages fr
 Notifications appear as: [New source message from sender (chat: chat_jid): message_body]
 The message body is included — act on it directly.
 To reply, use mcp_whatsapp_send_message with the recipient JID.
-Use unwatch_chat to stop watching when asked.`
+Use unwatch_chat to stop watching when asked.
+
+## Memory
+You have persistent memory across sessions via save_memory, list_memories, and delete_memory tools.
+Use memory proactively: save user preferences, important context, ongoing tasks, and per-contact notes.
+Memory is injected into your system prompt at the start of each new session.`
 
 type StepResult struct {
 	Type     string `json:"type"` // "text", "tool_call", "tool_result", "error", "done"
@@ -54,11 +59,17 @@ type Config struct {
 	Permissions *PermissionManager
 	CostTracker *llm.CostTracker
 	OnStep      func(StepResult)
+	MemoryText  string // pre-loaded memory content injected into system prompt
 }
 
 func New(cfg Config) *Agent {
 	// Convert tools.Definition to llm.ToolDefinition
 	toolDefs := convertToolDefs(cfg.Registry)
+
+	prompt := systemPrompt
+	if cfg.MemoryText != "" {
+		prompt += "\n\n## Memory\nThe following is what you remember from previous sessions:\n\n" + cfg.MemoryText
+	}
 
 	return &Agent{
 		provider:    cfg.Provider,
@@ -69,7 +80,7 @@ func New(cfg Config) *Agent {
 		onStep:      cfg.OnStep,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
-			{Role: llm.RoleSystem, Content: systemPrompt},
+			{Role: llm.RoleSystem, Content: prompt},
 		},
 	}
 }

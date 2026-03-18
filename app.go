@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-
+	"path/filepath"
 	"sync"
 
 	"openuai/internal/agent"
@@ -12,7 +12,7 @@ import (
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/mcpclient"
-
+	"openuai/internal/memory"
 	"openuai/internal/tools"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -36,6 +36,8 @@ type App struct {
 	permResponse chan permAnswer
 
 	agentMu sync.Mutex // serializes all agent.Run() calls (user messages + autonomous triggers)
+
+	memoryStore *memory.Store
 
 	watchedChats   map[string]struct{} // JIDs being watched; all messages (including own) are processed
 	watchedChatsMu sync.RWMutex
@@ -99,6 +101,9 @@ func (a *App) startup(ctx context.Context) {
 
 	a.openai = llm.NewOpenAIProvider(a.oauth)
 
+	// Memory store
+	a.memoryStore = memory.New(filepath.Join(cfg.ConfigDir(), "memory"))
+
 	// Tools registry
 	a.registry = tools.NewRegistry()
 	a.registry.Register(tools.ReadFile{})
@@ -118,6 +123,9 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.WebFetch{})
 	a.registry.Register(tools.WatchChat{Fn: a.WatchChat})
 	a.registry.Register(tools.UnwatchChat{Fn: a.UnwatchChat})
+	a.registry.Register(tools.SaveMemory{Store: a.memoryStore})
+	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
+	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
 
 	// Permissions
@@ -309,6 +317,7 @@ func (a *App) ensureAgent() *agent.Agent {
 			Registry:    a.registry,
 			Permissions: a.permissions,
 			CostTracker: a.costTracker,
+			MemoryText:  a.memoryStore.LoadAll(),
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)
