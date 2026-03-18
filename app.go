@@ -124,7 +124,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.WatchChat{Fn: a.WatchChat})
 	a.registry.Register(tools.UnwatchChat{Fn: a.UnwatchChat})
 	a.registry.Register(tools.SaveMemory{Store: a.memoryStore})
-	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
+	a.registry.Register(tools.ReadMemory{Store: a.memoryStore})
 	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
 
@@ -317,7 +317,7 @@ func (a *App) ensureAgent() *agent.Agent {
 			Registry:    a.registry,
 			Permissions: a.permissions,
 			CostTracker: a.costTracker,
-			MemoryText:  a.memoryStore.LoadAll(),
+			MemoryText:  a.memoryStore.LoadIndex(),
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)

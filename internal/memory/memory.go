@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// Store is a simple persistent key-value memory backed by markdown files.
-// Each memory is a named .md file in the memory directory.
+const indexFile = "MEMORY.md"
+const indexMaxLines = 200
+
+// Store is a file-based memory system.
+// MEMORY.md is the index — loaded automatically into every session (up to 200 lines).
+// Individual .md files hold the full content of each memory, loaded on demand.
 type Store struct {
 	dir string
 }
@@ -17,47 +21,84 @@ func New(dir string) *Store {
 	return &Store{dir: dir}
 }
 
-func (s *Store) Save(name, content string) error {
-	return os.WriteFile(filepath.Join(s.dir, sanitize(name)+".md"), []byte(content), 0o600)
+// LoadIndex returns the MEMORY.md index, truncated to 200 lines.
+// This is injected into the system prompt at session start.
+func (s *Store) LoadIndex() string {
+	data, err := os.ReadFile(filepath.Join(s.dir, indexFile))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > indexMaxLines {
+		lines = lines[:indexMaxLines]
+	}
+	return strings.Join(lines, "\n")
 }
 
+// Save writes a memory file and updates the MEMORY.md index entry for it.
+func (s *Store) Save(name, description, content string) error {
+	name = sanitize(name)
+	if err := os.WriteFile(filepath.Join(s.dir, name+".md"), []byte(content), 0o600); err != nil {
+		return err
+	}
+	return s.updateIndex(name, description)
+}
+
+// Load reads a specific memory file by name.
 func (s *Store) Load(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(s.dir, sanitize(name)+".md"))
 	return string(data), err
 }
 
+// Delete removes a memory file and its entry from the index.
 func (s *Store) Delete(name string) error {
-	return os.Remove(filepath.Join(s.dir, sanitize(name)+".md"))
+	name = sanitize(name)
+	os.Remove(filepath.Join(s.dir, name+".md"))
+	return s.removeFromIndex(name)
 }
 
-func (s *Store) List() []string {
-	entries, _ := os.ReadDir(s.dir)
-	var names []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			names = append(names, strings.TrimSuffix(e.Name(), ".md"))
+// updateIndex adds or updates the line for `name` in MEMORY.md.
+func (s *Store) updateIndex(name, description string) error {
+	index := s.LoadIndex()
+	lines := strings.Split(index, "\n")
+
+	entry := "- [" + name + ".md](" + name + ".md) — " + description
+	prefix := "- [" + name + ".md]"
+
+	updated := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			lines[i] = entry
+			updated = true
+			break
 		}
 	}
-	return names
+	if !updated {
+		// Add header if index is empty
+		if strings.TrimSpace(index) == "" {
+			lines = []string{"# Memory Index", "", entry}
+		} else {
+			lines = append(lines, entry)
+		}
+	}
+
+	return os.WriteFile(filepath.Join(s.dir, indexFile), []byte(strings.Join(lines, "\n")), 0o600)
 }
 
-// LoadAll returns all memories concatenated, for injection into the system prompt.
-func (s *Store) LoadAll() string {
-	names := s.List()
-	if len(names) == 0 {
-		return ""
+// removeFromIndex removes the entry for `name` from MEMORY.md.
+func (s *Store) removeFromIndex(name string) error {
+	index := s.LoadIndex()
+	if index == "" {
+		return nil
 	}
-	var sb strings.Builder
-	for _, name := range names {
-		content, err := s.Load(name)
-		if err != nil || strings.TrimSpace(content) == "" {
-			continue
+	prefix := "- [" + name + ".md]"
+	var lines []string
+	for _, line := range strings.Split(index, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			lines = append(lines, line)
 		}
-		sb.WriteString("### " + name + "\n")
-		sb.WriteString(strings.TrimSpace(content))
-		sb.WriteString("\n\n")
 	}
-	return sb.String()
+	return os.WriteFile(filepath.Join(s.dir, indexFile), []byte(strings.Join(lines, "\n")), 0o600)
 }
 
 // sanitize restricts memory names to safe filename characters.
