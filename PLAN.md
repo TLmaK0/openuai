@@ -99,6 +99,9 @@ which is handled by `watch_chat` / `unwatch_chat` tools.
 - Telegram (bot API)
 - Generic webhooks (embedded HTTP server)
 - **Teams** (via MCP bridge — same pattern as WhatsApp): read channels/chats, send messages, react to mentions
+  - Bridge in Go using reverse-engineered Teams internal protocol (reference: [EionRobb/purple-teams](https://github.com/EionRobb/purple-teams))
+  - Connect via Trouter WebSocket (real-time notifications, same as Teams web) — NOT Microsoft Graph API polling
+  - Expose SSE endpoint → Python MCP server → OpenUAI subscribes to resource
 - Slack (via MCP or API)
 - Filesystem watcher (monitor folder changes)
 
