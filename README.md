@@ -29,13 +29,28 @@ No additional dependencies. Uses native WKWebView.
 
 No additional dependencies. Uses WebView2 (included with Windows 10+).
 
-## Build from source
+## Development
+
+Clone and run in one command:
+
+```bash
+git clone https://github.com/singular-aircraft/openuai.git
+cd openuai
+./dev.sh
+```
+
+`dev.sh` installs system dependencies (webkit2gtk), installs the Wails CLI if missing, builds, and launches the app.
+
+### Manual build
 
 ```bash
 # Install Wails CLI
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
-# Build
+# Linux (Ubuntu/Debian with webkit2gtk-4.0)
+wails build -tags webkit2_40
+
+# Linux (webkit2gtk-4.1) / macOS / Windows
 wails build
 ```
 
