@@ -59,15 +59,11 @@
 - Subscription system: register listeners by event type
 - Internal queue with backpressure to avoid overwhelming the agent
 
-## Phase 7: Rules Engine + Triggers
+## ~~Phase 7: Rules Engine + Triggers~~ ❌ Removed
 
-- Rule format in local YAML/JSON
-- Structure: trigger (source + condition) → action (what to do)
-- Basic conditions: regex on message, specific sender, keywords
-- Basic actions: reply to message, execute LLM prompt, write file
-- Hot-reload rules without restarting
-- **Scheduled triggers**: cron-style rules ("every Monday at 9am, generate report")
-- **Screen/clipboard triggers**: react to clipboard changes or screenshot content
+Removed — the LLM handles all routing and decision-making directly.
+The only filtering needed is which event sources/chats the agent watches,
+which is handled by `watch_chat` / `unwatch_chat` tools.
 
 ## Phase 8: First Connector — WhatsApp ✅
 

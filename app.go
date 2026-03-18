@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+
 	"sync"
 
 	"openuai/internal/agent"
@@ -12,7 +12,7 @@ import (
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/mcpclient"
-	"openuai/internal/rules"
+
 	"openuai/internal/tools"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -29,7 +29,7 @@ type App struct {
 	permissions *agent.PermissionManager
 	currentAgent *agent.Agent
 	eventBus    *eventbus.Bus
-	rulesEngine *rules.Engine
+
 	mcpManager  *mcpclient.Manager
 
 	permMu       sync.Mutex
@@ -135,23 +135,6 @@ func (a *App) startup(ctx context.Context) {
 		},
 	)
 
-	// Rules engine
-	rulesDir := filepath.Join(cfg.ConfigDir(), "rules")
-	a.rulesEngine = rules.New(rulesDir, func(rule rules.Rule, action rules.Action, event eventbus.Event, rendered rules.RenderedAction) error {
-		logger.Info("Rule %q fired: action=%s", rule.ID, action.Type)
-		wailsRuntime.EventsEmit(a.ctx, "rule_fired", map[string]interface{}{
-			"rule_id":   rule.ID,
-			"rule_name": rule.Name,
-			"action":    string(action.Type),
-			"text":      rendered.Text,
-			"source":    event.Source,
-			"event_type": string(event.Type),
-		})
-		return nil
-	})
-	if err := a.rulesEngine.Load(); err != nil {
-		logger.Error("Failed to load rules: %s", err.Error())
-	}
 
 	// Event bus
 	a.eventBus = eventbus.New()
@@ -160,8 +143,7 @@ func (a *App) startup(ctx context.Context) {
 		wailsRuntime.EventsEmit(a.ctx, "event_received", event)
 		return nil
 	})
-	// Connect rules engine to event bus
-	a.eventBus.OnAny(a.rulesEngine.HandleEvent)
+
 	// Immediately trigger the agent when a message from a watched chat arrives.
 	// All messages are processed (including own) — the user explicitly chose to watch this chat.
 	// is_from_me messages in unwatched chats are ignored to avoid noise from normal WA activity.
@@ -466,20 +448,6 @@ func (a *App) GetEventStats() eventbus.Stats {
 	return a.eventBus.GetStats()
 }
 
-// --- Rules Engine ---
-
-// GetRules returns all loaded rules.
-func (a *App) GetRules() []rules.Rule {
-	return a.rulesEngine.Rules()
-}
-
-// ReloadRules hot-reloads rules from disk.
-func (a *App) ReloadRules() string {
-	if err := a.rulesEngine.Reload(); err != nil {
-		return err.Error()
-	}
-	return ""
-}
 
 // --- MCP Servers ---
 
