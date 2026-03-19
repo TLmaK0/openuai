@@ -11,6 +11,9 @@ import (
 	"openuai/internal/tools"
 )
 
+// OnSendCallback is called when a send-type MCP tool is executed, with the message body.
+type OnSendCallback func(body string)
+
 // MCPTool wraps a remote MCP tool as a local tools.Tool.
 type MCPTool struct {
 	serverName string
@@ -18,6 +21,7 @@ type MCPTool struct {
 	localName  string
 	remoteTool mcp.Tool
 	manager    *Manager
+	onSend     OnSendCallback
 }
 
 // Definition implements tools.Tool.
@@ -49,11 +53,26 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]string) tools.Res
 		return tools.Result{Error: ContentToString(result.Content)}
 	}
 
-	return tools.Result{Output: ContentToString(result.Content)}
+	output := ContentToString(result.Content)
+
+	// Track sent message IDs to prevent echo loops.
+	// Graph API returns "Message ID: 1773919724699" in the response.
+	if t.onSend != nil && strings.Contains(t.remoteName, "send") {
+		if idx := strings.Index(output, "Message ID: "); idx >= 0 {
+			idStr := output[idx+len("Message ID: "):]
+			if end := strings.IndexAny(idStr, " \n\r\t"); end > 0 {
+				idStr = idStr[:end]
+			}
+			t.onSend(idStr)
+		}
+	}
+
+	return tools.Result{Output: output}
 }
 
 // RegisterMCPTools adds all discovered MCP tools to the local tool registry.
-func RegisterMCPTools(registry *tools.Registry, manager *Manager) {
+// onSend is called when a send-type tool is executed (for echo loop prevention).
+func RegisterMCPTools(registry *tools.Registry, manager *Manager, onSend OnSendCallback) {
 	allTools := manager.AllTools()
 	for localName, ref := range allTools {
 		tool := &MCPTool{
@@ -62,6 +81,7 @@ func RegisterMCPTools(registry *tools.Registry, manager *Manager) {
 			localName:  localName,
 			remoteTool: ref.Tool,
 			manager:    manager,
+			onSend:     onSend,
 		}
 		registry.Register(tool)
 	}

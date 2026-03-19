@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"openuai/internal/agent"
 	"openuai/internal/config"
@@ -41,6 +42,12 @@ type App struct {
 
 	watchedChats   map[string]struct{} // JIDs being watched; all messages (including own) are processed
 	watchedChatsMu sync.RWMutex
+
+	// recentSentIDs tracks message IDs sent by the agent to prevent echo loops.
+	// When the agent sends via MCP, the response includes the message ID.
+	// When the same ID arrives back via Trouter, we filter it out.
+	recentSentMu  sync.Mutex
+	recentSentIDs map[string]int64 // message ID → unix timestamp
 }
 
 type permAnswer struct {
@@ -52,7 +59,8 @@ func NewApp() *App {
 	return &App{
 		costTracker:  llm.NewCostTracker(),
 		permResponse: make(chan permAnswer, 1),
-		watchedChats: make(map[string]struct{}),
+		watchedChats:       make(map[string]struct{}),
+		recentSentIDs: make(map[string]int64),
 	}
 }
 
@@ -169,6 +177,26 @@ func (a *App) startup(ctx context.Context) {
 			return nil
 		}
 
+		// Prevent echo loops: if the message ID was sent by the agent, skip it.
+		msgID := event.Metadata["message_id"]
+		if msgID != "" {
+			a.recentSentMu.Lock()
+			// Clean old entries (>5min)
+			now := time.Now().Unix()
+			for k, ts := range a.recentSentIDs {
+				if now-ts > 300 {
+					delete(a.recentSentIDs, k)
+				}
+			}
+			if _, isEcho := a.recentSentIDs[msgID]; isEcho {
+				delete(a.recentSentIDs, msgID)
+				a.recentSentMu.Unlock()
+				logger.Debug("Event ignored (echo, msg_id=%s): chat_jid=%q", msgID, chatJID)
+				return nil
+			}
+			a.recentSentMu.Unlock()
+		}
+
 		fromMe := event.Metadata["is_from_me"] == "true"
 		senderName := event.Metadata["sender_name"]
 		if senderName == "" {
@@ -190,7 +218,7 @@ func (a *App) startup(ctx context.Context) {
 	if len(cfg.MCPServers) > 0 {
 		a.mcpManager = mcpclient.NewManager(cfg.MCPServers)
 		a.mcpManager.OnReady(func() {
-			mcpclient.RegisterMCPTools(a.registry, a.mcpManager)
+			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
 			logger.Info("MCP tools registered: %d total tools now", len(a.registry.Definitions()))
 			// Reset agent so it picks up new tools
 			a.currentAgent = nil
@@ -402,6 +430,18 @@ func (a *App) UnwatchChat(jid string) string {
 }
 
 // persistWatchedChats saves the current watched JIDs to config so they survive restarts.
+// TrackSentMessageID records a message ID so it can be filtered as echo when
+// it arrives back via Trouter/event bus. Called by MCP tool wrappers after sending.
+func (a *App) TrackSentMessageID(msgID string) {
+	if msgID == "" {
+		return
+	}
+	a.recentSentMu.Lock()
+	a.recentSentIDs[msgID] = time.Now().Unix()
+	a.recentSentMu.Unlock()
+	logger.Debug("Tracking sent message ID: %s", msgID)
+}
+
 func (a *App) persistWatchedChats() {
 	a.watchedChatsMu.RLock()
 	jids := make([]string, 0, len(a.watchedChats))

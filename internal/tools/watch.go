@@ -17,9 +17,9 @@ type WatchChat struct {
 func (t WatchChat) Definition() Definition {
 	return Definition{
 		Name:        "watch_chat",
-		Description: "Start watching a WhatsApp chat for new messages. All messages are processed, including own messages — use this to control the agent by messaging yourself on WhatsApp.",
+		Description: "Start watching a chat for new messages (works with WhatsApp, Teams, or any MCP message source). All messages from the chat are processed and trigger the agent automatically.",
 		Parameters: []Parameter{
-			{Name: "jid", Type: "string", Description: "The chat JID or phone number to watch (e.g. '34612345678@s.whatsapp.net')", Required: true},
+			{Name: "jid", Type: "string", Description: "The chat JID to watch. WhatsApp: '34612345678@s.whatsapp.net'. Teams 1:1 chat: '19:xxx@unq.gbl.spaces'. Teams self-chat/personal notes: '48:notes'. Use list_chats to find the correct ID.", Required: true},
 		},
 	}
 }
@@ -40,7 +40,7 @@ type UnwatchChat struct {
 func (t UnwatchChat) Definition() Definition {
 	return Definition{
 		Name:        "unwatch_chat",
-		Description: "Stop watching a WhatsApp chat for new messages.",
+		Description: "Stop watching a chat for new messages (WhatsApp, Teams, or any MCP source).",
 		Parameters: []Parameter{
 			{Name: "jid", Type: "string", Description: "The chat JID or phone number to stop watching", Required: true},
 		},
