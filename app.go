@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"openuai/internal/agent"
+	"openuai/internal/api"
 	"openuai/internal/config"
 	"openuai/internal/eventbus"
 	"openuai/internal/llm"
@@ -15,6 +16,7 @@ import (
 	"openuai/internal/mcpclient"
 	"openuai/internal/memory"
 	"openuai/internal/tools"
+	"openuai/internal/tray"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -32,6 +34,7 @@ type App struct {
 	eventBus    *eventbus.Bus
 
 	mcpManager  *mcpclient.Manager
+	apiServer   *api.Server
 
 	permMu       sync.Mutex
 	permResponse chan permAnswer
@@ -134,6 +137,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.SaveMemory{Store: a.memoryStore})
 	a.registry.Register(tools.ReadMemory{Store: a.memoryStore})
 	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
+	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents})
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
 
 	// Permissions
@@ -145,6 +149,12 @@ func (a *App) startup(ctx context.Context) {
 				"tool":    tool,
 				"command": command,
 			})
+			if a.apiServer != nil {
+				a.apiServer.Broadcast("permission_request", "", map[string]string{
+					"tool":    tool,
+					"command": command,
+				})
+			}
 			answer := <-a.permResponse
 			logger.Info("Permission response: approved=%v level=%v", answer.approved, answer.level)
 			return answer.level, answer.approved
@@ -157,6 +167,9 @@ func (a *App) startup(ctx context.Context) {
 	a.eventBus.OnAny(func(event eventbus.Event) error {
 		logger.Info("Event received: source=%s type=%s payload_len=%d", event.Source, event.Type, len(event.Payload))
 		wailsRuntime.EventsEmit(a.ctx, "event_received", event)
+		if a.apiServer != nil {
+			a.apiServer.Broadcast("event_received", "", event)
+		}
 		return nil
 	})
 
@@ -208,6 +221,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 		notification := fmt.Sprintf("[New %s message from %s (chat: %s): %s]", event.Source, senderName, chatJID, event.Payload)
 		logger.Info("Watched event received, triggering agent: %s", notification)
+		preview := event.Payload
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		tray.Notify(fmt.Sprintf("%s — %s", event.Source, senderName), preview)
 		go a.triggerAgentWithNotification(notification)
 		return nil
 	})
@@ -238,7 +256,95 @@ func (a *App) startup(ctx context.Context) {
 		logger.Info("Restored %d watched chats: %v", len(cfg.WatchedChats), cfg.WatchedChats)
 	}
 
+	// System tray
+	notifyEnabled := true
+	if a.cfg.NotificationsEnabled != nil {
+		notifyEnabled = *a.cfg.NotificationsEnabled
+	}
+	tray.SetEnabled(notifyEnabled)
+	tray.SetIconBytes(appIcon)
+	tray.Start(tray.Config{
+		Icon: appIcon,
+		OnShow: func() {
+			wailsRuntime.WindowShow(a.ctx)
+		},
+		OnQuit: func() {
+			wailsRuntime.Quit(a.ctx)
+		},
+	})
+	a.updateTrayTooltip()
+
+	// API server (optional, disabled by default)
+	if cfg.APIEnabled {
+		port := cfg.APIPort
+		if port == 0 {
+			port = 9120
+		}
+		a.apiServer = api.New(api.Config{
+			Host: "127.0.0.1",
+			Port: port,
+		}, api.Handlers{
+			SendMessageSync: func(content string) any {
+				return a.SendMessage(content)
+			},
+			GetCostSummary:    func() any { return a.GetCostSummary() },
+			GetModels:         func() any { return a.GetModels() },
+			GetModel:          func() any { return a.GetDefaultModel() },
+			SetModel:          func(model string) any { return a.SetDefaultModel(model) },
+			GetProvider:       func() any { return a.GetProvider() },
+			SetProvider:       func(provider string) any { return a.SetProvider(provider) },
+			GetWatchedChats:   func() any { return a.GetWatchedChats() },
+			WatchChat:         func(jid string) any { return a.WatchChat(jid) },
+			UnwatchChat:       func(jid string) any { return a.UnwatchChat(jid) },
+			GetEventStats:     func() any { return a.GetEventStats() },
+			GetMCPServers:     func() any { return a.GetMCPServers() },
+			RespondPermission: func(level string, approved bool) { a.RespondPermission(level, approved) },
+			ClearChat:         func() { a.ClearChat() },
+			ResetCosts:        func() { a.ResetCosts() },
+			GetNotifications: func() any {
+				return map[string]bool{"enabled": a.GetNotificationsEnabled()}
+			},
+			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
+		})
+		if err := a.apiServer.Start(); err != nil {
+			logger.Error("Failed to start API server: %s", err.Error())
+		}
+	}
+
 	logger.Info("Startup complete")
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	logger.Info("Shutting down")
+	if a.apiServer != nil {
+		a.apiServer.Shutdown(ctx)
+	}
+	tray.Stop()
+}
+
+// ToggleNotifications sets the notification enabled state and persists it.
+func (a *App) ToggleNotifications(enabled bool) {
+	tray.SetEnabled(enabled)
+	tray.SyncNotifyCheckbox()
+	a.cfg.NotificationsEnabled = &enabled
+	a.cfg.Save()
+	logger.Info("Notifications enabled: %v", enabled)
+}
+
+// GetNotificationsEnabled returns whether notifications are on.
+func (a *App) GetNotificationsEnabled() bool {
+	return tray.IsEnabled()
+}
+
+func (a *App) updateTrayTooltip() {
+	a.watchedChatsMu.RLock()
+	n := len(a.watchedChats)
+	a.watchedChatsMu.RUnlock()
+	if n == 0 {
+		tray.SetTooltip("OpenUAI")
+	} else {
+		tray.SetTooltip(fmt.Sprintf("OpenUAI — %d chats watched", n))
+	}
 }
 
 func (a *App) activeProvider() llm.Provider {
@@ -349,6 +455,9 @@ func (a *App) ensureAgent() *agent.Agent {
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)
+				if a.apiServer != nil {
+					a.apiServer.Broadcast("agent_step", "", step)
+				}
 			},
 		})
 		// Try to restore previous session
@@ -404,7 +513,70 @@ func (a *App) triggerAgentWithNotification(notification string) {
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
 		logger.Error("Failed to save session after autonomous run: %s", saveErr.Error())
 	}
+	tray.Notify("OpenUAI", "Agent completed autonomous run")
 	logger.Info("Autonomous agent run complete")
+}
+
+// spawnSubAgents is the bridge between the spawn_agents tool and the agent package.
+func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools.SubTaskResult {
+	maxConcurrent := a.cfg.MaxConcurrentAgents
+	if maxConcurrent <= 0 {
+		maxConcurrent = 5
+	}
+
+	// Convert tool tasks to agent tasks
+	agentTasks := make([]agent.SubAgentTask, len(tasks))
+	for i, t := range tasks {
+		agentTasks[i] = agent.SubAgentTask{ID: t.ID, Description: t.Description}
+	}
+
+	// Create filtered registry (no spawn_agents to prevent nesting)
+	filteredRegistry := a.registry.Without("spawn_agents")
+
+	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
+		Provider:      a.activeProvider(),
+		Model:         a.cfg.DefaultModel,
+		Registry:      filteredRegistry,
+		Permissions:   a.permissions,
+		MaxConcurrent: maxConcurrent,
+		OnStep: func(taskID string, step agent.StepResult) {
+			logger.Debug("[sub-agent:%s] step: type=%s tool=%s", taskID, step.Type, step.ToolName)
+			subStep := agent.StepResult{
+				Type:     step.Type,
+				Content:  fmt.Sprintf("[sub-agent:%s] %s", taskID, step.Content),
+				ToolName: step.ToolName,
+			}
+			wailsRuntime.EventsEmit(a.ctx, "agent_step", subStep)
+			if a.apiServer != nil {
+				a.apiServer.Broadcast("agent_step", "", subStep)
+			}
+		},
+	}, agentTasks)
+
+	// Roll up sub-agent costs into parent tracker
+	for _, r := range results {
+		if r.InputTokens > 0 || r.OutputTokens > 0 {
+			a.costTracker.Track(&llm.Response{
+				Model:        a.cfg.DefaultModel,
+				InputTokens:  r.InputTokens,
+				OutputTokens: r.OutputTokens,
+			})
+		}
+	}
+
+	// Convert agent results to tool results
+	toolResults := make([]tools.SubTaskResult, len(results))
+	for i, r := range results {
+		toolResults[i] = tools.SubTaskResult{
+			ID:           r.ID,
+			Output:       r.Output,
+			Error:        r.Error,
+			CostUSD:      r.CostUSD,
+			InputTokens:  r.InputTokens,
+			OutputTokens: r.OutputTokens,
+		}
+	}
+	return toolResults
 }
 
 // WatchChat adds a JID or phone number to the event watch list.
@@ -415,6 +587,7 @@ func (a *App) WatchChat(jid string) string {
 	a.watchedChats[jid] = struct{}{}
 	a.watchedChatsMu.Unlock()
 	a.persistWatchedChats()
+	a.updateTrayTooltip()
 	logger.Info("Now watching chat: %s", jid)
 	return fmt.Sprintf("Now watching %s for new messages", jid)
 }
@@ -425,6 +598,7 @@ func (a *App) UnwatchChat(jid string) string {
 	delete(a.watchedChats, jid)
 	a.watchedChatsMu.Unlock()
 	a.persistWatchedChats()
+	a.updateTrayTooltip()
 	logger.Info("Stopped watching chat: %s", jid)
 	return fmt.Sprintf("Stopped watching %s", jid)
 }

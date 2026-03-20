@@ -51,13 +51,15 @@
 - **GitHub Pages landing site**: project description, features, download links per OS/arch, getting started guide
 - First public release: functional agent with LLM + actions + UI
 
-## Phase 6: Event Bus
+## Phase 6: Event Bus ✅
 
-- Implement internal event bus with goroutines + channels
-- Define `EventSource` interface that all connectors implement
-- Define generic `Event` struct (source, type, payload, timestamp, metadata)
-- Subscription system: register listeners by event type
-- Internal queue with backpressure to avoid overwhelming the agent
+- Internal event bus with goroutines + channels (`internal/eventbus/`)
+- `EventSource` interface that all connectors implement
+- Generic `Event` struct (source, type, payload, timestamp, metadata)
+- Handler registration: `On(eventType, handler)` for specific types + `OnAny(handler)` for all events
+- Worker pool (4 concurrent workers) + buffered queue (256 events) with backpressure
+- Stats tracking: events received/handled/dropped by source and type
+- Fan-out: events dispatched simultaneously to UI, agent, and stats
 
 ## ~~Phase 7: Rules Engine + Triggers~~ ❌ Removed
 
@@ -85,40 +87,40 @@ which is handled by `watch_chat` / `unwatch_chat` tools.
 - Feedback memory: corrections and guidance the user has given
 - Memory index for fast retrieval by relevance
 
-## Phase 10: Multi-Agent
+## Phase 10: Multi-Agent ✅
 
-- Spawn sub-agents for parallel task execution
-- Parent agent decomposes a complex task into independent sub-tasks
-- Each sub-agent runs in its own goroutine with isolated context
-- Results aggregated back to parent agent
-- Configurable max concurrent agents
+- `spawn_agents` tool: parent agent decomposes tasks into concurrent sub-agents
+- Each sub-agent runs in its own goroutine with isolated context and CostTracker
+- Semaphore-based concurrency limit (configurable, default 5)
+- No nesting: sub-agents cannot spawn sub-sub-agents (`Registry.Without()`)
+- Results aggregated back as single tool result, costs rolled up to parent
+- UI receives `[sub-agent:taskID]`-prefixed steps
 
-## Phase 11: More Connectors
+## Phase 11: More Connectors ✅
 
-- Email (go-imap for receiving, net/smtp for sending)
-- Telegram (bot API)
-- Generic webhooks (embedded HTTP server)
-- **Teams** (via MCP bridge — same pattern as WhatsApp): read channels/chats, send messages, react to mentions
-  - Bridge in Go using reverse-engineered Teams internal protocol (reference: [EionRobb/purple-teams](https://github.com/EionRobb/purple-teams))
-  - Connect via Trouter WebSocket (real-time notifications, same as Teams web) — NOT Microsoft Graph API polling
-  - Expose SSE endpoint → Python MCP server → OpenUAI subscribes to resource
-- Slack (via MCP or API)
-- Filesystem watcher (monitor folder changes)
+- All connectors are external MCP servers — no custom Go code needed
+- **Teams** ✅: real-time via Trouter WebSocket + MCP bridge
+- **WhatsApp** ✅: via mcp-whatsapp bridge
+- **Email, Telegram, Slack, webhooks, filesystem watcher**: available as community MCP servers, connect via existing MCP client infrastructure
+- Architecture already supports: MCP auto-start, SSE subscriptions, event bus integration
 
-## Phase 12: MCP Compatible + API Mode
+## Phase 12: MCP Compatible + API Mode ✅
 
-- **MCP client**: connect to external MCP servers (use existing tools/connectors from the ecosystem)
-- **MCP server**: expose OpenUAI's capabilities so other tools can call it
-- **REST API mode**: run headless as a local API server, other apps can send tasks and receive results via HTTP
-- API authentication for local access
+- **MCP client** ✅: connect to external MCP servers (use existing tools/connectors from the ecosystem)
+- **MCP server**: expose OpenUAI's capabilities so other tools can call it — deferred
+- **REST API** ✅: `internal/api/` — Echo v4 on `127.0.0.1:9120`, 18 endpoints + WebSocket
+  - `POST /api/chat` async (202 + request_id) or blocking (`?wait=true`)
+  - WebSocket `/ws` with gorilla/websocket hub: broadcasts `agent_step`, `event_received`, `permission_request`, `chat_complete`
+  - Config: `api_enabled: true`, `api_port: 9120` (disabled by default, localhost only)
+  - Callback-based `Handlers` struct avoids import cycles with main package
 
-## Phase 13: System Tray + Full UI
+## Phase 13: System Tray + Notifications ✅
 
-- **System tray**: run in background, native OS notifications on events and completed tasks, quick actions from tray menu (pause/resume, open dashboard)
-- WhatsApp screen: scan QR, view conversations, status
-- Visual rule editor (trigger → condition → action)
-- Configuration: connectors, rules
-- Embedded auto-update (check + download new version)
+- **System tray** ✅: `fyne.io/systray` — tray icon with Show/Hide, Notifications toggle, Quit menu
+- **Native notifications** ✅: `github.com/gen2brain/beeep` — notify on watched chat messages + agent completion
+- **Hide on close** ✅: `HideWindowOnClose: true` — window hides, tray stays, "Show" brings it back, "Quit" exits
+- **Config** ✅: `notifications_enabled` persisted, toggleable from tray menu + Wails API
+- Embedded auto-update (check + download new version) — deferred to future phase
 
 ## Phase 14: Voice
 

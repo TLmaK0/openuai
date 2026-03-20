@@ -29,8 +29,12 @@ type Config struct {
 	DefaultModel    string            `json:"default_model"`
 	OpenAITokens    *OAuthTokens      `json:"openai_tokens,omitempty"`
 	MCPServers      []MCPServerConfig `json:"mcp_servers,omitempty"`
-	WatchedChats    []string          `json:"watched_chats,omitempty"`
-	path            string
+	WatchedChats       []string          `json:"watched_chats,omitempty"`
+	MaxConcurrentAgents    int              `json:"max_concurrent_agents,omitempty"`
+	NotificationsEnabled   *bool            `json:"notifications_enabled,omitempty"`
+	APIEnabled             bool             `json:"api_enabled,omitempty"`
+	APIPort                int              `json:"api_port,omitempty"`
+	path               string
 }
 
 func Load() (*Config, error) {
