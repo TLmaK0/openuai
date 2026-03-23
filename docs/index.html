@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenUAI — Open Unmanned Artificial Intelligence</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --green: #3fb950;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); }
+
+    .hero {
+      text-align: center;
+      padding: 80px 20px 60px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .hero h1 {
+      font-size: 3rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      letter-spacing: -0.02em;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--muted);
+      max-width: 600px;
+      margin: 0 auto 32px;
+    }
+
+    .downloads {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      color: var(--bg);
+    }
+    .btn-secondary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover { border-color: var(--muted); }
+
+    .version-note {
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+
+    .features {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px 80px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+    }
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+    .feature h3 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+    .feature p {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .getting-started {
+      max-width: 700px;
+      margin: 0 auto;
+      padding: 0 20px 80px;
+    }
+    .getting-started h2 {
+      font-size: 1.5rem;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .code-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.9rem;
+      overflow-x: auto;
+      margin-bottom: 12px;
+    }
+    .code-block .comment { color: var(--muted); }
+    .code-block .cmd { color: var(--green); }
+
+    .arch {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 0 20px 80px;
+      text-align: center;
+    }
+    .arch h2 { font-size: 1.5rem; margin-bottom: 20px; }
+    .arch pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      overflow-x: auto;
+      text-align: left;
+      display: inline-block;
+      color: var(--muted);
+    }
+
+    footer {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--muted);
+      font-size: 0.875rem;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <h1><span>Open</span>UAI</h1>
+    <p>Open Unmanned Artificial Intelligence — an autonomous AI agent that reacts to events, executes tasks, and runs as a single binary on any OS.</p>
+    <div class="downloads" id="downloads">
+      <a class="btn btn-primary" href="https://github.com/singular-aircraft/openuai/releases/latest">Download Latest Release</a>
+      <a class="btn btn-secondary" href="https://github.com/singular-aircraft/openuai">GitHub</a>
+    </div>
+    <p class="version-note">Available for Linux (amd64, arm64), macOS (universal), and Windows (amd64)</p>
+  </section>
+
+  <section class="features">
+    <div class="feature">
+      <h3>Autonomous Agent</h3>
+      <p>Plan-first execution with full tool access: filesystem, Bash, Git, web browsing. The agent works autonomously and reports back.</p>
+    </div>
+    <div class="feature">
+      <h3>Event-Driven</h3>
+      <p>Subscribe to WhatsApp, Teams, email, webhooks, and more. Define rules and the agent reacts to events automatically.</p>
+    </div>
+    <div class="feature">
+      <h3>Multi-Agent</h3>
+      <p>Spawn concurrent sub-agents for parallel task execution. The parent decomposes complex tasks into independent sub-tasks.</p>
+    </div>
+    <div class="feature">
+      <h3>MCP Compatible</h3>
+      <p>Connect to any MCP server to extend capabilities. Use community connectors for Slack, Notion, Google Drive, and more.</p>
+    </div>
+    <div class="feature">
+      <h3>Voice Interface</h3>
+      <p>Push-to-talk speech input with Whisper transcription and text-to-speech output. Auto-detects language.</p>
+    </div>
+    <div class="feature">
+      <h3>Single Binary</h3>
+      <p>No Docker, no Node, no Python. Download one file and run it. Built with Go + Wails for native performance.</p>
+    </div>
+    <div class="feature">
+      <h3>System Tray</h3>
+      <p>Runs in background with native OS notifications. Quick actions from the tray menu, hide on close.</p>
+    </div>
+    <div class="feature">
+      <h3>REST API</h3>
+      <p>Run headless as a local API server. 18 endpoints + WebSocket for real-time integration with other apps.</p>
+    </div>
+    <div class="feature">
+      <h3>Cost Tracking</h3>
+      <p>Real-time token usage, cost per request, accumulated costs. Track spending across all LLM providers.</p>
+    </div>
+  </section>
+
+  <section class="getting-started">
+    <h2>Getting Started</h2>
+    <div class="code-block">
+      <span class="comment"># Download the latest release for your platform</span><br>
+      <span class="cmd">curl -LO https://github.com/singular-aircraft/openuai/releases/latest/download/openuai-linux-amd64</span><br><br>
+      <span class="comment"># Make it executable</span><br>
+      <span class="cmd">chmod +x openuai-linux-amd64</span><br><br>
+      <span class="comment"># Run it</span><br>
+      <span class="cmd">./openuai-linux-amd64</span>
+    </div>
+    <div class="code-block">
+      <span class="comment"># Or build from source</span><br>
+      <span class="cmd">git clone https://github.com/singular-aircraft/openuai.git</span><br>
+      <span class="cmd">cd openuai && wails build</span>
+    </div>
+  </section>
+
+  <section class="arch">
+    <h2>Architecture</h2>
+    <pre>
+┌──────────────────────────────────────────────────────────────┐
+│                    openuai (single binary)                    │
+│                                                              │
+│  [Event Sources]        [Engine]            [Actions]        │
+│   WhatsApp ──┐                             ┌── Filesystem    │
+│   Email ─────┤                             ├── Reply         │
+│   Webhooks ──┤                             ├── Bash/Git      │
+│   Teams ─────┼→ Event Bus → LLM ────┐     ├── APIs          │
+│   Slack ─────┤              Agent   ├→ Agent├── Voice Out    │
+│   Cron ──────┤                      │      └── Notify        │
+│   Clipboard ─┘                      │                        │
+│                                     ├→ Sub-Agent (parallel)  │
+│                                     └→ Sub-Agent (parallel)  │
+│                                                              │
+│  [System Tray]  [Embedded UI]  [LLM Client]  [Cost Tracker] │
+│  [Memory]       [MCP Client/Server]  [REST API]  [Voice In] │
+└──────────────────────────────────────────────────────────────┘</pre>
+  </section>
+
+  <footer>
+    OpenUAI is open source under Commons Clause + MIT license.
+    <br>
+    <a href="https://github.com/singular-aircraft/openuai">GitHub</a> &middot;
+    <a href="https://github.com/singular-aircraft/openuai/releases">Releases</a> &middot;
+    <a href="https://github.com/singular-aircraft/openuai/issues">Issues</a>
+  </footer>
+</body>
+</html>

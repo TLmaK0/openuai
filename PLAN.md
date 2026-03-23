@@ -43,13 +43,13 @@
 - Real-time logs
 - Basic chat interface with the agent
 
-## Phase 5: Distribution (first usable release)
+## Phase 5: Distribution (first usable release) ✅
 
 - Public GitHub repository
-- CI/CD with GitHub Actions for multi-platform builds
-- Automatic releases: binary per OS/arch on GitHub Releases
-- **GitHub Pages landing site**: project description, features, download links per OS/arch, getting started guide
-- First public release: functional agent with LLM + actions + UI
+- CI/CD with GitHub Actions for multi-platform builds (Linux amd64/arm64, macOS universal, Windows amd64)
+- Automatic releases: binary per OS/arch on GitHub Releases (triggered on `v*` tags)
+- **GitHub Pages landing site** ✅: `docs/index.html` — features, download links, getting started, architecture diagram
+- First public release: tag `v0.1.0` to trigger
 
 ## Phase 6: Event Bus ✅
 
