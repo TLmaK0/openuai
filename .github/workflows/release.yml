@@ -62,7 +62,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cd build/bin
-          zip -r ${{ matrix.output }}.zip ${{ matrix.output }}.app
+          # Wails produces openuai.app regardless of -o flag
+          zip -r ${{ matrix.output }}.zip openuai.app
 
       - name: Upload artifact (macOS)
         if: runner.os == 'macOS'
