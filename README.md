@@ -1,6 +1,6 @@
 # OpenUAI — Open Unmanned Artificial Intelligence
 
-> **[Website](https://tlmak0.github.io/openuai/)** · **[Download](https://github.com/TLmaK0/openuai/releases/latest)** · **[Issues](https://github.com/TLmaK0/openuai/issues)**
+> **[Website](https://openuai.pages.dev)** · **[Download](https://github.com/TLmaK0/openuai/releases/latest)** · **[Issues](https://github.com/TLmaK0/openuai/issues)**
 
 Autonomous AI agent that reacts to events, executes tasks, and runs as a single binary on any OS. Full system access — file management, shell execution, git operations, web browsing, voice, and more.
 
