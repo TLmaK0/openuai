@@ -97,6 +97,10 @@ wails build
 └──────────────────────────────────────────────────────────────┘
 ```
 
+## Disclaimer
+
+> **USE AT YOUR OWN RISK.** This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not responsible for any damage, data loss, security issues, costs incurred (including LLM API charges), or any other consequences resulting from the use of this software. This software can execute arbitrary commands on your system, access files, and interact with external services — it is your responsibility to review and approve actions before they are executed. By using this software, you accept full responsibility for its use.
+
 ## License
 
 Commons Clause + MIT
