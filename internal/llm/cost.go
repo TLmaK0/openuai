@@ -53,6 +53,20 @@ func (ct *CostTracker) Track(resp *Response) CostEntry {
 	return entry
 }
 
+// TrackDirect records a cost entry with a pre-computed cost (e.g. voice API calls).
+func (ct *CostTracker) TrackDirect(model string, costUSD float64) CostEntry {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	entry := CostEntry{
+		Timestamp: time.Now(),
+		Model:     model,
+		CostUSD:   costUSD,
+	}
+	ct.entries = append(ct.entries, entry)
+	return entry
+}
+
 func (ct *CostTracker) Summary() CostSummary {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()

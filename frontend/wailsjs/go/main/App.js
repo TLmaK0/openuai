@@ -18,6 +18,14 @@ export function DeleteSession(arg1) {
   return window['go']['main']['App']['DeleteSession'](arg1);
 }
 
+export function GetAudioDevice() {
+  return window['go']['main']['App']['GetAudioDevice']();
+}
+
+export function GetAudioDevices() {
+  return window['go']['main']['App']['GetAudioDevices']();
+}
+
 export function GetCostSummary() {
   return window['go']['main']['App']['GetCostSummary']();
 }
@@ -46,6 +54,10 @@ export function GetModels() {
   return window['go']['main']['App']['GetModels']();
 }
 
+export function GetNotificationsEnabled() {
+  return window['go']['main']['App']['GetNotificationsEnabled']();
+}
+
 export function GetProvider() {
   return window['go']['main']['App']['GetProvider']();
 }
@@ -54,12 +66,20 @@ export function GetProviders() {
   return window['go']['main']['App']['GetProviders']();
 }
 
-export function GetRules() {
-  return window['go']['main']['App']['GetRules']();
+export function GetSTTLanguage() {
+  return window['go']['main']['App']['GetSTTLanguage']();
 }
 
 export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
+}
+
+export function GetTTSVoice() {
+  return window['go']['main']['App']['GetTTSVoice']();
+}
+
+export function GetVoiceEnabled() {
+  return window['go']['main']['App']['GetVoiceEnabled']();
 }
 
 export function GetWatchedChats() {
@@ -76,10 +96,6 @@ export function OpenAIIsLoggedIn() {
 
 export function OpenAILogin() {
   return window['go']['main']['App']['OpenAILogin']();
-}
-
-export function ReloadRules() {
-  return window['go']['main']['App']['ReloadRules']();
 }
 
 export function RemoveMCPServer(arg1) {
@@ -106,12 +122,52 @@ export function SetAPIKey(arg1) {
   return window['go']['main']['App']['SetAPIKey'](arg1);
 }
 
+export function SetAudioDevice(arg1) {
+  return window['go']['main']['App']['SetAudioDevice'](arg1);
+}
+
 export function SetDefaultModel(arg1) {
   return window['go']['main']['App']['SetDefaultModel'](arg1);
 }
 
 export function SetProvider(arg1) {
   return window['go']['main']['App']['SetProvider'](arg1);
+}
+
+export function SetSTTLanguage(arg1) {
+  return window['go']['main']['App']['SetSTTLanguage'](arg1);
+}
+
+export function SetTTSVoice(arg1) {
+  return window['go']['main']['App']['SetTTSVoice'](arg1);
+}
+
+export function SetVoiceEnabled(arg1) {
+  return window['go']['main']['App']['SetVoiceEnabled'](arg1);
+}
+
+export function SpeakText(arg1) {
+  return window['go']['main']['App']['SpeakText'](arg1);
+}
+
+export function StartRecording() {
+  return window['go']['main']['App']['StartRecording']();
+}
+
+export function StopRecording() {
+  return window['go']['main']['App']['StopRecording']();
+}
+
+export function ToggleNotifications(arg1) {
+  return window['go']['main']['App']['ToggleNotifications'](arg1);
+}
+
+export function TrackSentMessageID(arg1) {
+  return window['go']['main']['App']['TrackSentMessageID'](arg1);
+}
+
+export function TranscribeAudio(arg1) {
+  return window['go']['main']['App']['TranscribeAudio'](arg1);
 }
 
 export function UnwatchChat(arg1) {

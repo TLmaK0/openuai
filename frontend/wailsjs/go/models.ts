@@ -183,93 +183,21 @@ export namespace main {
 
 }
 
-export namespace rules {
+export namespace voice {
 	
-	export class Action {
-	    type: string;
-	    template?: string;
-	    prompt?: string;
-	    path?: string;
-	    command?: string;
-	    url?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Action(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.type = source["type"];
-	        this.template = source["template"];
-	        this.prompt = source["prompt"];
-	        this.path = source["path"];
-	        this.command = source["command"];
-	        this.url = source["url"];
-	    }
-	}
-	export class Trigger {
-	    source: string;
-	    type: string;
-	    sender?: string;
-	    keyword?: string;
-	    regex?: string;
-	    schedule?: string;
-	    metadata?: Record<string, string>;
-	
-	    static createFrom(source: any = {}) {
-	        return new Trigger(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.source = source["source"];
-	        this.type = source["type"];
-	        this.sender = source["sender"];
-	        this.keyword = source["keyword"];
-	        this.regex = source["regex"];
-	        this.schedule = source["schedule"];
-	        this.metadata = source["metadata"];
-	    }
-	}
-	export class Rule {
+	export class AudioDevice {
 	    id: string;
 	    name: string;
-	    description?: string;
-	    enabled: boolean;
-	    trigger: Trigger;
-	    actions: Action[];
 	
 	    static createFrom(source: any = {}) {
-	        return new Rule(source);
+	        return new AudioDevice(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
-	        this.description = source["description"];
-	        this.enabled = source["enabled"];
-	        this.trigger = this.convertValues(source["trigger"], Trigger);
-	        this.actions = this.convertValues(source["actions"], Action);
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 
 }

@@ -34,6 +34,11 @@ type Config struct {
 	NotificationsEnabled   *bool            `json:"notifications_enabled,omitempty"`
 	APIEnabled             bool             `json:"api_enabled,omitempty"`
 	APIPort                int              `json:"api_port,omitempty"`
+	VoiceEnabled           *bool            `json:"voice_enabled,omitempty"`
+	TTSVoice               string           `json:"tts_voice,omitempty"`
+	STTModel               string           `json:"stt_model,omitempty"`
+	STTLanguage            string           `json:"stt_language,omitempty"`
+	AudioDevice            string           `json:"audio_device,omitempty"`
 	path               string
 }
 

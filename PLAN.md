@@ -122,12 +122,15 @@ which is handled by `watch_chat` / `unwatch_chat` tools.
 - **Config** ✅: `notifications_enabled` persisted, toggleable from tray menu + Wails API
 - Embedded auto-update (check + download new version) — deferred to future phase
 
-## Phase 14: Voice
+## Phase 14: Voice ✅
 
-- Speech-to-text input (whisper.cpp embedded or cloud STT API)
-- Text-to-speech output (local TTS or cloud API)
-- Voice activation: wake word or push-to-talk
-- Conversation mode: back-and-forth voice dialog with the agent
+- **STT** ✅: Push-to-talk mic button → `MediaRecorder` (webm/opus) → base64 → OpenAI Whisper API via ChatGPT OAuth tokens
+- **TTS** ✅: Speaker icon on assistant messages → OpenAI TTS API via ChatGPT OAuth tokens → mp3 playback
+- **Auth**: Reuses existing ChatGPT OAuth tokens (`api.openai.com/v1/audio/*`) — no separate API key needed
+- **Cost tracking** ✅: Whisper ($0.006/min) and TTS ($0.015/1K chars) tracked via `TrackDirect` on CostTracker
+- **Config** ✅: `voice_enabled`, `tts_voice` (10 voice options) persisted in config
+- **MIME fallback**: tries `audio/webm;codecs=opus` → `audio/webm` → `audio/ogg;codecs=opus` → `audio/mp4`
+- Voice activation (wake word) and conversation mode: deferred to future iteration
 
 ## Phase 15: Marketplace
 

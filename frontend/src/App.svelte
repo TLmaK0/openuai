@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool } from '../wailsjs/go/main/App';
+  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -55,6 +55,34 @@
   let mcpQrLoading = false;
   let mcpQrServer = '';
 
+  // Voice
+  let recording = false;
+  let transcribing = false;
+  let voiceLevel = 0;
+  let audioDevices = [];
+  let selectedDevice = '';
+  let speaking = false;
+  let voiceEnabled = true;
+  let ttsVoice = 'es';
+  const ttsVoices = ['es', 'en', 'fr', 'de', 'it', 'pt', 'ja', 'zh'];
+  let sttLanguage = 'auto';
+  const sttLanguages = [
+    { code: 'auto', label: 'Auto-detect' },
+    { code: 'es', label: 'Español' },
+    { code: 'en', label: 'English' },
+    { code: 'fr', label: 'Français' },
+    { code: 'de', label: 'Deutsch' },
+    { code: 'it', label: 'Italiano' },
+    { code: 'pt', label: 'Português' },
+    { code: 'ja', label: '日本語' },
+    { code: 'zh', label: '中文' },
+    { code: 'ko', label: '한국어' },
+    { code: 'ar', label: 'العربية' },
+    { code: 'ru', label: 'Русский' },
+    { code: 'nl', label: 'Nederlands' },
+    { code: 'ca', label: 'Català' },
+  ];
+
   $: isReady = provider === 'openai' ? openaiLoggedIn : hasKey;
 
   onMount(async () => {
@@ -64,6 +92,11 @@
     openaiLoggedIn = await OpenAIIsLoggedIn();
     models = await GetModels();
     selectedModel = await GetDefaultModel();
+    voiceEnabled = await GetVoiceEnabled();
+    ttsVoice = await GetTTSVoice();
+    sttLanguage = await GetSTTLanguage();
+    audioDevices = await GetAudioDevices() || [];
+    selectedDevice = await GetAudioDevice();
     if (!isReady) showSettings = true;
 
     // Listen for agent steps — group consecutive tool calls into one collapsible block
@@ -123,6 +156,11 @@
     // Listen for event bus events
     EventsOn('event_received', (event) => {
       eventLog = [...eventLog.slice(-99), event];
+    });
+
+    // Listen for voice level updates
+    EventsOn('voice_level', (level) => {
+      voiceLevel = level;
     });
 
     // Listen for permission requests
@@ -316,6 +354,60 @@
     await refreshMCPServers();
   }
 
+  async function toggleRecording() {
+    if (recording) {
+      // Stop recording, transcribe, and auto-send
+      recording = false;
+      voiceLevel = 0;
+      transcribing = true;
+      const result = await StopRecording();
+      transcribing = false;
+      if (result.error) {
+        alert('Voice error: ' + result.error);
+      } else if (result.text) {
+        input = result.text;
+        await send();
+      }
+      return;
+    }
+
+    // Start recording via backend (parecord/arecord)
+    const err = await StartRecording();
+    if (err) {
+      alert('Recording error: ' + err);
+      return;
+    }
+    recording = true;
+  }
+
+  async function speakMessage(text) {
+    if (speaking) return;
+    // Strip markdown for cleaner speech
+    const clean = text.replace(/[#*_`~\[\]()>|]/g, '').replace(/\n+/g, ' ').trim();
+    if (!clean) return;
+
+    speaking = true;
+    const result = await SpeakText(clean);
+    speaking = false;
+
+    if (result.error) {
+      alert('TTS failed: ' + result.error);
+      return;
+    }
+
+    const fmt = result.format || 'wav';
+    const audio = new Audio('data:audio/' + fmt + ';base64,' + result.audio_base64);
+    audio.play();
+  }
+
+  async function changeTTSVoice() {
+    await SetTTSVoice(ttsVoice);
+  }
+
+  async function changeSTTLanguage() {
+    await SetSTTLanguage(sttLanguage);
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -393,6 +485,36 @@
           {/each}
         </select>
       </div>
+
+      <div class="setting-row">
+        <label>Voice</label>
+        <select bind:value={ttsVoice} on:change={changeTTSVoice}>
+          {#each ttsVoices as v}
+            <option value={v}>{v}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <label>STT Language</label>
+        <select bind:value={sttLanguage} on:change={changeSTTLanguage}>
+          {#each sttLanguages as lang}
+            <option value={lang.code}>{lang.label}</option>
+          {/each}
+        </select>
+      </div>
+
+      {#if audioDevices.length > 0}
+        <div class="setting-row">
+          <label>Mic</label>
+          <select bind:value={selectedDevice} on:change={() => SetAudioDevice(selectedDevice)}>
+            <option value="">Default</option>
+            {#each audioDevices as dev}
+              <option value={dev.id}>{dev.name}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
 
       <div class="mcp-settings">
         <div class="mcp-settings-header">
@@ -567,6 +689,13 @@
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
           <div class="message-content markdown">{@html marked(msg.content)}</div>
+          <button class="speak-btn" on:click={() => speakMessage(msg.content)} disabled={speaking} title="Read aloud">
+            {#if speaking}
+              ...
+            {:else}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+            {/if}
+          </button>
         </div>
       {:else if msg.role === 'tools'}
         <div class="tool-group" class:expanded={msg.expanded}>
@@ -623,6 +752,20 @@
   </div>
 
   <div class="input-area">
+    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:click={toggleRecording} disabled={loading || transcribing} title={recording ? 'Stop recording' : transcribing ? 'Transcribing...' : 'Push to talk'}>
+      {#if recording}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
+      {:else if transcribing}
+        ...
+      {:else}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      {/if}
+    </button>
+    {#if recording}
+      <div class="voice-meter">
+        <div class="voice-meter-bar" style="width: {voiceLevel}%"></div>
+      </div>
+    {/if}
     <textarea
       bind:this={textareaEl}
       bind:value={input}
@@ -1148,6 +1291,69 @@
   .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .clear-btn { background: #0f3460 !important; }
+
+  /* Voice */
+  .mic-btn {
+    padding: 0.5rem;
+    background: #0f3460;
+    border: none;
+    color: #eee;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    min-width: 38px;
+    transition: background 0.2s;
+  }
+  .mic-btn:hover { background: #1a4a8a; }
+  .mic-recording {
+    background: #e94560 !important;
+    animation: pulse-red 1s infinite;
+  }
+  .mic-transcribing {
+    background: #e9a045 !important;
+    cursor: wait;
+  }
+  @keyframes pulse-red {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  .voice-meter {
+    width: 60px;
+    height: 28px;
+    background: #0d1b2a;
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    align-items: flex-end;
+    border: 1px solid #0f3460;
+  }
+  .voice-meter-bar {
+    height: 100%;
+    background: linear-gradient(to right, #53d769, #e9a045, #e94560);
+    transition: width 0.1s ease;
+    border-radius: 3px;
+    min-width: 2px;
+  }
+
+  .speak-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 2px 5px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .message.assistant { position: relative; }
+  .message.assistant:hover .speak-btn { opacity: 1; }
+  .speak-btn:hover { color: #53d769; background: rgba(255,255,255,0.05); }
+  .speak-btn:disabled { cursor: wait; opacity: 0.5 !important; }
 
   /* Events panel */
   .events-panel {

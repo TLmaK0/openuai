@@ -17,6 +17,7 @@ import (
 	"openuai/internal/memory"
 	"openuai/internal/tools"
 	"openuai/internal/tray"
+	"openuai/internal/voice"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -35,6 +36,7 @@ type App struct {
 
 	mcpManager  *mcpclient.Manager
 	apiServer   *api.Server
+	recorder    *voice.Recorder
 
 	permMu       sync.Mutex
 	permResponse chan permAnswer
@@ -111,6 +113,13 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	a.openai = llm.NewOpenAIProvider(a.oauth)
+
+	// Voice recorder (uses local parecord/arecord + whisper + espeak-ng)
+	a.recorder = voice.NewRecorder()
+	a.recorder.Device = cfg.AudioDevice
+	a.recorder.OnLevel = func(level int) {
+		wailsRuntime.EventsEmit(a.ctx, "voice_level", level)
+	}
 
 	// Memory store
 	a.memoryStore = memory.New(filepath.Join(cfg.ConfigDir(), "memory"))
@@ -778,6 +787,108 @@ func (a *App) CallMCPTool(serverName, toolName string, args map[string]string) s
 		return `{"error":"` + output + `"}`
 	}
 	return output
+}
+
+// --- Voice ---
+
+// StartRecording begins capturing audio from the system microphone.
+func (a *App) StartRecording() string {
+	if err := a.recorder.Start(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// StopRecording stops capturing and transcribes the audio via Whisper.
+func (a *App) StopRecording() map[string]interface{} {
+	audioBase64, err := a.recorder.Stop()
+	if err != nil {
+		return map[string]interface{}{"error": err.Error()}
+	}
+	return a.TranscribeAudio(audioBase64)
+}
+
+// TranscribeAudio transcribes base64-encoded audio using local Whisper.
+func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
+	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage)
+	return map[string]interface{}{
+		"text":  result.Text,
+		"error": result.Error,
+	}
+}
+
+// SpeakText converts text to speech using local espeak-ng.
+func (a *App) SpeakText(text string) map[string]interface{} {
+	ttsVoice := a.cfg.TTSVoice
+	if ttsVoice == "" {
+		ttsVoice = "es"
+	}
+	result := voice.Speak(text, ttsVoice)
+	return map[string]interface{}{
+		"audio_base64": result.AudioBase64,
+		"format":       result.Format,
+		"char_count":   result.CharCount,
+		"error":        result.Error,
+	}
+}
+
+// GetTTSVoice returns the configured TTS voice name.
+func (a *App) GetTTSVoice() string {
+	if a.cfg.TTSVoice == "" {
+		return "es"
+	}
+	return a.cfg.TTSVoice
+}
+
+// SetTTSVoice sets the TTS voice and persists.
+func (a *App) SetTTSVoice(v string) error {
+	a.cfg.TTSVoice = v
+	return a.cfg.Save()
+}
+
+// GetSTTLanguage returns the configured STT language (empty or "auto" = auto-detect).
+func (a *App) GetSTTLanguage() string {
+	if a.cfg.STTLanguage == "" {
+		return "auto"
+	}
+	return a.cfg.STTLanguage
+}
+
+// SetSTTLanguage sets the STT language and persists.
+func (a *App) SetSTTLanguage(lang string) error {
+	a.cfg.STTLanguage = lang
+	return a.cfg.Save()
+}
+
+// GetVoiceEnabled returns whether voice features are enabled.
+func (a *App) GetVoiceEnabled() bool {
+	if a.cfg.VoiceEnabled == nil {
+		return true // enabled by default when OpenAI is logged in
+	}
+	return *a.cfg.VoiceEnabled
+}
+
+// GetAudioDevices returns available microphone devices.
+func (a *App) GetAudioDevices() []voice.AudioDevice {
+	return voice.ListDevices()
+}
+
+// GetAudioDevice returns the configured audio device ID.
+func (a *App) GetAudioDevice() string {
+	return a.cfg.AudioDevice
+}
+
+// SetAudioDevice sets the audio input device and persists.
+func (a *App) SetAudioDevice(deviceID string) error {
+	a.cfg.AudioDevice = deviceID
+	a.recorder.Device = deviceID
+	return a.cfg.Save()
+}
+
+// SetVoiceEnabled toggles voice features.
+func (a *App) SetVoiceEnabled(enabled bool) error {
+	a.cfg.VoiceEnabled = &enabled
+	return a.cfg.Save()
 }
 
 // RemoveMCPServer removes an MCP server configuration by name.

@@ -60,3 +60,18 @@ func (r *Registry) Definitions() []Definition {
 	}
 	return out
 }
+
+// Without returns a new Registry that contains all tools except the named ones.
+func (r *Registry) Without(names ...string) *Registry {
+	exclude := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		exclude[n] = struct{}{}
+	}
+	nr := NewRegistry()
+	for name, t := range r.tools {
+		if _, skip := exclude[name]; !skip {
+			nr.tools[name] = t
+		}
+	}
+	return nr
+}
