@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"strings"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -14,9 +15,13 @@ var assets embed.FS
 //go:embed build/appicon.png
 var appIcon []byte
 
+//go:embed whisper-version.txt
+var whisperVersion string
+
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
+	app.whisperVersion = strings.TrimSpace(whisperVersion)
 
 	// Create application with options
 	err := wails.Run(&options.App{

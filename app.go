@@ -18,6 +18,7 @@ import (
 	"openuai/internal/tools"
 	"openuai/internal/tray"
 	"openuai/internal/voice"
+	"openuai/internal/whisper"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -36,7 +37,8 @@ type App struct {
 
 	mcpManager  *mcpclient.Manager
 	apiServer   *api.Server
-	recorder    *voice.Recorder
+	recorder       *voice.Recorder
+	whisperVersion string
 
 	permMu       sync.Mutex
 	permResponse chan permAnswer
@@ -86,6 +88,17 @@ func (a *App) startup(ctx context.Context) {
 	logger.Info("OpenUAI starting up")
 	logger.Info("Config dir: %s", cfg.ConfigDir())
 	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
+
+	// Auto-download whisper-cli + model in background
+	go func() {
+		sttModel := cfg.STTModel
+		if sttModel == "" {
+			sttModel = "small"
+		}
+		if err := whisper.EnsureReady(cfg.ConfigDir(), a.whisperVersion, sttModel); err != nil {
+			logger.Error("Whisper setup: %s", err.Error())
+		}
+	}()
 
 	// Claude provider
 	a.claude = llm.NewClaudeProvider(cfg.ClaudeAPIKey)
@@ -810,7 +823,7 @@ func (a *App) StopRecording() map[string]interface{} {
 
 // TranscribeAudio transcribes base64-encoded audio using local Whisper.
 func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
-	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage)
+	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage, a.cfg.ConfigDir())
 	return map[string]interface{}{
 		"text":  result.Text,
 		"error": result.Error,

@@ -1,0 +1,115 @@
+name: Whisper.cpp Binaries
+
+on:
+  push:
+    branches: [master]
+    paths: [whisper-version.txt]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: whisper-cli-linux-amd64
+            cuda: false
+            cmake_flags: ""
+          - os: ubuntu-latest
+            name: whisper-cli-linux-amd64-cuda
+            cuda: true
+            cmake_flags: "-DGGML_CUDA=ON"
+          - os: ubuntu-24.04-arm
+            name: whisper-cli-linux-arm64
+            cuda: false
+            cmake_flags: ""
+          - os: macos-latest
+            name: whisper-cli-macos-universal
+            cuda: false
+            cmake_flags: '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64'
+          - os: windows-latest
+            name: whisper-cli-windows-amd64.exe
+            cuda: false
+            cmake_flags: ""
+          - os: windows-latest
+            name: whisper-cli-windows-amd64-cuda.exe
+            cuda: true
+            cmake_flags: "-DGGML_CUDA=ON"
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read whisper version
+        id: version
+        shell: bash
+        run: echo "version=$(cat whisper-version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout whisper.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggerganov/whisper.cpp
+          ref: v${{ steps.version.outputs.version }}
+          path: whisper-cpp-src
+
+      - name: Install CUDA toolkit
+        if: matrix.cuda
+        uses: Jimver/cuda-toolkit@v0.2.23
+        with:
+          cuda: '12.6.3'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+
+      - name: Configure CMake
+        shell: bash
+        run: cmake -B build -S whisper-cpp-src -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }}
+
+      - name: Build whisper-cli
+        shell: bash
+        run: cmake --build build --config Release --target whisper-cli -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cp build/bin/Release/whisper-cli.exe ${{ matrix.name }} 2>/dev/null || cp build/bin/whisper-cli.exe ${{ matrix.name }}
+          else
+            cp build/bin/whisper-cli ${{ matrix.name }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read whisper version
+        id: version
+        run: echo "version=$(cat whisper-version.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: whisper-cpp-v${{ steps.version.outputs.version }}
+          name: "Whisper.cpp v${{ steps.version.outputs.version }}"
+          body: "Pre-built whisper-cli binaries (CPU + CUDA) for openuai voice support."
+          make_latest: false
+          files: artifacts/**/*
