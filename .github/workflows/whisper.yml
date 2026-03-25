@@ -3,7 +3,9 @@ name: Whisper.cpp Binaries
 on:
   push:
     branches: [master]
-    paths: [whisper-version.txt]
+    paths:
+      - whisper-version.txt
+      - .github/workflows/whisper.yml
 
 permissions:
   contents: write
