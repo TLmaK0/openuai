@@ -56,8 +56,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.23
         with:
           cuda: '12.6.3'
-          method: network
-          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev"]'
+          method: local
 
       - name: Install CUDA toolkit (Windows)
         if: matrix.cuda && runner.os == 'Windows'
