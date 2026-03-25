@@ -354,30 +354,30 @@
     await refreshMCPServers();
   }
 
-  async function toggleRecording() {
-    if (recording) {
-      // Stop recording, transcribe, and auto-send
-      recording = false;
-      voiceLevel = 0;
-      transcribing = true;
-      const result = await StopRecording();
-      transcribing = false;
-      if (result.error) {
-        alert('Voice error: ' + result.error);
-      } else if (result.text) {
-        input = result.text;
-        await send();
-      }
-      return;
-    }
-
-    // Start recording via backend (parecord/arecord)
+  async function startRecording() {
+    if (recording || transcribing || loading) return;
     const err = await StartRecording();
     if (err) {
       alert('Recording error: ' + err);
       return;
     }
     recording = true;
+  }
+
+  async function stopRecordingAndSend() {
+    if (!recording) return;
+    recording = false;
+    voiceLevel = 0;
+    // Keep recording 1s more to capture trailing words
+    await new Promise(r => setTimeout(r, 1000));
+    transcribing = true;
+    const result = await StopRecording();
+    transcribing = false;
+    if (result.error) return;
+    if (result.text) {
+      input = result.text;
+      await send();
+    }
   }
 
   async function speakMessage(text) {
@@ -752,7 +752,7 @@
   </div>
 
   <div class="input-area">
-    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:click={toggleRecording} disabled={loading || transcribing} title={recording ? 'Stop recording' : transcribing ? 'Transcribing...' : 'Push to talk'}>
+    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
       {:else if transcribing}
@@ -766,13 +766,16 @@
         <div class="voice-meter-bar" style="width: {voiceLevel}%"></div>
       </div>
     {/if}
+    {#if transcribing}
+      <div class="transcribing-indicator">Transcribing...</div>
+    {/if}
     <textarea
       bind:this={textareaEl}
       bind:value={input}
       on:keydown={handleKeydown}
-      placeholder="Give me a task..."
+      placeholder={transcribing ? 'Transcribing...' : 'Give me a task...'}
       rows="1"
-      disabled={loading || !isReady}
+      disabled={loading || !isReady || transcribing}
     ></textarea>
     <button on:click={send} disabled={loading || !isReady || !input.trim()}>Send</button>
     <button class="clear-btn" on:click={clearChat}>Clear</button>
@@ -1334,6 +1337,17 @@
     transition: width 0.1s ease;
     border-radius: 3px;
     min-width: 2px;
+  }
+
+  .transcribing-indicator {
+    font-size: 0.8em;
+    color: #e9a045;
+    animation: pulse-transcribing 1.2s ease-in-out infinite;
+    white-space: nowrap;
+  }
+  @keyframes pulse-transcribing {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
   }
 
   .speak-btn {

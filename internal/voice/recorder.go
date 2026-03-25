@@ -187,9 +187,16 @@ func (r *Recorder) Stop() (string, error) {
 		close(r.stopCh)
 	}
 
-	// Send SIGTERM to stop gracefully
+	// Send SIGINT and give recorder time to flush remaining audio
 	r.cmd.Process.Signal(os.Interrupt)
-	r.cmd.Wait()
+	done := make(chan struct{})
+	go func() { r.cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		r.cmd.Process.Kill()
+		<-done
+	}
 	r.active = false
 
 	logger.Info("Voice recording stopped")
@@ -205,8 +212,45 @@ func (r *Recorder) Stop() (string, error) {
 		return "", fmt.Errorf("recording too short")
 	}
 
+	// Fix WAV header — parecord/arecord may not update sizes after SIGINT
+	data = fixWAVHeader(data)
+
 	logger.Info("Voice recording: %d bytes captured", len(data))
 	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// fixWAVHeader corrects the RIFF and data chunk sizes in the WAV header
+// to match the actual file size. Recorders killed with SIGINT often leave
+// the header with size=0 or a stale value, causing decoders to ignore
+// trailing audio data.
+func fixWAVHeader(data []byte) []byte {
+	if len(data) < 44 {
+		return data
+	}
+	// Verify RIFF header
+	if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
+		return data
+	}
+
+	fileSize := uint32(len(data))
+
+	// Fix RIFF chunk size (bytes 4-7): fileSize - 8
+	binary.LittleEndian.PutUint32(data[4:8], fileSize-8)
+
+	// Find "data" sub-chunk and fix its size
+	pos := 12
+	for pos+8 <= len(data) {
+		chunkID := string(data[pos : pos+4])
+		if chunkID == "data" {
+			dataSize := fileSize - uint32(pos) - 8
+			binary.LittleEndian.PutUint32(data[pos+4:pos+8], dataSize)
+			break
+		}
+		chunkSize := binary.LittleEndian.Uint32(data[pos+4 : pos+8])
+		pos += 8 + int(chunkSize)
+	}
+
+	return data
 }
 
 // IsRecording returns whether recording is active.
