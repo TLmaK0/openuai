@@ -57,7 +57,7 @@ jobs:
         with:
           cuda: '12.6.3'
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas-dev"]'
+          sub-packages: '["nvcc", "cudart", "libcublas", "libcublas-dev"]'
 
       - name: Install CUDA toolkit (Windows)
         if: matrix.cuda && runner.os == 'Windows'
