@@ -91,10 +91,12 @@ func (a *App) startup(ctx context.Context) {
 	logger.Info("Config dir: %s", cfg.ConfigDir())
 	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
 
-	// Check for updates in background
+	// Check for updates in background (delay to let frontend mount and register event listeners)
 	go func() {
+		time.Sleep(3 * time.Second)
 		info := updater.CheckForUpdate(a.version, cfg.SkippedVersion)
 		if info != nil {
+			logger.Info("Emitting update_available event to frontend")
 			wailsRuntime.EventsEmit(a.ctx, "update_available", info)
 		}
 	}()
