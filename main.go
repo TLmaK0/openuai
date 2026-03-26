@@ -9,6 +9,9 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=vX.Y.Z"
+var Version = "dev"
+
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -22,6 +25,7 @@ func main() {
 	// Create an instance of the app structure
 	app := NewApp()
 	app.whisperVersion = strings.TrimSpace(whisperVersion)
+	app.version = Version
 
 	// Create application with options
 	err := wails.Run(&options.App{

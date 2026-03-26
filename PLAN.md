@@ -2,14 +2,14 @@
 
 > This document collects the initial ideas to later generate the definitive plan.
 
-## Phase 1: Project Skeleton
+## Phase 1: Project Skeleton ✅
 
 - Initialize Go project with Wails v2
 - Base folder structure (cmd/, internal/, frontend/)
 - Basic build that produces a binary with an empty UI (hello world)
 - Verify cross-platform compilation (Linux, macOS, Windows)
 
-## Phase 2: LLM Client + Cost Tracking
+## Phase 2: LLM Client + Cost Tracking ✅
 
 - HTTP client for LLM APIs (Claude, OpenAI, Ollama local)
 - API keys and model configuration from the UI
@@ -18,7 +18,7 @@
 - Support for tool use / function calling
 - **Token cost tracking**: real-time display of input/output tokens, cost per request, accumulated cost per session/day/month, configurable budget alerts
 
-## Phase 3: Agent Actions & Autonomy
+## Phase 3: Agent Actions & Autonomy ✅
 
 - Filesystem access (read, write, organize files)
 - Bash/shell execution (scripts, CLI tools, build commands)
@@ -35,7 +35,7 @@
   - No confirmation needed (pre-approved safe commands)
 - Plan persistence: save plan to disk so it survives interruptions
 
-## Phase 4: Minimal UI
+## Phase 4: Minimal UI ✅
 
 - Frontend with Svelte or React embedded via Wails
 - Dashboard: recent events, connector status

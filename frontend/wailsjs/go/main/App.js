@@ -6,6 +6,10 @@ export function AddMCPServer(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['main']['App']['AddMCPServer'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
+export function ApplyUpdate(arg1) {
+  return window['go']['main']['App']['ApplyUpdate'](arg1);
+}
+
 export function CallMCPTool(arg1, arg2, arg3) {
   return window['go']['main']['App']['CallMCPTool'](arg1, arg2, arg3);
 }
@@ -78,6 +82,10 @@ export function GetTTSVoice() {
   return window['go']['main']['App']['GetTTSVoice']();
 }
 
+export function GetVersion() {
+  return window['go']['main']['App']['GetVersion']();
+}
+
 export function GetVoiceEnabled() {
   return window['go']['main']['App']['GetVoiceEnabled']();
 }
@@ -144,6 +152,10 @@ export function SetTTSVoice(arg1) {
 
 export function SetVoiceEnabled(arg1) {
   return window['go']['main']['App']['SetVoiceEnabled'](arg1);
+}
+
+export function SkipVersion(arg1) {
+  return window['go']['main']['App']['SkipVersion'](arg1);
 }
 
 export function SpeakText(arg1) {

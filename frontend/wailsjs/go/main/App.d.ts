@@ -8,6 +8,8 @@ import {agent} from '../models';
 
 export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>):Promise<string>;
 
+export function ApplyUpdate(arg1:string):Promise<string>;
+
 export function CallMCPTool(arg1:string,arg2:string,arg3:Record<string, string>):Promise<string>;
 
 export function ClearChat():Promise<void>;
@@ -44,6 +46,8 @@ export function GetSessions():Promise<Array<agent.SessionInfo>>;
 
 export function GetTTSVoice():Promise<string>;
 
+export function GetVersion():Promise<string>;
+
 export function GetVoiceEnabled():Promise<boolean>;
 
 export function GetWatchedChats():Promise<Array<string>>;
@@ -77,6 +81,8 @@ export function SetSTTLanguage(arg1:string):Promise<void>;
 export function SetTTSVoice(arg1:string):Promise<void>;
 
 export function SetVoiceEnabled(arg1:boolean):Promise<void>;
+
+export function SkipVersion(arg1:string):Promise<void>;
 
 export function SpeakText(arg1:string):Promise<Record<string, any>>;
 

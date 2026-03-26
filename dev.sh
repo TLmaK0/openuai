@@ -49,8 +49,10 @@ webkit_tag() {
 build() {
   local tag
   tag=$(webkit_tag)
-  echo "→ Building (tags: $tag)..."
-  wails build -tags "$tag" -o openuai
+  local version
+  version=$(git describe --tags --always 2>/dev/null || echo "dev")
+  echo "→ Building $version (tags: $tag)..."
+  wails build -tags "$tag" -o openuai -ldflags "-X main.Version=$version"
 }
 
 # Run

@@ -1,5 +1,10 @@
 # Agents Research
 
+## Versioning Policy
+
+- **Patch releases only** (v0.4.x): all new features, fixes, and improvements bump the patch version (e.g. v0.4.1 → v0.4.2 → v0.4.3).
+- **Minor version bumps** (v0.x.0): only when the user explicitly requests it. Never bump minor or major version autonomously.
+
 ## OpenUAI — Open Unmanned Artificial Intelligence
 
 **OpenUAI** stands for **Open Unmanned Artificial Intelligence** — an autonomous, open AI agent that operates independently with minimal human intervention.

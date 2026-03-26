@@ -39,6 +39,7 @@ type Config struct {
 	STTModel               string           `json:"stt_model,omitempty"`
 	STTLanguage            string           `json:"stt_language,omitempty"`
 	AudioDevice            string           `json:"audio_device,omitempty"`
+	SkippedVersion         string           `json:"skipped_version,omitempty"`
 	path               string
 }
 

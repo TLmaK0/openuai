@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage } from '../wailsjs/go/main/App';
+  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -83,6 +83,13 @@
     { code: 'ca', label: 'Català' },
   ];
 
+  // Update dialog
+  let showUpdateDialog = false;
+  let updateInfo = null;
+  let updating = false;
+  let updateError = '';
+  let appVersion = 'dev';
+
   $: isReady = provider === 'openai' ? openaiLoggedIn : hasKey;
 
   onMount(async () => {
@@ -97,7 +104,14 @@
     sttLanguage = await GetSTTLanguage();
     audioDevices = await GetAudioDevices() || [];
     selectedDevice = await GetAudioDevice();
+    appVersion = await GetVersion();
     if (!isReady) showSettings = true;
+
+    // Listen for update availability
+    EventsOn('update_available', (info) => {
+      updateInfo = info;
+      showUpdateDialog = true;
+    });
 
     // Listen for agent steps — group consecutive tool calls into one collapsible block
     // Tool group uses 'active' flag to keep showing the last tool until the group is finished
@@ -183,6 +197,22 @@
   function respondPerm(level, approved) {
     showPermDialog = false;
     RespondPermission(level, approved);
+  }
+
+  async function doUpdate() {
+    updating = true;
+    updateError = '';
+    const err = await ApplyUpdate(updateInfo.download_url);
+    if (err) {
+      updateError = err;
+      updating = false;
+    } else {
+      updateError = '';
+      showUpdateDialog = false;
+      // Show restart notice — the binary has been replaced
+      messages = [...messages, { role: 'assistant', content: `Updated to **${updateInfo.new_version}**. Please restart OpenUAI to use the new version.` }];
+      updating = false;
+    }
   }
 
   async function changeProvider() {
@@ -677,6 +707,28 @@
     </div>
   {/if}
 
+  {#if showUpdateDialog && updateInfo}
+    <div class="perm-overlay">
+      <div class="perm-dialog update-dialog">
+        <h3>Update Available</h3>
+        <p class="update-versions">{updateInfo.current_version} &rarr; <strong>{updateInfo.new_version}</strong></p>
+        {#if updateInfo.release_notes}
+          <div class="update-notes markdown">{@html marked(updateInfo.release_notes)}</div>
+        {/if}
+        {#if updateError}
+          <p class="update-error">{updateError}</p>
+        {/if}
+        <div class="perm-actions">
+          <button class="perm-deny" on:click={() => { showUpdateDialog = false; }} disabled={updating}>Later</button>
+          <button class="perm-session" on:click={async () => { SkipVersion(updateInfo.new_version); showUpdateDialog = false; }} disabled={updating}>Skip this version</button>
+          <button class="perm-forever" on:click={doUpdate} disabled={updating}>
+            {#if updating}Updating...{:else}Update now{/if}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <div class="chat" bind:this={chatEl}>
     {#if messages.length === 0 && !loading}
       <div class="empty">Start a conversation — I can execute commands, edit files, and manage git repos</div>
@@ -1094,6 +1146,26 @@
   .perm-allow { background: #e94560; }
   .perm-session { background: #0f3460; }
   .perm-forever { background: #53d769; color: #000 !important; }
+
+  /* Update dialog */
+  .update-dialog { max-width: 550px; }
+  .update-dialog h3 { color: #53d769; }
+  .update-versions { font-size: 1.1rem; margin: 0.5rem 0; }
+  .update-notes {
+    background: #1a1a2e;
+    padding: 0.75rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    max-height: 250px;
+    overflow-y: auto;
+    margin: 0.75rem 0;
+    line-height: 1.4;
+  }
+  .update-notes :global(h1), .update-notes :global(h2), .update-notes :global(h3) {
+    font-size: 1rem;
+    margin: 0.5rem 0 0.25rem;
+  }
+  .update-error { color: #e94560; font-size: 0.85rem; margin: 0.5rem 0 0; }
 
   /* Chat */
   .chat {

@@ -17,6 +17,7 @@ import (
 	"openuai/internal/memory"
 	"openuai/internal/tools"
 	"openuai/internal/tray"
+	"openuai/internal/updater"
 	"openuai/internal/voice"
 	"openuai/internal/whisper"
 
@@ -39,6 +40,7 @@ type App struct {
 	apiServer   *api.Server
 	recorder       *voice.Recorder
 	whisperVersion string
+	version        string
 
 	permMu       sync.Mutex
 	permResponse chan permAnswer
@@ -85,9 +87,17 @@ func (a *App) startup(ctx context.Context) {
 	if err := logger.Init(cfg.ConfigDir()); err != nil {
 		println("Error init logger:", err.Error())
 	}
-	logger.Info("OpenUAI starting up")
+	logger.Info("OpenUAI %s starting up", a.version)
 	logger.Info("Config dir: %s", cfg.ConfigDir())
 	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
+
+	// Check for updates in background
+	go func() {
+		info := updater.CheckForUpdate(a.version, cfg.SkippedVersion)
+		if info != nil {
+			wailsRuntime.EventsEmit(a.ctx, "update_available", info)
+		}
+	}()
 
 	// Auto-download whisper-cli + model in background
 	go func() {
@@ -902,6 +912,29 @@ func (a *App) SetAudioDevice(deviceID string) error {
 func (a *App) SetVoiceEnabled(enabled bool) error {
 	a.cfg.VoiceEnabled = &enabled
 	return a.cfg.Save()
+}
+
+// --- Update ---
+
+// GetVersion returns the current app version.
+func (a *App) GetVersion() string {
+	return a.version
+}
+
+// ApplyUpdate downloads and installs the update, then signals the frontend.
+func (a *App) ApplyUpdate(downloadURL string) string {
+	if err := updater.DownloadAndApply(downloadURL); err != nil {
+		logger.Error("Update failed: %s", err.Error())
+		return err.Error()
+	}
+	return ""
+}
+
+// SkipVersion saves the given version as skipped so it won't prompt again.
+func (a *App) SkipVersion(version string) {
+	a.cfg.SkippedVersion = version
+	a.cfg.Save()
+	logger.Info("Skipped update version: %s", version)
 }
 
 // RemoveMCPServer removes an MCP server configuration by name.
