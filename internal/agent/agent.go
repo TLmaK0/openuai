@@ -11,6 +11,7 @@ import (
 )
 
 const maxIterations = 50
+const maxConsecutiveErrors = 3 // stop calling the same tool after this many consecutive errors
 
 const systemPrompt = `You are OpenUAI, an autonomous AI agent with full access to the user's system.
 You have tools to read/write files, execute shell commands, manage git repositories, browse the web, and more.
@@ -21,6 +22,8 @@ You have tools to read/write files, execute shell commands, manage git repositor
 - Be safe: for destructive operations (delete, overwrite), briefly confirm what you're about to do
 - Never fabricate output — always use your tools to get real data
 - If a task is ambiguous, ask a brief clarifying question instead of guessing
+- If a tool call fails, try a different approach automatically — don't ask the user for permission to retry or change strategy, just do it
+- When searching and getting no or few results, ALWAYS try variations before giving up: partial names, first name only, last name only, different casing, broader filters, remove filters, or no filters at all. For example, if "Hugo Freire" returns nothing, try "Hugo", then "Freire", then search without a name filter. Never report "not found" after a single search attempt
 
 ## Real-time message monitoring (IMPORTANT)
 To receive messages in real-time you MUST call watch_chat with the chat ID. Without watch_chat, NO messages will reach you.
@@ -53,6 +56,11 @@ type Agent struct {
 	messages    []llm.Message
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
+
+	// Loop detection: track consecutive errors per tool
+	lastErrorTool  string
+	lastErrorMsg   string
+	consecutiveErr int
 }
 
 type Config struct {
@@ -156,6 +164,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			ToolCalls: toolCalls,
 		})
 
+		// Reset error tracking if LLM produced text (it's trying something different)
+		if resp.Content != "" {
+			a.consecutiveErr = 0
+		}
+
 		// Process each tool call
 		for _, tc := range toolCalls {
 			tool, ok := a.registry.Get(tc.Name)
@@ -199,8 +212,22 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if result.Output != "" {
 					resultContent += "\nOutput: " + result.Output
 				}
+				// Track consecutive errors for the same tool
+				if tc.Name == a.lastErrorTool && result.Error == a.lastErrorMsg {
+					a.consecutiveErr++
+				} else {
+					a.lastErrorTool = tc.Name
+					a.lastErrorMsg = result.Error
+					a.consecutiveErr = 1
+				}
 			} else {
 				resultContent = result.Output
+				// Successful call resets tracking for this tool
+				if tc.Name == a.lastErrorTool {
+					a.consecutiveErr = 0
+					a.lastErrorTool = ""
+					a.lastErrorMsg = ""
+				}
 			}
 
 			a.messages = append(a.messages, llm.Message{
@@ -210,6 +237,18 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			})
 
 			a.emit(StepResult{Type: "tool_result", Content: fmt.Sprintf("Tool %s result:\n%s", tc.Name, resultContent), ToolName: tc.Name})
+
+			// If we hit the consecutive error limit, inject a system message to break the loop
+			if a.consecutiveErr >= maxConsecutiveErrors {
+				loopMsg := fmt.Sprintf("STOP: tool %q has failed %d times in a row with the same error: %q. Do NOT call it again with the same arguments. Try different arguments, use a different tool, or work around the issue. Do NOT ask the user for permission — just act.", tc.Name, a.consecutiveErr, a.lastErrorMsg)
+				logger.Info("Loop detected: %s", loopMsg)
+				a.messages = append(a.messages, llm.Message{
+					Role:    llm.RoleUser,
+					Content: loopMsg,
+				})
+				a.emit(StepResult{Type: "error", Content: fmt.Sprintf("Loop detected: %s failed %d times with: %s", tc.Name, a.consecutiveErr, a.lastErrorMsg)})
+				a.consecutiveErr = 0
+			}
 		}
 	}
 

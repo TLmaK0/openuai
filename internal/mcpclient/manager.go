@@ -33,6 +33,9 @@ type Manager struct {
 	// onReady is called after all auto-start servers have initialized.
 	// Used to register MCP tools in the agent's tool registry.
 	onReady func()
+
+	// onTokensSaved is called when tokens need to be persisted to config.
+	onTokensSaved func(name string, tokens *config.MCPOAuthTokens)
 }
 
 // NewManager creates a new MCP manager from config.
@@ -94,12 +97,74 @@ func (m *Manager) Stop() error {
 	return nil
 }
 
+// OnTokensSaved sets a callback for when OAuth tokens should be persisted.
+func (m *Manager) OnTokensSaved(fn func(name string, tokens *config.MCPOAuthTokens)) {
+	m.onTokensSaved = fn
+}
+
+// AuthenticateServer runs the pending OAuth flow for a server that needs auth.
+func (m *Manager) AuthenticateServer(name string) error {
+	m.mu.RLock()
+	conn, ok := m.connections[name]
+	m.mu.RUnlock()
+
+	if !ok {
+		// Server not started yet — try starting it first
+		for _, cfg := range m.configs {
+			if cfg.Name == name {
+				ctx := context.Background()
+				return m.startServer(ctx, cfg)
+			}
+		}
+		return fmt.Errorf("server %q not found", name)
+	}
+
+	return conn.RunPendingAuth(context.Background())
+}
+
+// ConnectionNeedsAuth returns true if a server is waiting for user auth.
+func (m *Manager) ConnectionNeedsAuth(name string) bool {
+	m.mu.RLock()
+	conn, ok := m.connections[name]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return conn.NeedsAuth()
+}
+
+// Reconnect stops an existing connection, updates its config, and reconnects.
+func (m *Manager) Reconnect(cfg config.MCPServerConfig) error {
+	m.mu.Lock()
+	if conn, ok := m.connections[cfg.Name]; ok {
+		conn.Stop()
+		delete(m.connections, cfg.Name)
+	}
+	m.mu.Unlock()
+
+	ctx := context.Background()
+	if err := m.startServer(ctx, cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // startServer launches a single MCP server connection.
 func (m *Manager) startServer(ctx context.Context, cfg config.MCPServerConfig) error {
-	conn := NewConnection(cfg.Name, cfg.Command, cfg.Args, cfg.Env, cfg.Subscribe)
+	conn := NewConnection(cfg.Name, cfg)
 	conn.onResourceUpdated = m.handleResourceUpdated
+	conn.onTokensSaved = m.onTokensSaved
 
 	if err := conn.Start(ctx); err != nil {
+		// If it needs auth, still register the connection so it shows in UI
+		if conn.NeedsAuth() {
+			m.mu.Lock()
+			m.connections[cfg.Name] = conn
+			m.mu.Unlock()
+			logger.Info("MCP manager: server %s registered (needs auth)", cfg.Name)
+			return nil
+		}
 		return err
 	}
 
@@ -107,7 +172,7 @@ func (m *Manager) startServer(ctx context.Context, cfg config.MCPServerConfig) e
 	m.connections[cfg.Name] = conn
 	m.mu.Unlock()
 
-	logger.Info("MCP manager: server %s started", cfg.Name)
+	logger.Info("MCP manager: server %s started (%s)", cfg.Name, map[bool]string{true: "HTTP", false: "STDIO"}[cfg.IsHTTP()])
 
 	// Start reconnection watcher
 	go m.watchConnection(ctx, cfg, conn)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"openuai/internal/config"
 	"openuai/internal/eventbus"
 )
 
@@ -26,7 +27,11 @@ func TestIntegrationEchoServer(t *testing.T) {
 	defer cancel()
 
 	// Create connection
-	conn := NewConnection("echo-test", binPath, nil, nil, []string{"echo://messages/inbox"})
+	conn := NewConnection("echo-test", config.MCPServerConfig{
+		Name:      "echo-test",
+		Command:   binPath,
+		Subscribe: []string{"echo://messages/inbox"},
+	})
 
 	// Track resource update notifications
 	notifCh := make(chan string, 10)
@@ -133,7 +138,11 @@ func TestIntegrationManagerWithEcho(t *testing.T) {
 	defer cancel()
 
 	// Manually start a connection through the manager
-	conn := NewConnection("echo", binPath, nil, nil, []string{"echo://messages/inbox"})
+	conn := NewConnection("echo", config.MCPServerConfig{
+		Name:      "echo",
+		Command:   binPath,
+		Subscribe: []string{"echo://messages/inbox"},
+	})
 	conn.onResourceUpdated = mgr.handleResourceUpdated
 
 	if err := conn.Start(ctx); err != nil {

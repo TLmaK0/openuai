@@ -161,10 +161,13 @@ export namespace main {
 	export class MCPServerStatus {
 	    name: string;
 	    command: string;
+	    url?: string;
 	    auto_start: boolean;
 	    connected: boolean;
 	    tools: number;
 	    resources: number;
+	    has_auth: boolean;
+	    needs_auth: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new MCPServerStatus(source);
@@ -174,10 +177,13 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.command = source["command"];
+	        this.url = source["url"];
 	        this.auto_start = source["auto_start"];
 	        this.connected = source["connected"];
 	        this.tools = source["tools"];
 	        this.resources = source["resources"];
+	        this.has_auth = source["has_auth"];
+	        this.needs_auth = source["needs_auth"];
 	    }
 	}
 

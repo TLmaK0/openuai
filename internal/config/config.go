@@ -16,11 +16,35 @@ type OAuthTokens struct {
 // MCPServerConfig configures a single MCP server connection.
 type MCPServerConfig struct {
 	Name      string            `json:"name"`
-	Command   string            `json:"command"`
+	Command   string            `json:"command,omitempty"`
 	Args      []string          `json:"args,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
 	AutoStart bool              `json:"auto_start"`
 	Subscribe []string          `json:"subscribe,omitempty"`
+	// URL is the HTTP endpoint for remote MCP servers (mutually exclusive with Command).
+	URL       string            `json:"url,omitempty"`
+	// OAuth tokens for HTTP MCP servers (persisted across restarts).
+	OAuthTokens *MCPOAuthTokens `json:"oauth_tokens,omitempty"`
+}
+
+// IsHTTP returns true if this server connects via HTTP (may also have Command for auto-start).
+func (c MCPServerConfig) IsHTTP() bool {
+	return c.URL != ""
+}
+
+// NeedsLaunch returns true if a subprocess should be started before connecting.
+func (c MCPServerConfig) NeedsLaunch() bool {
+	return c.Command != "" && c.URL != ""
+}
+
+// MCPOAuthTokens stores OAuth tokens for an HTTP MCP server.
+type MCPOAuthTokens struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	TokenType    string `json:"token_type"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	ClientID     string `json:"client_id,omitempty"`
+	ClientSecret string `json:"client_secret,omitempty"`
 }
 
 type Config struct {
@@ -40,6 +64,7 @@ type Config struct {
 	STTLanguage            string           `json:"stt_language,omitempty"`
 	AudioDevice            string           `json:"audio_device,omitempty"`
 	SkippedVersion         string           `json:"skipped_version,omitempty"`
+	BetaLipReading         bool             `json:"beta_lip_reading,omitempty"`
 	path               string
 }
 

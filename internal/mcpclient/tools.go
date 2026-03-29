@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -38,10 +39,10 @@ func (t *MCPTool) Definition() tools.Definition {
 
 // Execute implements tools.Tool.
 func (t *MCPTool) Execute(ctx context.Context, args map[string]string) tools.Result {
-	// Convert string args to any for MCP
+	// Convert string args to proper types based on the MCP tool schema
 	mcpArgs := make(map[string]any, len(args))
 	for k, v := range args {
-		mcpArgs[k] = v
+		mcpArgs[k] = coerceArg(v, t.argType(k))
 	}
 
 	result, err := t.manager.CallTool(ctx, t.serverName, t.remoteName, mcpArgs)
@@ -68,6 +69,44 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]string) tools.Res
 	}
 
 	return tools.Result{Output: output}
+}
+
+// argType returns the JSON schema type for a parameter, or "string" if unknown.
+func (t *MCPTool) argType(name string) string {
+	prop, ok := t.remoteTool.InputSchema.Properties[name]
+	if !ok {
+		return "string"
+	}
+	if m, ok := prop.(map[string]any); ok {
+		if typ, ok := m["type"].(string); ok {
+			return typ
+		}
+	}
+	return "string"
+}
+
+// coerceArg converts a string value to the correct Go type based on JSON schema type.
+func coerceArg(val, typ string) any {
+	switch typ {
+	case "integer":
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return n
+		}
+	case "number":
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
+	case "boolean":
+		if b, err := strconv.ParseBool(val); err == nil {
+			return b
+		}
+	case "array", "object":
+		var parsed any
+		if err := json.Unmarshal([]byte(val), &parsed); err == nil {
+			return parsed
+		}
+	}
+	return val
 }
 
 // RegisterMCPTools adds all discovered MCP tools to the local tool registry.

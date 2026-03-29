@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion } from '../wailsjs/go/main/App';
+  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -46,8 +46,10 @@
   let showSessions = false;
   let sessions = [];
   let mcpNewName = '';
+  let mcpNewType = 'stdio';
   let mcpNewCommand = '';
   let mcpNewArgs = '';
+  let mcpNewURL = '';
   let mcpNewSubscribe = '';
   let mcpAdding = false;
   let mcpQrDialog = false;
@@ -83,6 +85,17 @@
     { code: 'ca', label: 'Català' },
   ];
 
+  // Beta features
+  let betaLipReading = false;
+
+  // Lip reading
+  let lipRecording = false;
+  let lipTranscribing = false;
+  let lipModelReady = false;
+  let showLipDownloadDialog = false;
+  let lipDownloading = false;
+  let lipDownloadProgress = 0;
+
   // Update dialog
   let showUpdateDialog = false;
   let updateInfo = null;
@@ -105,7 +118,20 @@
     audioDevices = await GetAudioDevices() || [];
     selectedDevice = await GetAudioDevice();
     appVersion = await GetVersion();
+    betaLipReading = await GetBetaLipReading();
+    lipModelReady = await LipReadingModelReady();
     if (!isReady) showSettings = true;
+
+    // Listen for MCP auth completion
+    EventsOn('mcp_auth_done', async (result) => {
+      if (result.error) alert('Auth failed: ' + result.error);
+      await refreshMCPServers();
+    });
+
+    // Listen for lip reading download progress
+    EventsOn('lipreading_download_progress', (downloaded) => {
+      lipDownloadProgress = Math.round(downloaded / 1024 / 1024);
+    });
 
     // Listen for update availability
     EventsOn('update_available', (info) => {
@@ -215,6 +241,51 @@
     }
   }
 
+  // --- Lip reading ---
+
+  async function lipBtnDown() {
+    if (lipRecording || lipTranscribing || loading) return;
+    if (!lipModelReady) {
+      showLipDownloadDialog = true;
+      return;
+    }
+    const err = await StartLipRecording();
+    if (err) {
+      alert('Camera error: ' + err);
+      return;
+    }
+    lipRecording = true;
+  }
+
+  async function lipBtnUp() {
+    if (!lipRecording) return;
+    lipRecording = false;
+    lipTranscribing = true;
+    const result = await StopLipRecording();
+    lipTranscribing = false;
+    if (result.error && result.error !== '') {
+      alert('Lip reading error: ' + result.error);
+      return;
+    }
+    if (result.text) {
+      input = result.text;
+      await send();
+    }
+  }
+
+  async function downloadLipModel() {
+    lipDownloading = true;
+    lipDownloadProgress = 0;
+    const err = await DownloadLipReadingModel();
+    lipDownloading = false;
+    if (err) {
+      alert('Download failed: ' + err);
+      return;
+    }
+    lipModelReady = true;
+    showLipDownloadDialog = false;
+  }
+
   async function changeProvider() {
     await SetProvider(provider);
     models = await GetModels();
@@ -312,16 +383,20 @@
   }
 
   async function addMCPServer() {
-    if (!mcpNewName || !mcpNewCommand) return;
+    if (!mcpNewName) return;
     const args = mcpNewArgs ? mcpNewArgs.split(' ').filter(Boolean) : [];
     const subscribe = mcpNewSubscribe ? mcpNewSubscribe.split(',').map(s => s.trim()).filter(Boolean) : [];
-    const err = await AddMCPServer(mcpNewName, mcpNewCommand, args, {}, true, subscribe);
+    const url = mcpNewType === 'http' ? mcpNewURL : '';
+    const command = mcpNewType === 'stdio' ? mcpNewCommand : '';
+    const err = await AddMCPServer(mcpNewName, command, args, {}, true, subscribe, url);
     if (err) {
       alert('Failed to add MCP server: ' + err);
     } else {
       mcpNewName = '';
+      mcpNewType = 'stdio';
       mcpNewCommand = '';
       mcpNewArgs = '';
+      mcpNewURL = '';
       mcpNewSubscribe = '';
       mcpAdding = false;
       await refreshMCPServers();
@@ -479,72 +554,83 @@
 
   {#if showSettings}
     <div class="settings">
-      <div class="setting-row">
-        <label>Provider</label>
-        <select bind:value={provider} on:change={changeProvider}>
-          {#each providers as p}
-            <option value={p}>{p === 'openai' ? 'OpenAI (ChatGPT subscription)' : 'Claude (API key)'}</option>
-          {/each}
-        </select>
-      </div>
-
-      {#if provider === 'openai'}
+      <div class="settings-group">
+        <div class="settings-group-title">LLM Provider</div>
         <div class="setting-row">
-          <label>Account</label>
-          {#if openaiLoggedIn}
-            <span class="status-ok">Logged in</span>
-          {:else}
-            <button on:click={loginOpenAI} disabled={loggingIn}>
-              {loggingIn ? 'Opening browser...' : 'Login with ChatGPT'}
-            </button>
-          {/if}
-        </div>
-      {:else}
-        <div class="setting-row">
-          <label>API Key</label>
-          <input type="password" bind:value={apiKey} placeholder={hasKey ? 'Key saved' : 'sk-ant-...'} />
-          <button on:click={saveApiKey}>Save</button>
-        </div>
-      {/if}
-
-      <div class="setting-row">
-        <label>Model</label>
-        <select bind:value={selectedModel} on:change={changeModel}>
-          {#each models as model}
-            <option value={model}>{model}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="setting-row">
-        <label>Voice</label>
-        <select bind:value={ttsVoice} on:change={changeTTSVoice}>
-          {#each ttsVoices as v}
-            <option value={v}>{v}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="setting-row">
-        <label>STT Language</label>
-        <select bind:value={sttLanguage} on:change={changeSTTLanguage}>
-          {#each sttLanguages as lang}
-            <option value={lang.code}>{lang.label}</option>
-          {/each}
-        </select>
-      </div>
-
-      {#if audioDevices.length > 0}
-        <div class="setting-row">
-          <label>Mic</label>
-          <select bind:value={selectedDevice} on:change={() => SetAudioDevice(selectedDevice)}>
-            <option value="">Default</option>
-            {#each audioDevices as dev}
-              <option value={dev.id}>{dev.name}</option>
+          <label>Provider</label>
+          <select bind:value={provider} on:change={changeProvider}>
+            {#each providers as p}
+              <option value={p}>{p === 'openai' ? 'OpenAI (ChatGPT subscription)' : 'Claude (API key)'}</option>
             {/each}
           </select>
         </div>
-      {/if}
+        {#if provider === 'openai'}
+          <div class="setting-row">
+            <label>Account</label>
+            {#if openaiLoggedIn}
+              <span class="status-ok">Logged in</span>
+            {:else}
+              <button on:click={loginOpenAI} disabled={loggingIn}>
+                {loggingIn ? 'Opening browser...' : 'Login with ChatGPT'}
+              </button>
+            {/if}
+          </div>
+        {:else}
+          <div class="setting-row">
+            <label>API Key</label>
+            <input type="password" bind:value={apiKey} placeholder={hasKey ? 'Key saved' : 'sk-ant-...'} />
+            <button on:click={saveApiKey}>Save</button>
+          </div>
+        {/if}
+        <div class="setting-row">
+          <label>Model</label>
+          <select bind:value={selectedModel} on:change={changeModel}>
+            {#each models as model}
+              <option value={model}>{model}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Voice</div>
+        <div class="setting-row">
+          <label>TTS Voice</label>
+          <select bind:value={ttsVoice} on:change={changeTTSVoice}>
+            {#each ttsVoices as v}
+              <option value={v}>{v}</option>
+            {/each}
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>STT Language</label>
+          <select bind:value={sttLanguage} on:change={changeSTTLanguage}>
+            {#each sttLanguages as lang}
+              <option value={lang.code}>{lang.label}</option>
+            {/each}
+          </select>
+        </div>
+        {#if audioDevices.length > 0}
+          <div class="setting-row">
+            <label>Mic</label>
+            <select bind:value={selectedDevice} on:change={() => SetAudioDevice(selectedDevice)}>
+              <option value="">Default</option>
+              {#each audioDevices as dev}
+                <option value={dev.id}>{dev.name}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+      </div>
+
+      <div class="beta-section">
+        <div class="beta-header">Beta Features</div>
+        <label class="beta-toggle">
+          <input type="checkbox" bind:checked={betaLipReading} on:change={() => SetBetaLipReading(betaLipReading)} />
+          <span>Lip Reading <span class="beta-badge">BETA</span></span>
+          <span class="beta-desc">Visual speech recognition from camera (English only, ~1 GB model)</span>
+        </label>
+      </div>
 
       <div class="mcp-settings">
         <div class="mcp-settings-header">
@@ -558,20 +644,34 @@
               <input bind:value={mcpNewName} placeholder="whatsapp" />
             </div>
             <div class="setting-row">
-              <label>Command</label>
-              <input bind:value={mcpNewCommand} placeholder="uv" />
+              <label>Type</label>
+              <select bind:value={mcpNewType}>
+                <option value="stdio">STDIO (local command)</option>
+                <option value="http">HTTP (remote URL)</option>
+              </select>
             </div>
-            <div class="setting-row">
-              <label>Args</label>
-              <input bind:value={mcpNewArgs} placeholder="run main.py (space-separated)" />
-            </div>
+            {#if mcpNewType === 'stdio'}
+              <div class="setting-row">
+                <label>Command</label>
+                <input bind:value={mcpNewCommand} placeholder="uv" />
+              </div>
+              <div class="setting-row">
+                <label>Args</label>
+                <input bind:value={mcpNewArgs} placeholder="run main.py (space-separated)" />
+              </div>
+            {:else}
+              <div class="setting-row">
+                <label>URL</label>
+                <input bind:value={mcpNewURL} placeholder="https://mcp.example.com/sse" />
+              </div>
+            {/if}
             <div class="setting-row">
               <label>Subscribe</label>
               <input bind:value={mcpNewSubscribe} placeholder="whatsapp://messages/inbox (optional)" />
             </div>
             <div class="setting-row">
               <label></label>
-              <button on:click={addMCPServer} disabled={!mcpNewName || !mcpNewCommand}>Save</button>
+              <button on:click={addMCPServer} disabled={!mcpNewName || (mcpNewType === 'stdio' ? !mcpNewCommand : !mcpNewURL)}>Save</button>
             </div>
           </div>
         {/if}
@@ -582,11 +682,17 @@
           <div class="mcp-settings-row">
             <span class="mcp-srv-dot" class:mcp-srv-dot-on={srv.connected}></span>
             <span class="mcp-srv-name">{srv.name}</span>
-            <span class="mcp-srv-detail">{srv.command}</span>
+            <span class="mcp-srv-detail">{srv.url || srv.command}</span>
             {#if srv.connected}
               <span class="mcp-srv-stats">{srv.tools}T {srv.resources}R</span>
             {/if}
-            <button class="mcp-link-btn" on:click={() => linkMCPServer(srv.name)}>Link</button>
+            {#if srv.needs_auth}
+              <button class="mcp-auth-btn" on:click={() => AuthMCPServer(srv.name)}>Auth</button>
+            {:else if srv.url && srv.connected}
+              <button class="mcp-link-btn" on:click={() => ReauthMCPServer(srv.name)}>Reauth</button>
+            {:else if srv.has_auth}
+              <button class="mcp-link-btn" on:click={() => linkMCPServer(srv.name)}>Link</button>
+            {/if}
             <button class="mcp-remove-btn" on:click={() => removeMCPServer(srv.name)}>x</button>
           </div>
         {/each}
@@ -729,6 +835,26 @@
     </div>
   {/if}
 
+  {#if showLipDownloadDialog}
+    <div class="perm-overlay">
+      <div class="perm-dialog update-dialog">
+        <h3>Lip Reading</h3>
+        <p>This feature reads lips from your camera to transcribe speech <strong>in English only</strong>.</p>
+        <p>It requires downloading a ~1 GB AI model. The model is stored locally and only downloaded once.</p>
+        {#if lipDownloading}
+          <p class="lip-progress">Downloading... {lipDownloadProgress} MB</p>
+          <div class="lip-progress-bar"><div class="lip-progress-fill" style="width: {Math.min(lipDownloadProgress / 1000 * 100, 100)}%"></div></div>
+        {/if}
+        <div class="perm-actions">
+          <button class="perm-deny" on:click={() => { showLipDownloadDialog = false; }} disabled={lipDownloading}>Cancel</button>
+          <button class="perm-forever" on:click={downloadLipModel} disabled={lipDownloading}>
+            {#if lipDownloading}Downloading...{:else}Download model{/if}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <div class="chat" bind:this={chatEl}>
     {#if messages.length === 0 && !loading}
       <div class="empty">Start a conversation — I can execute commands, edit files, and manage git repos</div>
@@ -804,6 +930,17 @@
   </div>
 
   <div class="input-area">
+    {#if betaLipReading}
+    <button class="lip-btn" class:lip-recording={lipRecording} class:lip-transcribing={lipTranscribing} on:mousedown={lipBtnDown} on:mouseup={lipBtnUp} on:mouseleave={lipBtnUp} on:touchstart|preventDefault={lipBtnDown} on:touchend|preventDefault={lipBtnUp} disabled={loading || lipTranscribing} title={lipRecording ? 'Release to read lips' : lipTranscribing ? 'Reading lips...' : 'Hold to lip-read (English)'}>
+      {#if lipRecording}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
+      {:else if lipTranscribing}
+        ...
+      {:else}
+        <svg width="18" height="16" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c0 0 3-6 10-6s10 6 10 6"/><path d="M2 10c0 0 3 6 10 6s10-6 10-6"/><circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg>
+      {/if}
+    </button>
+    {/if}
     <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -835,6 +972,17 @@
 </main>
 
 <style>
+  :global(select) {
+    background: #1a1a2e !important;
+    color: #eee !important;
+    -webkit-text-fill-color: #eee !important;
+    color-scheme: dark;
+    opacity: 1 !important;
+  }
+  :global(select option) {
+    background: #1a1a2e;
+    color: #eee;
+  }
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -888,12 +1036,29 @@
     border-bottom: 1px solid #0f3460;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.75rem;
+  }
+  .settings-group {
+    background: #1a1a2e;
+    border-radius: 6px;
+    border: 1px solid #2a2a4e;
+    padding: 0.6rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .settings-group-title {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.15rem;
   }
 
   .setting-row { display: flex; align-items: center; gap: 0.5rem; }
 
-  .setting-row label { min-width: 60px; font-size: 0.85rem; }
+  .setting-row label { min-width: 90px; font-size: 0.85rem; text-align: left; }
 
   .setting-row input, .setting-row select {
     flex: 1;
@@ -901,6 +1066,7 @@
     background: #1a1a2e;
     border: 1px solid #0f3460;
     color: #eee;
+    -webkit-text-fill-color: #eee;
     border-radius: 4px;
   }
 
@@ -1021,6 +1187,17 @@
   }
 
   .mcp-link-btn:hover { background: #0f3460; }
+  .mcp-auth-btn {
+    background: #e9a045;
+    color: #000;
+    border: none;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  .mcp-auth-btn:hover { background: #d4903a; }
 
   .mcp-remove-btn:hover { color: #e94560; border-color: #e94560; }
 
@@ -1366,6 +1543,85 @@
   .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .clear-btn { background: #0f3460 !important; }
+
+  /* Beta features */
+  .beta-section {
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    background: #1a1a2e;
+    border-radius: 6px;
+    border: 1px solid #2a2a4e;
+  }
+  .beta-header {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: #888;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    text-align: left;
+  }
+  .beta-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+    flex-wrap: wrap;
+  }
+  .beta-toggle input { margin-top: 3px; }
+  .beta-toggle span { font-size: 0.9rem; }
+  .beta-badge {
+    background: #e9a045;
+    color: #000;
+    font-size: 0.65rem;
+    font-weight: bold;
+    padding: 1px 5px;
+    border-radius: 3px;
+    vertical-align: middle;
+  }
+  .beta-desc {
+    display: block;
+    width: 100%;
+    font-size: 0.75rem;
+    color: #666;
+    margin-left: 1.2rem;
+  }
+
+  /* Lip reading */
+  .lip-btn {
+    padding: 0.5rem;
+    background: #3d0f60;
+    border: none;
+    color: #eee;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    min-width: 38px;
+    transition: background 0.2s;
+  }
+  .lip-btn:hover { background: #5a1a8a; }
+  .lip-recording {
+    background: #e94560 !important;
+    animation: pulse-red 1s infinite;
+  }
+  .lip-transcribing {
+    background: #e9a045 !important;
+    cursor: wait;
+  }
+  .lip-progress { font-size: 0.9rem; margin: 0.5rem 0; }
+  .lip-progress-bar {
+    width: 100%;
+    height: 6px;
+    background: #1a1a2e;
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+  }
+  .lip-progress-fill {
+    height: 100%;
+    background: #53d769;
+    transition: width 0.3s;
+  }
 
   /* Voice */
   .mic-btn {

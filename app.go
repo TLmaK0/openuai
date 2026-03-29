@@ -11,6 +11,7 @@ import (
 	"openuai/internal/api"
 	"openuai/internal/config"
 	"openuai/internal/eventbus"
+	"openuai/internal/lipreading"
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/mcpclient"
@@ -39,6 +40,7 @@ type App struct {
 	mcpManager  *mcpclient.Manager
 	apiServer   *api.Server
 	recorder       *voice.Recorder
+	lipRecorder    *lipreading.Recorder
 	whisperVersion string
 	version        string
 
@@ -70,6 +72,7 @@ func NewApp() *App {
 		permResponse: make(chan permAnswer, 1),
 		watchedChats:       make(map[string]struct{}),
 		recentSentIDs: make(map[string]int64),
+		lipRecorder:  lipreading.NewRecorder(),
 	}
 }
 
@@ -269,6 +272,16 @@ func (a *App) startup(ctx context.Context) {
 	// MCP manager (if servers configured)
 	if len(cfg.MCPServers) > 0 {
 		a.mcpManager = mcpclient.NewManager(cfg.MCPServers)
+		a.mcpManager.OnTokensSaved(func(name string, tokens *config.MCPOAuthTokens) {
+			for i, s := range a.cfg.MCPServers {
+				if s.Name == name {
+					a.cfg.MCPServers[i].OAuthTokens = tokens
+					a.cfg.Save()
+					logger.Info("MCP OAuth tokens saved for %s", name)
+					break
+				}
+			}
+		})
 		a.mcpManager.OnReady(func() {
 			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
 			logger.Info("MCP tools registered: %d total tools now", len(a.registry.Definitions()))
@@ -712,10 +725,13 @@ func (a *App) GetEventStats() eventbus.Stats {
 type MCPServerStatus struct {
 	Name      string `json:"name"`
 	Command   string `json:"command"`
+	URL       string `json:"url,omitempty"`
 	AutoStart bool   `json:"auto_start"`
 	Connected bool   `json:"connected"`
 	Tools     int    `json:"tools"`
 	Resources int    `json:"resources"`
+	HasAuth   bool   `json:"has_auth"`
+	NeedsAuth bool   `json:"needs_auth"`
 }
 
 // GetMCPServers returns configured MCP servers and their status.
@@ -725,14 +741,25 @@ func (a *App) GetMCPServers() []MCPServerStatus {
 		status := MCPServerStatus{
 			Name:      cfg.Name,
 			Command:   cfg.Command,
+			URL:       cfg.URL,
 			AutoStart: cfg.AutoStart,
 		}
 		if a.mcpManager != nil {
 			conn, ok := a.mcpManager.GetConnection(cfg.Name)
-			if ok {
-				status.Connected = conn != nil
-				status.Tools = len(conn.Tools())
-				status.Resources = len(conn.Resources())
+			if ok && conn != nil {
+				if conn.NeedsAuth() {
+					status.NeedsAuth = true
+				} else {
+					status.Connected = true
+					status.Tools = len(conn.Tools())
+					status.Resources = len(conn.Resources())
+					for _, t := range conn.Tools() {
+						if t.Name == "get_auth_status" || t.Name == "get_qr_code" {
+							status.HasAuth = true
+							break
+						}
+					}
+				}
 			}
 		}
 		servers = append(servers, status)
@@ -741,7 +768,7 @@ func (a *App) GetMCPServers() []MCPServerStatus {
 }
 
 // AddMCPServer adds a new MCP server configuration.
-func (a *App) AddMCPServer(name, command string, args []string, env map[string]string, autoStart bool, subscribe []string) string {
+func (a *App) AddMCPServer(name, command string, args []string, env map[string]string, autoStart bool, subscribe []string, url string) string {
 	for _, s := range a.cfg.MCPServers {
 		if s.Name == name {
 			return "server with that name already exists"
@@ -754,11 +781,26 @@ func (a *App) AddMCPServer(name, command string, args []string, env map[string]s
 		Env:       env,
 		AutoStart: autoStart,
 		Subscribe: subscribe,
+		URL:       url,
 	})
 	if err := a.cfg.Save(); err != nil {
 		return err.Error()
 	}
 	logger.Info("MCP server %q added", name)
+
+	// Try to start the new server immediately
+	cfg := a.cfg.MCPServers[len(a.cfg.MCPServers)-1]
+	if a.mcpManager != nil {
+		go func() {
+			if err := a.mcpManager.Reconnect(cfg); err != nil {
+				logger.Info("MCP server %q: initial connect: %s", name, err.Error())
+			} else {
+				mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
+				a.currentAgent = nil
+			}
+			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name})
+		}()
+	}
 	return ""
 }
 
@@ -937,6 +979,122 @@ func (a *App) SkipVersion(version string) {
 	a.cfg.SkippedVersion = version
 	a.cfg.Save()
 	logger.Info("Skipped update version: %s", version)
+}
+
+// --- Beta Features ---
+
+// GetBetaLipReading returns whether the lip reading beta is enabled.
+func (a *App) GetBetaLipReading() bool {
+	return a.cfg.BetaLipReading
+}
+
+// SetBetaLipReading enables or disables the lip reading beta.
+func (a *App) SetBetaLipReading(enabled bool) error {
+	a.cfg.BetaLipReading = enabled
+	logger.Info("Beta lip reading: %v", enabled)
+	return a.cfg.Save()
+}
+
+// --- Lip Reading ---
+
+// LipReadingModelReady returns whether the lip reading model is downloaded.
+func (a *App) LipReadingModelReady() bool {
+	return lipreading.IsModelReady(a.cfg.ConfigDir())
+}
+
+// DownloadLipReadingModel downloads the model and emits progress events.
+func (a *App) DownloadLipReadingModel() string {
+	// First ensure repo and python deps
+	if err := lipreading.EnsureRepo(a.cfg.ConfigDir()); err != nil {
+		return err.Error()
+	}
+	if err := lipreading.EnsurePythonDeps(); err != nil {
+		return err.Error()
+	}
+	// Download model with progress
+	err := lipreading.DownloadModel(a.cfg.ConfigDir(), func(downloaded int64) {
+		wailsRuntime.EventsEmit(a.ctx, "lipreading_download_progress", downloaded)
+	})
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// StartLipRecording begins capturing video from the webcam.
+func (a *App) StartLipRecording() string {
+	if err := a.lipRecorder.Start(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// StopLipRecording stops video capture and runs lip reading inference.
+func (a *App) StopLipRecording() map[string]interface{} {
+	videoBase64, err := a.lipRecorder.Stop()
+	if err != nil {
+		return map[string]interface{}{"text": "", "error": err.Error()}
+	}
+	transcript, err := lipreading.Transcribe(videoBase64, a.cfg.ConfigDir())
+	if err != nil {
+		return map[string]interface{}{"text": "", "error": err.Error()}
+	}
+	return map[string]interface{}{"text": transcript, "error": ""}
+}
+
+// AuthMCPServer triggers the OAuth flow for a server that needs authentication.
+func (a *App) AuthMCPServer(name string) string {
+	if a.mcpManager == nil {
+		return "MCP manager not running"
+	}
+	go func() {
+		if err := a.mcpManager.AuthenticateServer(name); err != nil {
+			logger.Error("MCP auth %q failed: %s", name, err.Error())
+			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name, "error": err.Error()})
+		} else {
+			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
+			a.currentAgent = nil
+			logger.Info("MCP server %q authenticated, %d total tools", name, len(a.registry.Definitions()))
+			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name})
+		}
+	}()
+	return ""
+}
+
+// ReauthMCPServer clears saved tokens and reconnects an HTTP MCP server, triggering OAuth.
+func (a *App) ReauthMCPServer(name string) string {
+	var cfg config.MCPServerConfig
+	found := false
+	for i, s := range a.cfg.MCPServers {
+		if s.Name == name {
+			a.cfg.MCPServers[i].OAuthTokens = nil
+			a.cfg.Save()
+			cfg = a.cfg.MCPServers[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "server not found"
+	}
+
+	if a.mcpManager == nil {
+		return "MCP manager not running"
+	}
+
+	logger.Info("MCP server %q: clearing tokens and reconnecting", name)
+	go func() {
+		if err := a.mcpManager.Reconnect(cfg); err != nil {
+			logger.Error("MCP server %q reconnect failed: %s", name, err.Error())
+			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name, "error": err.Error()})
+		} else {
+			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
+			a.currentAgent = nil
+			logger.Info("MCP server %q reconnected, %d total tools", name, len(a.registry.Definitions()))
+			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name})
+		}
+	}()
+	return ""
 }
 
 // RemoveMCPServer removes an MCP server configuration by name.

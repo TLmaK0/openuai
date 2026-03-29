@@ -6,9 +6,11 @@ import {eventbus} from '../models';
 import {main} from '../models';
 import {agent} from '../models';
 
-export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>):Promise<string>;
+export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>,arg7:string):Promise<string>;
 
 export function ApplyUpdate(arg1:string):Promise<string>;
+
+export function AuthMCPServer(arg1:string):Promise<string>;
 
 export function CallMCPTool(arg1:string,arg2:string,arg3:Record<string, string>):Promise<string>;
 
@@ -16,9 +18,13 @@ export function ClearChat():Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<string>;
 
+export function DownloadLipReadingModel():Promise<string>;
+
 export function GetAudioDevice():Promise<string>;
 
 export function GetAudioDevices():Promise<Array<voice.AudioDevice>>;
+
+export function GetBetaLipReading():Promise<boolean>;
 
 export function GetCostSummary():Promise<llm.CostSummary>;
 
@@ -54,9 +60,13 @@ export function GetWatchedChats():Promise<Array<string>>;
 
 export function HasAPIKey():Promise<boolean>;
 
+export function LipReadingModelReady():Promise<boolean>;
+
 export function OpenAIIsLoggedIn():Promise<boolean>;
 
 export function OpenAILogin():Promise<string>;
+
+export function ReauthMCPServer(arg1:string):Promise<string>;
 
 export function RemoveMCPServer(arg1:string):Promise<string>;
 
@@ -72,6 +82,8 @@ export function SetAPIKey(arg1:string):Promise<void>;
 
 export function SetAudioDevice(arg1:string):Promise<void>;
 
+export function SetBetaLipReading(arg1:boolean):Promise<void>;
+
 export function SetDefaultModel(arg1:string):Promise<void>;
 
 export function SetProvider(arg1:string):Promise<void>;
@@ -86,7 +98,11 @@ export function SkipVersion(arg1:string):Promise<void>;
 
 export function SpeakText(arg1:string):Promise<Record<string, any>>;
 
+export function StartLipRecording():Promise<string>;
+
 export function StartRecording():Promise<string>;
+
+export function StopLipRecording():Promise<Record<string, any>>;
 
 export function StopRecording():Promise<Record<string, any>>;
 
