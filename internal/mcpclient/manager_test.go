@@ -26,6 +26,18 @@ func TestProcessResourceContent(t *testing.T) {
 	events := make(chan eventbus.Event, 10)
 	m.eventCh = events
 
+	// First call seeds the cursor (no events emitted)
+	seed := []MCPMessage{
+		{ID: "0", From: "seed", Body: "seed", Timestamp: 999},
+	}
+	seedData, _ := json.Marshal(seed)
+	m.processResourceContent("whatsapp", "whatsapp://messages/inbox", string(seedData))
+
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events after seed, got %d", len(events))
+	}
+
+	// Second call with newer messages should emit events
 	messages := []MCPMessage{
 		{ID: "1", From: "sender1", FromName: "Alice", Body: "Hello", Timestamp: 1000},
 		{ID: "2", From: "sender2", FromName: "Bob", Body: "World", Timestamp: 1001, IsGroup: true, GroupName: "Test Group"},
@@ -66,6 +78,14 @@ func TestProcessResourceContentDedup(t *testing.T) {
 	events := make(chan eventbus.Event, 10)
 	m.eventCh = events
 
+	// Seed call — sets cursor, no events
+	seed := []MCPMessage{
+		{ID: "0", From: "x", Body: "seed", Timestamp: 999},
+	}
+	seedData, _ := json.Marshal(seed)
+	m.processResourceContent("wa", "whatsapp://inbox", string(seedData))
+
+	// First real batch (newer than seed)
 	messages1 := []MCPMessage{
 		{ID: "1", From: "a", Body: "first", Timestamp: 1000},
 	}
@@ -75,7 +95,7 @@ func TestProcessResourceContentDedup(t *testing.T) {
 	// Drain first event
 	<-events
 
-	// Second batch includes old + new
+	// Second batch includes old + new — only new should be emitted
 	messages2 := []MCPMessage{
 		{ID: "1", From: "a", Body: "first", Timestamp: 1000},
 		{ID: "2", From: "b", Body: "second", Timestamp: 1001},

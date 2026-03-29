@@ -161,8 +161,29 @@ func TestIntegrationManagerWithEcho(t *testing.T) {
 		mgr.handleResourceUpdated(c, uri)
 	}
 
-	// Inject a message
+	// Inject a seed message to initialize the cursor (first read seeds, no events emitted)
 	_, err := conn.CallTool(ctx, "inject_message", map[string]any{
+		"body":      "seed message",
+		"from":      "seed@test",
+		"from_name": "Seed",
+	})
+	if err != nil {
+		t.Fatalf("inject_message (seed) failed: %v", err)
+	}
+
+	// Wait for seed notification
+	select {
+	case <-notifCh:
+		// Seed processed — cursor is now set
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed out waiting for seed notification")
+	}
+
+	// Wait so the next message gets a strictly greater Unix timestamp
+	time.Sleep(1100 * time.Millisecond)
+
+	// Inject the real message (should now emit an event)
+	_, err = conn.CallTool(ctx, "inject_message", map[string]any{
 		"body":      "hello from integration test",
 		"from":      "5491155551234@s.whatsapp.net",
 		"from_name": "Test User",
