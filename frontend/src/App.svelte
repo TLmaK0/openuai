@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading } from '../wailsjs/go/main/App';
+  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -52,6 +52,16 @@
   let mcpNewURL = '';
   let mcpNewSubscribe = '';
   let mcpAdding = false;
+
+  // Marketplace
+  let showMarketplace = false;
+  let marketplaceCatalog = [];
+  let installedNames = [];
+  let hasNpx = true;
+  let mpSecretInput = {};
+  let mpInstalling = {};
+  let mpFilter = 'All';
+
   let mcpQrDialog = false;
   let mcpQrImage = '';
   let mcpQrLoading = false;
@@ -459,6 +469,32 @@
     await refreshMCPServers();
   }
 
+  async function openMarketplace() {
+    showMarketplace = !showMarketplace;
+    if (showMarketplace) {
+      marketplaceCatalog = await GetMarketplace();
+      installedNames = (await GetInstalledNames()) || [];
+      hasNpx = await CheckNpx();
+    }
+  }
+
+  async function installFromMarketplace(name) {
+    const entry = marketplaceCatalog.find(e => e.name === name);
+    if (!entry) return;
+    mpInstalling[name] = true;
+    mpInstalling = mpInstalling;
+    const secret = mpSecretInput[name] || '';
+    const err = await InstallMarketplace(name, secret);
+    mpInstalling[name] = false;
+    mpInstalling = mpInstalling;
+    if (err) {
+      alert('Install failed: ' + err);
+      return;
+    }
+    installedNames = [...installedNames, name];
+    await refreshMCPServers();
+  }
+
   async function startRecording() {
     if (recording || transcribing || loading) return;
     const err = await StartRecording();
@@ -696,6 +732,48 @@
             <button class="mcp-remove-btn" on:click={() => removeMCPServer(srv.name)}>x</button>
           </div>
         {/each}
+      </div>
+
+      <div class="marketplace-section">
+        <div class="mcp-settings-header">
+          <span class="mcp-settings-title">Marketplace</span>
+          <button class="mcp-add-btn" on:click={openMarketplace}>{showMarketplace ? 'Hide' : 'Browse'}</button>
+        </div>
+        {#if showMarketplace}
+          {#if !hasNpx}
+            <div class="mp-banner">Node.js is required for marketplace servers. Install from <a href="https://nodejs.org" target="_blank">nodejs.org</a></div>
+          {/if}
+          <div class="mp-filters">
+            {#each ['All', 'Office', 'Dev', 'Search', 'Utilities'] as cat}
+              <button class="mp-filter-btn" class:mp-filter-active={mpFilter === cat} on:click={() => mpFilter = cat}>{cat}</button>
+            {/each}
+          </div>
+          <div class="mp-grid">
+            {#each marketplaceCatalog.filter(e => mpFilter === 'All' || e.category === mpFilter) as entry}
+              {@const installed = installedNames.includes(entry.name)}
+              <div class="mp-card" class:mp-card-installed={installed}>
+                <div class="mp-card-header">
+                  <span class="mp-card-icon">{entry.icon}</span>
+                  <span class="mp-card-name">{entry.name}</span>
+                  <span class="mp-card-cat">{entry.category}</span>
+                </div>
+                <div class="mp-card-desc">{entry.description}</div>
+                {#if installed}
+                  <div class="mp-card-status">Installed</div>
+                {:else}
+                  {#if entry.auth_type === 'api_key'}
+                    <div class="mp-card-auth">
+                      <input type="password" placeholder={entry.auth_label} bind:value={mpSecretInput[entry.name]} />
+                    </div>
+                  {/if}
+                  <button class="mp-install-btn" disabled={mpInstalling[entry.name] || (entry.auth_type === 'api_key' && !mpSecretInput[entry.name]) || !hasNpx} on:click={() => installFromMarketplace(entry.name)}>
+                    {mpInstalling[entry.name] ? 'Installing...' : 'Install'}
+                  </button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -1870,6 +1948,111 @@
     color: #666;
     font-size: 0.7rem;
   }
+
+  /* Marketplace */
+  .marketplace-section {
+    margin-top: 0.5rem;
+  }
+  .mp-banner {
+    background: #1a1a2e;
+    border: 1px solid #e94560;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    color: #e94560;
+    margin-bottom: 0.5rem;
+  }
+  .mp-banner a { color: #53d769; }
+  .mp-filters {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .mp-filter-btn {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    color: #888;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+  .mp-filter-btn:hover { border-color: #e94560; color: #ccc; }
+  .mp-filter-active { background: #0f3460; color: #fff; border-color: #e94560; }
+  .mp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+  .mp-card {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    padding: 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .mp-card-installed { opacity: 0.6; }
+  .mp-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .mp-card-icon {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #e94560;
+    background: #1a1a2e;
+    padding: 0.15rem 0.3rem;
+    border-radius: 4px;
+    font-family: monospace;
+  }
+  .mp-card-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #eee;
+  }
+  .mp-card-cat {
+    margin-left: auto;
+    font-size: 0.6rem;
+    color: #666;
+    background: #0d1b2a;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+  }
+  .mp-card-desc {
+    font-size: 0.7rem;
+    color: #999;
+  }
+  .mp-card-auth input {
+    width: 100%;
+    background: #0d1b2a;
+    border: 1px solid #0f3460;
+    color: #eee;
+    padding: 0.25rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    box-sizing: border-box;
+  }
+  .mp-card-status {
+    font-size: 0.7rem;
+    color: #53d769;
+    font-weight: 500;
+  }
+  .mp-install-btn {
+    background: #e94560;
+    border: none;
+    color: #fff;
+    padding: 0.3rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  .mp-install-btn:hover { background: #c73652; }
+  .mp-install-btn:disabled { background: #333; color: #666; cursor: not-allowed; }
 
   /* Markdown rendered content */
   .markdown :global(p) { margin: 0.25rem 0; }

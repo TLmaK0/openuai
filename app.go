@@ -16,6 +16,7 @@ import (
 	"openuai/internal/lipreading"
 	"openuai/internal/llm"
 	"openuai/internal/logger"
+	"openuai/internal/marketplace"
 	"openuai/internal/mcpclient"
 	"openuai/internal/memory"
 	"openuai/internal/tools"
@@ -810,6 +811,41 @@ Transcript:
 
 func (a *App) GetCostSummary() llm.CostSummary {
 	return a.costTracker.Summary()
+}
+
+// --- Marketplace ---
+
+func (a *App) GetMarketplace() []marketplace.CatalogEntry {
+	return marketplace.GetCatalog()
+}
+
+func (a *App) GetInstalledNames() []string {
+	var names []string
+	for _, s := range a.cfg.MCPServers {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+func (a *App) CheckNpx() bool {
+	return marketplace.CheckNpx()
+}
+
+func (a *App) InstallMarketplace(name, secret string) string {
+	entry := marketplace.GetByName(name)
+	if entry == nil {
+		return "unknown marketplace entry: " + name
+	}
+
+	// Check if already installed
+	for _, s := range a.cfg.MCPServers {
+		if s.Name == entry.Name {
+			return "already installed: " + entry.Name
+		}
+	}
+
+	cfg := marketplace.Install(*entry, secret)
+	return a.AddMCPServer(cfg.Name, cfg.Command, cfg.Args, cfg.Env, cfg.AutoStart, cfg.Subscribe, cfg.URL)
 }
 
 func (a *App) ResetCosts() {

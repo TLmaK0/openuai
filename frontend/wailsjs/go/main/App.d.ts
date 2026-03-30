@@ -5,6 +5,7 @@ import {llm} from '../models';
 import {eventbus} from '../models';
 import {main} from '../models';
 import {agent} from '../models';
+import {marketplace} from '../models';
 
 export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>,arg7:string):Promise<string>;
 
@@ -13,6 +14,8 @@ export function ApplyUpdate(arg1:string):Promise<string>;
 export function AuthMCPServer(arg1:string):Promise<string>;
 
 export function CallMCPTool(arg1:string,arg2:string,arg3:Record<string, string>):Promise<string>;
+
+export function CheckNpx():Promise<boolean>;
 
 export function ClearChat():Promise<void>;
 
@@ -34,7 +37,11 @@ export function GetEventSources():Promise<Array<string>>;
 
 export function GetEventStats():Promise<eventbus.Stats>;
 
+export function GetInstalledNames():Promise<Array<string>>;
+
 export function GetLogPath():Promise<string>;
+
+export function GetMarketplace():Promise<Array<marketplace.CatalogEntry>>;
 
 export function GetMCPServers():Promise<Array<main.MCPServerStatus>>;
 
@@ -59,6 +66,8 @@ export function GetVoiceEnabled():Promise<boolean>;
 export function GetWatchedChats():Promise<Array<string>>;
 
 export function HasAPIKey():Promise<boolean>;
+
+export function InstallMarketplace(arg1:string,arg2:string):Promise<string>;
 
 export function LipReadingModelReady():Promise<boolean>;
 

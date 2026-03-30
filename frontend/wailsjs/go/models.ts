@@ -134,6 +134,43 @@ export namespace llm {
 
 }
 
+export namespace marketplace {
+
+	export class CatalogEntry {
+	    name: string;
+	    description: string;
+	    icon: string;
+	    category: string;
+	    command: string;
+	    args: string[];
+	    env?: Record<string, string>;
+	    auth_type: string;
+	    auth_label: string;
+	    auth_env_var: string;
+	    subscribe?: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new CatalogEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.icon = source["icon"];
+	        this.category = source["category"];
+	        this.command = source["command"];
+	        this.args = source["args"];
+	        this.env = source["env"];
+	        this.auth_type = source["auth_type"];
+	        this.auth_label = source["auth_label"];
+	        this.auth_env_var = source["auth_env_var"];
+	        this.subscribe = source["subscribe"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class ChatResponse {

@@ -132,13 +132,15 @@ which is handled by `watch_chat` / `unwatch_chat` tools.
 - **MIME fallback**: tries `audio/webm;codecs=opus` → `audio/webm` → `audio/ogg;codecs=opus` → `audio/mp4`
 - Voice activation (wake word) and conversation mode: deferred to future iteration
 
-## Phase 15: Marketplace
+## Phase 15: Marketplace ✅
 
-- Community repository of shared rules, connectors, and prompt templates
-- Browse, search, and install from the UI
-- Publish your own rules/connectors
-- Version control and ratings
-- Local-first: marketplace is optional, everything works offline
+- **Curated MCP server catalog**: 10 pre-configured servers (Google Drive, GitHub, Slack, Filesystem, Fetch, PostgreSQL, Git, Brave Search, Puppeteer, Memory)
+- **One-click install**: browse catalog in Settings → Marketplace, enter API key if needed, click Install
+- **Categories**: Office, Dev, Search, Utilities with filter tabs
+- **Node.js check**: warns if `npx` not available
+- **Architecture**: `internal/marketplace/` with `CatalogEntry` struct, `Install()` function, static catalog embedded in binary
+- **Backend**: `GetMarketplace()`, `InstallMarketplace()`, `GetInstalledNames()`, `CheckNpx()` exposed via Wails
+- **Frontend**: marketplace grid in settings panel with install buttons, auth prompts, installed badges
 
 ---
 

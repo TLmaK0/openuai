@@ -18,6 +18,10 @@ export function CallMCPTool(arg1, arg2, arg3) {
   return window['go']['main']['App']['CallMCPTool'](arg1, arg2, arg3);
 }
 
+export function CheckNpx() {
+  return window['go']['main']['App']['CheckNpx']();
+}
+
 export function ClearChat() {
   return window['go']['main']['App']['ClearChat']();
 }
@@ -58,8 +62,16 @@ export function GetEventStats() {
   return window['go']['main']['App']['GetEventStats']();
 }
 
+export function GetInstalledNames() {
+  return window['go']['main']['App']['GetInstalledNames']();
+}
+
 export function GetLogPath() {
   return window['go']['main']['App']['GetLogPath']();
+}
+
+export function GetMarketplace() {
+  return window['go']['main']['App']['GetMarketplace']();
 }
 
 export function GetMCPServers() {
@@ -108,6 +120,10 @@ export function GetWatchedChats() {
 
 export function HasAPIKey() {
   return window['go']['main']['App']['HasAPIKey']();
+}
+
+export function InstallMarketplace(arg1, arg2) {
+  return window['go']['main']['App']['InstallMarketplace'](arg1, arg2);
 }
 
 export function LipReadingModelReady() {
