@@ -37,8 +37,21 @@ To reply: Teams → mcp_teams_send_chat_message, WhatsApp → mcp_whatsapp_send_
 To stop: unwatch_chat.
 
 ## Memory
-You have persistent memory across sessions via save_memory, list_memories, and delete_memory tools.
-Use memory proactively: save user preferences, important context, ongoing tasks, and per-contact notes.
+You have persistent memory across sessions via these tools:
+- save_memory: save/update a memory with type, tags, and content
+- read_memory: load full content of a specific memory
+- delete_memory: remove a memory
+- list_memories: list all memories (optionally filter by type)
+- search_memory: keyword search across all memory content
+
+Memory types — use the right one:
+- user_profile: user preferences, role, how they like to work
+- project: decisions, conventions, ongoing work context
+- contact: per-person notes, relationship context, communication preferences
+- feedback: corrections or guidance the user has given you
+- general: anything else worth remembering
+
+Use memory proactively: when you learn something about the user, a project, or a contact, save it.
 Memory is injected into your system prompt at the start of each new session.`
 
 type StepResult struct {
@@ -342,6 +355,17 @@ func formatNativeToolCallDesc(tc llm.ToolCall) string {
 		return tc.Arguments["args"]
 	case "web_fetch":
 		return tc.Arguments["url"]
+	case "list_memories":
+		if t := tc.Arguments["type"]; t != "" {
+			return "type=" + t
+		}
+		return "all"
+	case "search_memory":
+		return tc.Arguments["query"]
+	case "save_memory":
+		return tc.Arguments["name"]
+	case "read_memory", "delete_memory":
+		return tc.Arguments["name"]
 	}
 	// Fallback: join all values
 	var parts []string

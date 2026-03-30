@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -174,6 +176,8 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.SaveMemory{Store: a.memoryStore})
 	a.registry.Register(tools.ReadMemory{Store: a.memoryStore})
 	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
+	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
+	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
 	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents})
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
 
@@ -688,9 +692,120 @@ func (a *App) GetWatchedChats() []string {
 
 func (a *App) ClearChat() {
 	logger.Info("Chat cleared")
+
+	// Capture messages before clearing for memory extraction
+	if a.currentAgent != nil {
+		msgs := a.currentAgent.Messages()
+		if msgs != nil {
+			msgsCopy := make([]llm.Message, len(msgs))
+			copy(msgsCopy, msgs)
+			go a.extractMemoriesFromSession(msgsCopy)
+		}
+	}
+
 	a.currentAgent = nil
 	a.costTracker.Reset()
 	agent.ClearSession(a.cfg.ConfigDir())
+}
+
+// extractMemoriesFromSession sends a truncated transcript to the LLM to extract
+// key facts worth remembering. Runs in background, fire-and-forget.
+func (a *App) extractMemoriesFromSession(msgs []llm.Message) {
+	// Skip short sessions (fewer than 4 user messages)
+	userMsgCount := 0
+	for _, m := range msgs {
+		if m.Role == llm.RoleUser {
+			userMsgCount++
+		}
+	}
+	if userMsgCount < 4 {
+		return
+	}
+
+	// Build a truncated transcript (max ~4000 chars)
+	var transcript strings.Builder
+	for _, m := range msgs {
+		if m.Role == llm.RoleSystem || m.Role == llm.RoleToolResult {
+			continue
+		}
+		if m.Content == "" {
+			continue
+		}
+		role := string(m.Role)
+		line := role + ": " + m.Content + "\n"
+		if transcript.Len()+len(line) > 4000 {
+			break
+		}
+		transcript.WriteString(line)
+	}
+
+	if transcript.Len() < 100 {
+		return
+	}
+
+	extractPrompt := `Analyze this conversation transcript and extract key facts worth remembering for future sessions.
+Focus on:
+- User preferences, role, or how they like to work (type: user_profile)
+- Project decisions, context, or conventions (type: project)
+- Per-contact notes or relationship context (type: contact)
+- Corrections or guidance the user gave (type: feedback)
+
+Return ONLY a JSON array (no markdown, no explanation). Each item:
+{"name": "short_identifier", "type": "user_profile|project|contact|feedback", "description": "one-line summary", "content": "concise fact to remember"}
+
+If nothing is worth remembering, return an empty array: []
+
+Transcript:
+` + transcript.String()
+
+	provider := a.activeProvider()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := provider.Chat(ctx, []llm.Message{
+		{Role: llm.RoleUser, Content: extractPrompt},
+	}, a.cfg.DefaultModel)
+	if err != nil {
+		logger.Error("Memory extraction failed: %s", err.Error())
+		return
+	}
+
+	// Parse JSON array from response
+	type extractedMemory struct {
+		Name        string `json:"name"`
+		Type        string `json:"type"`
+		Description string `json:"description"`
+		Content     string `json:"content"`
+	}
+
+	// Find JSON array in response (may be wrapped in markdown code block)
+	body := strings.TrimSpace(resp.Content)
+	if idx := strings.Index(body, "["); idx >= 0 {
+		if end := strings.LastIndex(body, "]"); end > idx {
+			body = body[idx : end+1]
+		}
+	}
+
+	var memories []extractedMemory
+	if err := json.Unmarshal([]byte(body), &memories); err != nil {
+		logger.Error("Memory extraction parse failed: %s", err.Error())
+		return
+	}
+
+	for _, m := range memories {
+		if m.Name == "" || m.Content == "" {
+			continue
+		}
+		meta := memory.MemoryMeta{
+			Type:        m.Type,
+			Description: m.Description,
+		}
+		if err := a.memoryStore.SaveWithMeta(m.Name, meta, m.Content); err != nil {
+			logger.Error("Failed to save extracted memory %q: %s", m.Name, err.Error())
+		} else {
+			logger.Info("Auto-extracted memory: %s [%s]", m.Name, m.Type)
+		}
+	}
 }
 
 func (a *App) GetCostSummary() llm.CostSummary {
