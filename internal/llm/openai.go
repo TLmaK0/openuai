@@ -9,9 +9,28 @@ import (
 	"net/http"
 	"openuai/internal/logger"
 	"strings"
+	"time"
 )
 
+// maxRetries is the number of additional attempts after the first on transient errors.
+const maxRetries = 4
+
+// isRetriableStatus reports whether an HTTP status warrants a retry with backoff.
+func isRetriableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	}
+	return false
+}
+
 const codexBaseURL = "https://chatgpt.com/backend-api/codex/responses"
+const codexModelsURL = "https://chatgpt.com/backend-api/codex/models"
+const codexClientVersion = "0.115.0"
 
 type OpenAIProvider struct {
 	oauth      *OAuthFlow
@@ -30,13 +49,73 @@ func (o *OpenAIProvider) Name() string {
 }
 
 func (o *OpenAIProvider) Models() []string {
+	// Static fallback only. The live set of models is gated server-side per
+	// account and should come from FetchModels(); this list is used when the
+	// user isn't authenticated yet or the models endpoint is unreachable.
+	// As of 2026-06, ChatGPT accounts are migrated to the 5.4 family.
 	return []string{
-		"gpt-5.1-codex",
-		"gpt-5-codex",
-		"gpt-5.2",
-		"gpt-5.1",
-		"gpt-5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
 	}
+}
+
+type codexModelEntry struct {
+	Slug         string `json:"slug"`
+	Visibility   string `json:"visibility"`
+	SupportedAPI bool   `json:"supported_in_api"`
+}
+
+type codexModelsResponse struct {
+	Models []codexModelEntry `json:"models"`
+}
+
+// FetchModels queries the Codex backend for the models actually available to
+// this ChatGPT account (the set is gated server-side and changes over time, so
+// hardcoding slugs goes stale and yields HTTP 400 "model not supported").
+// Returns the slugs marked visibility=="list".
+func (o *OpenAIProvider) FetchModels(ctx context.Context) ([]string, error) {
+	accessToken, accountID, err := o.oauth.GetAccessToken()
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", codexModelsURL+"?client_version="+codexClientVersion, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("chatgpt-account-id", accountID)
+	req.Header.Set("originator", "codex_cli_rs")
+	req.Header.Set("User-Agent", "codex_cli_rs/"+codexClientVersion)
+
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var body bytes.Buffer
+		body.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("models API error (status %d): %s", resp.StatusCode, body.String())
+	}
+
+	var parsed codexModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+
+	var slugs []string
+	for _, m := range parsed.Models {
+		if m.Visibility == "list" {
+			slugs = append(slugs, m.Slug)
+		}
+	}
+	if len(slugs) == 0 {
+		return nil, fmt.Errorf("models API returned no listable models")
+	}
+	logger.Info("Fetched %d models from Codex backend: %v", len(slugs), slugs)
+	return slugs, nil
 }
 
 // Tool definition for the API
@@ -73,9 +152,22 @@ type codexRequest struct {
 }
 
 type codexInputMessage struct {
-	Type    string `json:"type"`
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Type    string      `json:"type"`
+	Role    string      `json:"role"`
+	Content interface{} `json:"content"` // string, or []content-part for image messages
+}
+
+// imageContentParts builds Responses-API content parts (input_text + input_image)
+// from a text body and base64 PNG images.
+func imageContentParts(text string, images []string) []map[string]interface{} {
+	parts := []map[string]interface{}{{"type": "input_text", "text": text}}
+	for _, img := range images {
+		parts = append(parts, map[string]interface{}{
+			"type":      "input_image",
+			"image_url": "data:image/png;base64," + img,
+		})
+	}
+	return parts
 }
 
 type codexToolResult struct {
@@ -140,13 +232,26 @@ func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []Message, 
 				CallID: m.ToolCallID,
 				Output: m.Content,
 			})
+			// function_call_output can't carry images, so attach any screenshots
+			// as a following user message (input_image parts).
+			if len(m.Images) > 0 {
+				input = append(input, codexInputMessage{
+					Type:    "message",
+					Role:    "user",
+					Content: imageContentParts("Screenshot after the action:", m.Images),
+				})
+			}
 		} else {
 			// Add the message itself (skip empty assistant messages that only had tool calls)
-			if m.Content != "" || len(m.ToolCalls) == 0 {
+			if m.Content != "" || len(m.ToolCalls) == 0 || len(m.Images) > 0 {
+				var content interface{} = m.Content
+				if len(m.Images) > 0 {
+					content = imageContentParts(m.Content, m.Images)
+				}
 				input = append(input, codexInputMessage{
 					Type:    "message",
 					Role:    string(m.Role),
-					Content: m.Content,
+					Content: content,
 				})
 			}
 			// Add function_call items for assistant messages with tool calls
@@ -184,32 +289,58 @@ func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	}
 	logger.Debug("OpenAI request body length: %d", len(jsonBody))
 
-	req, err := http.NewRequestWithContext(ctx, "POST", codexBaseURL, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, nil, fmt.Errorf("create request: %w", err)
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s, 8s — interruptible by ctx.
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			logger.Info("OpenAI retry %d/%d after %s (last error: %v)", attempt, maxRetries, backoff, lastErr)
+			select {
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", codexBaseURL, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, nil, fmt.Errorf("create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("chatgpt-account-id", accountID)
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+		req.Header.Set("originator", "codex_cli_rs")
+
+		resp, err := o.httpClient.Do(req)
+		if err != nil {
+			// Network/transport error — retry unless the context was cancelled.
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			lastErr = fmt.Errorf("send request: %w", err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			var body bytes.Buffer
+			body.ReadFrom(resp.Body)
+			resp.Body.Close()
+			logger.Error("OpenAI API error: status=%d body=%s", resp.StatusCode, body.String())
+			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, body.String())
+			if isRetriableStatus(resp.StatusCode) {
+				continue
+			}
+			return nil, nil, lastErr
+		}
+
+		defer resp.Body.Close()
+		return parseSSEResponseWithTools(resp, model)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("chatgpt-account-id", accountID)
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("originator", "codex_cli_rs")
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var body bytes.Buffer
-		body.ReadFrom(resp.Body)
-		logger.Error("OpenAI API error: status=%d body=%s", resp.StatusCode, body.String())
-		return nil, nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, body.String())
-	}
-
-	return parseSSEResponseWithTools(resp, model)
+	return nil, nil, fmt.Errorf("exhausted %d retries: %w", maxRetries, lastErr)
 }
 
 // Chat implements the Provider interface (simple text, no tools)

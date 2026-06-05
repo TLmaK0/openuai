@@ -4,8 +4,10 @@ import {voice} from '../models';
 import {llm} from '../models';
 import {eventbus} from '../models';
 import {main} from '../models';
-import {agent} from '../models';
 import {marketplace} from '../models';
+import {agent} from '../models';
+
+export function AbortAgent():Promise<void>;
 
 export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>,arg7:string):Promise<string>;
 
@@ -14,6 +16,8 @@ export function ApplyUpdate(arg1:string):Promise<string>;
 export function AuthMCPServer(arg1:string):Promise<string>;
 
 export function CallMCPTool(arg1:string,arg2:string,arg3:Record<string, string>):Promise<string>;
+
+export function CheckComputerUseDeps():Promise<string>;
 
 export function CheckNpx():Promise<boolean>;
 
@@ -29,6 +33,12 @@ export function GetAudioDevices():Promise<Array<voice.AudioDevice>>;
 
 export function GetBetaLipReading():Promise<boolean>;
 
+export function GetComputerUseDisplay():Promise<string>;
+
+export function GetComputerUseEnabled():Promise<boolean>;
+
+export function GetComputerUseMonitor():Promise<number>;
+
 export function GetCostSummary():Promise<llm.CostSummary>;
 
 export function GetDefaultModel():Promise<string>;
@@ -41,9 +51,9 @@ export function GetInstalledNames():Promise<Array<string>>;
 
 export function GetLogPath():Promise<string>;
 
-export function GetMarketplace():Promise<Array<marketplace.CatalogEntry>>;
-
 export function GetMCPServers():Promise<Array<main.MCPServerStatus>>;
+
+export function GetMarketplace():Promise<Array<marketplace.CatalogEntry>>;
 
 export function GetModels():Promise<Array<string>>;
 
@@ -92,6 +102,12 @@ export function SetAPIKey(arg1:string):Promise<void>;
 export function SetAudioDevice(arg1:string):Promise<void>;
 
 export function SetBetaLipReading(arg1:boolean):Promise<void>;
+
+export function SetComputerUseDisplay(arg1:string):Promise<void>;
+
+export function SetComputerUseEnabled(arg1:boolean):Promise<void>;
+
+export function SetComputerUseMonitor(arg1:number):Promise<void>;
 
 export function SetDefaultModel(arg1:string):Promise<void>;
 

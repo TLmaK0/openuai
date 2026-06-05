@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"openuai/internal/agent"
 	"openuai/internal/api"
+	"openuai/internal/computeruse"
 	"openuai/internal/config"
 	"openuai/internal/eventbus"
 	"openuai/internal/lipreading"
@@ -50,7 +53,8 @@ type App struct {
 	permMu       sync.Mutex
 	permResponse chan permAnswer
 
-	agentMu sync.Mutex // serializes all agent.Run() calls (user messages + autonomous triggers)
+	agentMu     sync.Mutex // serializes all agent.Run() calls (user messages + autonomous triggers)
+	agentCancel context.CancelFunc
 
 	memoryStore *memory.Store
 
@@ -180,6 +184,14 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
 	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
 	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents})
+	if cfg.ComputerUseEnabled {
+		disp := cfg.ComputerUseDisplay
+		if disp == "" {
+			disp = ":0"
+		}
+		computeruse.RegisterTools(a.registry, computeruse.New(disp, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+		logger.Info("Computer-use tools registered (display %s)", disp)
+	}
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
 
 	// Permissions
@@ -455,6 +467,18 @@ func (a *App) HasAPIKey() bool {
 // --- Models ---
 
 func (a *App) GetModels() []string {
+	// For OpenAI/Codex, the available models are gated per account and change
+	// over time — fetch them live so the list never goes stale. Fall back to
+	// the provider's static list if not authenticated or the query fails.
+	if a.cfg.Provider != "claude" && a.openai.IsAuthenticated() {
+		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+		defer cancel()
+		if models, err := a.openai.FetchModels(ctx); err == nil {
+			return models
+		} else {
+			logger.Info("FetchModels failed, using static list: %s", err.Error())
+		}
+	}
 	return a.activeProvider().Models()
 }
 
@@ -526,8 +550,12 @@ func (a *App) SendMessage(content string) ChatResponse {
 	a.agentMu.Lock()
 	defer a.agentMu.Unlock()
 
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.agentCancel = cancel
+	defer func() { a.agentCancel = nil }()
+
 	ag := a.ensureAgent()
-	err := ag.Run(a.ctx, content)
+	err := ag.Run(ctx, content)
 
 	// Save session after each interaction (success or failure)
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
@@ -551,15 +579,27 @@ func (a *App) SendMessage(content string) ChatResponse {
 	}
 }
 
+// AbortAgent cancels the currently running agent loop.
+func (a *App) AbortAgent() {
+	if cancel := a.agentCancel; cancel != nil {
+		logger.Info("Agent abort requested by user")
+		cancel()
+	}
+}
+
 // triggerAgentWithNotification immediately runs the agent with an event notification.
 // It acquires agentMu so it serializes with SendMessage and other autonomous triggers.
 func (a *App) triggerAgentWithNotification(notification string) {
 	a.agentMu.Lock()
 	defer a.agentMu.Unlock()
 
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.agentCancel = cancel
+	defer func() { a.agentCancel = nil }()
+
 	ag := a.ensureAgent()
 	logger.Info("Autonomous agent run starting: %s", notification)
-	if err := ag.Run(a.ctx, notification); err != nil {
+	if err := ag.Run(ctx, notification); err != nil {
 		logger.Error("Autonomous agent run error: %s", err.Error())
 	}
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
@@ -1144,6 +1184,87 @@ func (a *App) SetBetaLipReading(enabled bool) error {
 	a.cfg.BetaLipReading = enabled
 	logger.Info("Beta lip reading: %v", enabled)
 	return a.cfg.Save()
+}
+
+// --- Computer Use ---
+
+// GetComputerUseEnabled reports whether computer-use (screen control) is on.
+func (a *App) GetComputerUseEnabled() bool { return a.cfg.ComputerUseEnabled }
+
+// computerUseMonitor returns the configured monitor index (default 0 = primary).
+func (a *App) computerUseMonitor() int {
+	if a.cfg.ComputerUseMonitor == nil {
+		return 0
+	}
+	return *a.cfg.ComputerUseMonitor
+}
+
+// GetComputerUseMonitor returns the configured monitor index.
+func (a *App) GetComputerUseMonitor() int { return a.computerUseMonitor() }
+
+// SetComputerUseMonitor sets which monitor the agent controls and re-registers tools.
+func (a *App) SetComputerUseMonitor(monitor int) error {
+	a.cfg.ComputerUseMonitor = &monitor
+	if a.cfg.ComputerUseEnabled {
+		computeruse.RegisterTools(a.registry, computeruse.New(a.GetComputerUseDisplay(), monitor, a.cfg.ComputerUseProfile))
+	}
+	a.currentAgent = nil
+	logger.Info("Computer-use monitor set to %d", monitor)
+	return a.cfg.Save()
+}
+
+// GetComputerUseDisplay returns the configured X display (default ":0").
+func (a *App) GetComputerUseDisplay() string {
+	if a.cfg.ComputerUseDisplay == "" {
+		return ":0"
+	}
+	return a.cfg.ComputerUseDisplay
+}
+
+// SetComputerUseDisplay sets the X display the agent controls (e.g. ":0" or ":99").
+func (a *App) SetComputerUseDisplay(display string) error {
+	a.cfg.ComputerUseDisplay = display
+	if a.cfg.ComputerUseEnabled {
+		// Re-register the computer_* tools bound to the new display (Register
+		// overwrites by name), so the change takes effect without a restart.
+		computeruse.RegisterTools(a.registry, computeruse.New(display, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+	}
+	a.currentAgent = nil // rebuild with new display
+	logger.Info("Computer-use display set to %s", display)
+	return a.cfg.Save()
+}
+
+// SetComputerUseEnabled toggles computer-use. Enabling registers the screen-control
+// tools immediately; disabling takes effect for new agent runs.
+func (a *App) SetComputerUseEnabled(enabled bool) error {
+	a.cfg.ComputerUseEnabled = enabled
+	if enabled {
+		disp := a.GetComputerUseDisplay()
+		computeruse.RegisterTools(a.registry, computeruse.New(disp, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+		logger.Info("Computer-use enabled (display %s)", disp)
+	} else {
+		logger.Info("Computer-use disabled (effective next restart)")
+	}
+	a.currentAgent = nil // rebuild so the tool set changes take effect
+	return a.cfg.Save()
+}
+
+// CheckComputerUseDeps verifies the Linux/X11 dependencies are available.
+// Returns an empty string if OK, or a human-readable problem description.
+func (a *App) CheckComputerUseDeps() string {
+	if runtime.GOOS != "linux" {
+		return "Computer use currently requires Linux/X11"
+	}
+	missing := []string{}
+	for _, bin := range []string{"xdotool", "import"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	if len(missing) > 0 {
+		return "Missing dependencies: " + strings.Join(missing, ", ") + " (install xdotool and imagemagick)"
+	}
+	return ""
 }
 
 // --- Lip Reading ---

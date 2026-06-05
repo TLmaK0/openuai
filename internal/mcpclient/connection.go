@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -105,7 +106,7 @@ func (c *Connection) startHTTP(ctx context.Context) error {
 	if c.cfg.NeedsLaunch() {
 		logger.Info("MCP[%s]: launching server %s %v", c.name, c.cfg.Command, c.cfg.Args)
 		c.process = exec.Command(c.cfg.Command, c.cfg.Args...)
-		c.process.Env = append(c.process.Environ(), c.env...)
+		c.process.Env = append(os.Environ(), c.env...)
 		if err := c.process.Start(); err != nil {
 			return fmt.Errorf("MCP[%s]: failed to launch server: %w", c.name, err)
 		}

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 
 	"openuai/internal/llm"
@@ -10,20 +12,42 @@ import (
 	"openuai/internal/tools"
 )
 
-const maxIterations = 50
+const maxIterations = 200
 const maxConsecutiveErrors = 3 // stop calling the same tool after this many consecutive errors
+const maxToolResultBytes = 50000 // truncate tool results larger than this
 
 const systemPrompt = `You are OpenUAI, an autonomous AI agent with full access to the user's system.
 You have tools to read/write files, execute shell commands, manage git repositories, browse the web, and more.
 
 ## Guidelines
-- Act directly: use your tools to accomplish the task, don't describe what you would do
+- Execute immediately: start working right away, don't describe what you would do or present options — just do it
+- Minimize interruptions: prefer making reasonable assumptions over asking questions. Only ask when the ambiguity would lead to irreversible consequences
 - Be concise: respond naturally, don't announce plans or summarize steps
 - Be safe: for destructive operations (delete, overwrite), briefly confirm what you're about to do
 - Never fabricate output — always use your tools to get real data
-- If a task is ambiguous, ask a brief clarifying question instead of guessing
 - If a tool call fails, try a different approach automatically — don't ask the user for permission to retry or change strategy, just do it
+- Expect course corrections: the user will tell you if you got it wrong, so bias toward action over asking
 - When searching and getting no or few results, ALWAYS try variations before giving up: partial names, first name only, last name only, different casing, broader filters, remove filters, or no filters at all. For example, if "Hugo Freire" returns nothing, try "Hugo", then "Freire", then search without a name filter. Never report "not found" after a single search attempt
+- Browser automation: use your MCP browser tools (mcp_Puppeteer_*). NEVER use bash to launch Chrome, pkill chrome, install pyautogui, use xdotool, or any other screen-automation/CDP workaround — the MCP server manages the browser itself.
+- Browser VISIBILITY: run VISIBLE by default. Pass launchOptions {"headless": false} on the FIRST puppeteer_navigate that opens the browser. This is a desktop app and the user wants to WATCH the browser do the work. Only use {"headless": true} if the user EXPLICITLY asks to run in the background, or if no graphical display is available (see Environment). Do not run headless just because it's faster.
+- launchOptions and allowDangerous:true go ONLY on that FIRST puppeteer_navigate. On EVERY later call (puppeteer_evaluate, _click, _fill, _screenshot, further _navigate) do NOT pass launchOptions or allowDangerous. Never change headless mid-session. Do NOT set executablePath — the Chrome binary is already configured for this machine.
+- After navigating, the DOM may not be ready instantly (especially SPAs like Odoo). If a read returns empty/blank but navigate succeeded, wait briefly and re-read before concluding the page is blank — do NOT assume failure on the first empty read.
+- NEVER fabricate form values or content. If a form needs data the user did not provide, STOP and ask the user for the values — do not invent names, emails, or messages. Only fill placeholder/test data if the user explicitly asked for a test fill.
+- When a browser click fails with "subtree intercepts pointer events", a modal/overlay is on top. Take a fresh snapshot, interact with the modal first (close/fill/click inside it), then retry.
+
+## Computer use (screen control)
+If the computer_* tools are available you can control the real desktop/browser directly — like a person looking at the screen. This is the most reliable way to act on apps the user is already logged into, and avoids launching a separate browser.
+- IMPORTANT: when the computer_* tools are available, use them for ALL browser and GUI tasks. Do NOT use the Puppeteer/Playwright MCP tools (mcp_Puppeteer_*, mcp_Playwright_*) — they launch a separate browser that conflicts with the user's session. computer_* drives the real screen.
+- ORIENT before you act. Each screenshot result includes a "[Window: … | URL: …]" line — read it. Identify WHICH application/page you're on and how that kind of app is operated, THEN act using its conventions. E.g. if the title/URL show Odoo (".../web", ".../odoo", "… - Odoo"), use Odoo's UI: the top apps menu, the search, breadcrumbs and list-view filters — don't guess at random pixels. Recognise common apps (Odoo, Gmail, Google, GitHub, Office) from their title/URL/layout and use what you know about them.
+- CHECK YOUR PROGRESS. After an action, compare the new screenshot to what you expected. If nothing changed, or you're not where you expected (e.g. you meant to open a menu but the screen looks the same), do NOT repeat the same click — re-screenshot, re-read the window/URL context, and rethink. Never click the same wrong spot twice.
+- To open a web page, use computer_open_url(url). After it returns you are ALREADY on that page — do NOT re-type the URL or click the address bar again.
+- To click a button or link identified by its visible text, use computer_click_text("the label") — it finds the text by OCR and clicks it accurately. This is far more reliable than guessing pixel coordinates, so prefer it for any labeled control. Use computer_find_text to get the coordinates of on-screen text without clicking.
+- BE EFFICIENT — minimize round-trips. Each screenshot→decide→act cycle is slow, so:
+  1. Act decisively: look at the screenshot, pick the target, act. Do NOT click around speculatively to "explore".
+  2. Batch independent actions on the SAME screen into ONE computer_actions call (e.g. fill all form fields: click field1, type, click field2, type, …). Take a fresh screenshot only when the screen has changed in a way you must see (e.g. after navigating to a new page).
+  3. For known-text targets, computer_click_text reaches them in one step without a locate-then-click round-trip.
+- Coordinates are ABSOLUTE pixels from the top-left of the screenshot; aim for the center of the target. Single-step tools (computer_click/type/key/scroll) are for one-off corrections — prefer computer_actions / computer_click_text.
+- Use computer use for browser/GUI tasks and tasks needing the user's existing login/session. NEVER fabricate form data — ask the user if values are missing.
 
 ## Real-time message monitoring (IMPORTANT)
 To receive messages in real-time you MUST call watch_chat with the chat ID. Without watch_chat, NO messages will reach you.
@@ -91,6 +115,25 @@ func New(cfg Config) *Agent {
 	toolDefs := convertToolDefs(cfg.Registry)
 
 	prompt := systemPrompt
+
+	// Inject environment info so the LLM knows what's available
+	prompt += "\n\n## Environment"
+	prompt += "\n- OS: " + runtime.GOOS + "/" + runtime.GOARCH
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		// macOS and Windows always have a graphical display
+		prompt += "\n- Graphical display available. You CAN launch GUI applications."
+	default:
+		// Linux/BSD: check for X11 or Wayland
+		if display := os.Getenv("DISPLAY"); display != "" {
+			prompt += "\n- Graphical display available (X11 DISPLAY=" + display + "). You CAN launch GUI applications."
+		} else if wl := os.Getenv("WAYLAND_DISPLAY"); wl != "" {
+			prompt += "\n- Graphical display available (Wayland WAYLAND_DISPLAY=" + wl + "). You CAN launch GUI applications."
+		} else {
+			prompt += "\n- No graphical display detected. GUI applications may not work — use headless mode when available."
+		}
+	}
+
 	if cfg.MemoryText != "" {
 		prompt += "\n\n## Memory\nThe following is what you remember from previous sessions:\n\n" + cfg.MemoryText
 	}
@@ -134,7 +177,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	}
 
 	for i := 0; i < maxIterations; i++ {
+		select {
+		case <-ctx.Done():
+			a.emit(StepResult{Type: "done", Content: "Aborted by user."})
+			return ctx.Err()
+		default:
+		}
 		logger.Info("Agent iteration %d/%d, messages=%d", i+1, maxIterations, len(a.messages))
+
+		// MicroCompact: prune old tool results to keep context manageable.
+		// Keep the last 6 tool results intact, replace older ones with a stub.
+		a.pruneOldToolResults(6)
 
 		resp, toolCalls, err := toolProvider.ChatWithTools(ctx, a.messages, a.model, a.toolDefs)
 		if err != nil {
@@ -243,10 +296,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 			}
 
+			// Truncate oversized tool results to prevent context overflow
+			if len(resultContent) > maxToolResultBytes {
+				truncated := resultContent[:maxToolResultBytes]
+				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes]", len(resultContent), maxToolResultBytes)
+			}
+
 			a.messages = append(a.messages, llm.Message{
 				Role:       llm.RoleToolResult,
 				ToolCallID: tc.ID,
 				Content:    resultContent,
+				Images:     result.Images,
 			})
 
 			a.emit(StepResult{Type: "tool_result", Content: fmt.Sprintf("Tool %s result:\n%s", tc.Name, resultContent), ToolName: tc.Name})
@@ -285,6 +345,28 @@ func (a *Agent) runSimpleChat(ctx context.Context) error {
 	})
 	a.emit(StepResult{Type: "done", Content: resp.Content})
 	return nil
+}
+
+// pruneOldToolResults trims old context (MicroCompact pattern):
+//   - tool-result TEXT beyond the most recent `keep` is replaced with a stub.
+//   - SCREENSHOTS (base64 images) are far heavier, so only the most recent
+//     `keepImages` are retained; older ones are dropped. This keeps request
+//     payloads small (a few screenshots, not dozens of MB).
+func (a *Agent) pruneOldToolResults(keep int) {
+	const stub = "[Old tool result cleared]"
+	const keepImages = 2
+	count := 0
+	for i := len(a.messages) - 1; i >= 0; i-- {
+		if a.messages[i].Role == llm.RoleToolResult {
+			count++
+			if count > keepImages {
+				a.messages[i].Images = nil
+			}
+			if count > keep && a.messages[i].Content != stub {
+				a.messages[i].Content = stub
+			}
+		}
+	}
 }
 
 // LastAssistantContent scans messages backwards and returns the content

@@ -236,9 +236,14 @@ func extractAccountID(accessToken string) string {
 		return ""
 	}
 
-	// Account ID is in the custom claim
+	// Account ID is in the custom claim. ChatGPT-account tokens expose it as
+	// "chatgpt_account_id"; some org tokens use "organization_id". Prefer the
+	// ChatGPT account id (required by the Codex backend), fall back to org id.
 	if authClaim, ok := claims["https://api.openai.com/auth"].(map[string]interface{}); ok {
-		if orgID, ok := authClaim["organization_id"].(string); ok {
+		if acctID, ok := authClaim["chatgpt_account_id"].(string); ok && acctID != "" {
+			return acctID
+		}
+		if orgID, ok := authClaim["organization_id"].(string); ok && orgID != "" {
 			return orgID
 		}
 	}

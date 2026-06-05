@@ -21,6 +21,10 @@ type Definition struct {
 type Result struct {
 	Output string `json:"output"`
 	Error  string `json:"error,omitempty"`
+	// Images holds base64-encoded PNG data produced by the tool (e.g. a
+	// computer-use screenshot). The agent attaches these to the tool-result
+	// message so vision models can see them.
+	Images []string `json:"images,omitempty"`
 }
 
 type Tool interface {

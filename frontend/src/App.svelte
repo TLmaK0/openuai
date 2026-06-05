@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
+  import { SendMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -342,9 +342,17 @@
 
     const resp = await SendMessage(content);
     loading = false;
+    aborting = false;
 
     totalCost = resp.cost_usd || 0;
     totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+  }
+
+  let aborting = false;
+  async function abort() {
+    if (!loading) return;
+    aborting = true;
+    await AbortAgent();
   }
 
   async function clearChat() {
@@ -467,6 +475,7 @@
     const err = await RemoveMCPServer(name);
     if (err) alert('Failed to remove: ' + err);
     await refreshMCPServers();
+    installedNames = (await GetInstalledNames()) || [];
   }
 
   async function openMarketplace() {
@@ -549,6 +558,13 @@
     await SetSTTLanguage(sttLanguage);
   }
 
+  function handleGlobalKeydown(e) {
+    if (e.key === 'Escape' && loading && !aborting) {
+      e.preventDefault();
+      abort();
+    }
+  }
+
   function handleKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -574,6 +590,8 @@
     }
   }
 </script>
+
+<svelte:window on:keydown={handleGlobalKeydown} />
 
 <main>
   <header>
@@ -1044,7 +1062,13 @@
       rows="1"
       disabled={loading || !isReady || transcribing}
     ></textarea>
-    <button on:click={send} disabled={loading || !isReady || !input.trim()}>Send</button>
+    {#if loading}
+      <button class="stop-btn" on:click={abort} disabled={aborting} title="Stop the running task (Esc)">
+        {#if aborting}Stopping...{:else}Stop{/if}
+      </button>
+    {:else}
+      <button on:click={send} disabled={!isReady || !input.trim()}>Send</button>
+    {/if}
     <button class="clear-btn" on:click={clearChat}>Clear</button>
   </div>
 </main>
@@ -1621,6 +1645,8 @@
   .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 
   .clear-btn { background: #0f3460 !important; }
+  .stop-btn { background: #c0392b !important; }
+  .stop-btn:hover:not(:disabled) { background: #e74c3c !important; }
 
   /* Beta features */
   .beta-section {

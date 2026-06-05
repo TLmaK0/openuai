@@ -29,6 +29,16 @@ OpenUAI combines the **autonomy of Cowork** with the **power of Claude Code**:
   - Linux/macOS: sudo with cached credentials or polkit
   - Windows: UAC prompt via runas
 
+### Working Principles
+
+- **Stay on the requested problem**: when the user is specifically trying to make solution X work, fix X. Do NOT pivot to an alternative tool/approach as a workaround unless the user explicitly agrees to switch. Example: if we are debugging Puppeteer, keep debugging Puppeteer — do not suggest "let's use Playwright instead" to sidestep the issue. Diagnose and fix the actual root cause. You may *mention* an alternative once, briefly, but never abandon the requested path on your own.
+
+### Agent Safety Rules
+
+- **Browser automation**: always use MCP browser tools (Puppeteer). Never use bash to launch/pkill Chrome, install pyautogui, xdotool, or any screen-automation/CDP workaround — the MCP server owns the browser lifecycle
+- **Browser visibility**: run VISIBLE by default (`launchOptions {"headless": false}` on the first navigate). This is a desktop app — the user wants to watch the browser work. Only go headless if the user explicitly asks for background operation, or there is no graphical display
+- **Never fabricate form data**: if a form needs values the user didn't provide, ask for them — never invent names, emails, or messages
+
 ### Target Capabilities
 
 1. **Everything Cowork does**: filesystem access, autonomous planning, multi-step execution, MCP connectors

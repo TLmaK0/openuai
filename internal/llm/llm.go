@@ -16,6 +16,9 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	// Images holds base64-encoded PNG screenshots attached to this message
+	// (used by computer-use: the model sees them as image inputs).
+	Images []string `json:"images,omitempty"`
 }
 
 // ToolCallProvider extends Provider with native tool calling support

@@ -65,6 +65,10 @@ type Config struct {
 	AudioDevice            string           `json:"audio_device,omitempty"`
 	SkippedVersion         string           `json:"skipped_version,omitempty"`
 	BetaLipReading         bool             `json:"beta_lip_reading,omitempty"`
+	ComputerUseEnabled     bool             `json:"computer_use_enabled,omitempty"`
+	ComputerUseDisplay     string           `json:"computer_use_display,omitempty"` // X display, e.g. ":0" (screen) or ":99" (virtual)
+	ComputerUseMonitor     *int             `json:"computer_use_monitor,omitempty"` // monitor index (xrandr); nil = primary (0), -1 = whole desktop
+	ComputerUseProfile     string           `json:"computer_use_profile,omitempty"` // chrome user-data-dir; empty = the user's own profile/session
 	path               string
 }
 

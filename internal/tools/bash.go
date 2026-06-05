@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+// runWithCancel starts cmd in its own process group and waits for it, killing
+// the entire group if ctx is cancelled or times out. It returns the command's
+// error, or ctx.Err() if the context ended first (so callers can distinguish
+// a user abort / timeout from a normal non-zero exit).
+func runWithCancel(ctx context.Context, cmd *exec.Cmd) error {
+	setProcGroup(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-ctx.Done():
+		killProcGroup(cmd)
+		<-done // reap the killed process
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
+}
+
 // Bash executes a shell command
 type Bash struct {
 	WorkDir string
@@ -46,9 +67,9 @@ func (t Bash) Execute(ctx context.Context, args map[string]string) Result {
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
+		cmd = exec.Command("cmd", "/C", command)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		cmd = exec.Command("sh", "-c", command)
 	}
 
 	if t.WorkDir != "" {
@@ -59,7 +80,7 @@ func (t Bash) Execute(ctx context.Context, args map[string]string) Result {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runWithCancel(ctx, cmd)
 
 	var output strings.Builder
 	if stdout.Len() > 0 {
@@ -82,6 +103,9 @@ func (t Bash) Execute(ctx context.Context, args map[string]string) Result {
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return Result{Error: "command timed out after " + fmt.Sprintf("%d", timeoutSec) + " seconds"}
+		}
+		if ctx.Err() == context.Canceled {
+			return Result{Error: "command aborted by user"}
 		}
 		if result == "" {
 			return Result{Error: err.Error()}
@@ -128,9 +152,9 @@ func (t BashSudo) Execute(ctx context.Context, args map[string]string) Result {
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "powershell", "-Command", "Start-Process cmd -ArgumentList '/C "+command+"' -Verb RunAs -Wait")
+		cmd = exec.Command("powershell", "-Command", "Start-Process cmd -ArgumentList '/C "+command+"' -Verb RunAs -Wait")
 	} else {
-		cmd = exec.CommandContext(ctx, "sudo", "sh", "-c", command)
+		cmd = exec.Command("sudo", "sh", "-c", command)
 	}
 
 	if t.WorkDir != "" {
@@ -141,7 +165,7 @@ func (t BashSudo) Execute(ctx context.Context, args map[string]string) Result {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := runWithCancel(ctx, cmd)
 
 	var output strings.Builder
 	if stdout.Len() > 0 {
@@ -161,6 +185,12 @@ func (t BashSudo) Execute(ctx context.Context, args map[string]string) Result {
 	}
 
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return Result{Error: "command timed out after " + fmt.Sprintf("%d", timeoutSec) + " seconds"}
+		}
+		if ctx.Err() == context.Canceled {
+			return Result{Error: "command aborted by user"}
+		}
 		if result == "" {
 			return Result{Error: err.Error()}
 		}

@@ -1,3 +1,16 @@
 build/bin
 node_modules
 frontend/dist
+
+# Build outputs / binaries
+/openuai
+/mcp-echo
+/mcp-whatsapp
+
+# Runtime data and caches
+/store/
+/.wrangler/
+/.playwright-mcp/
+
+# External working repos (not part of this module)
+/lip-reading/

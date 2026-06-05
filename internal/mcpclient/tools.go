@@ -9,6 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"openuai/internal/logger"
 	"openuai/internal/tools"
 )
 
@@ -39,9 +40,22 @@ func (t *MCPTool) Definition() tools.Definition {
 
 // Execute implements tools.Tool.
 func (t *MCPTool) Execute(ctx context.Context, args map[string]string) tools.Result {
-	// Convert string args to proper types based on the MCP tool schema
+	// Convert string args to proper types based on the MCP tool schema.
+	// Drop any argument the tool's schema doesn't declare: LLMs sometimes
+	// hallucinate extra args (e.g. launchOptions/allowDangerous onto
+	// puppeteer_evaluate, which only accepts `script`). Forwarding undeclared
+	// args is not just noise — some servers misbehave (the puppeteer MCP
+	// relaunches a fresh blank browser when it sees a stray launchOptions),
+	// so the page comes back as about:blank.
+	hasSchema := len(t.remoteTool.InputSchema.Properties) > 0
 	mcpArgs := make(map[string]any, len(args))
 	for k, v := range args {
+		if hasSchema {
+			if _, ok := t.remoteTool.InputSchema.Properties[k]; !ok {
+				logger.Info("MCP[%s]: dropping undeclared arg %q for tool %s", t.serverName, k, t.remoteName)
+				continue
+			}
+		}
 		mcpArgs[k] = coerceArg(v, t.argType(k))
 	}
 
