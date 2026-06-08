@@ -9,6 +9,72 @@
     gfm: true,
   });
 
+  // Organic morphing blobs for the ambient orb. Each outline is a closed
+  // Catmull-Rom spline whose vertex radii are driven by several *travelling*
+  // sine harmonics, so the waves continuously expand/contract and drift around
+  // the ring — the shape deforms rather than a fixed silhouette merely turning.
+  // Lines only (no fills/filters), morphed at ~30fps, so it stays responsive.
+  const TAU = Math.PI * 2;
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  function makeBlobCfg(base, color, op) {
+    const harmonics = [];
+    const n = 3 + Math.floor(Math.random() * 2);   // 3-4 overlapping waves
+    for (let i = 0; i < n; i++) {
+      harmonics.push({
+        m: 2 + Math.floor(Math.random() * 5),       // lobe count
+        amp: rand(3, 9),                            // wave height
+        speed: rand(0.25, 0.75) * (Math.random() < 0.5 ? -1 : 1), // travel dir/rate
+        phase: Math.random() * TAU,
+      });
+    }
+    return { base, color, op, harmonics };
+  }
+  const blobCfgs = [
+    makeBlobCfg(86, '#4aa8ff', 0.9),
+    makeBlobCfg(82, '#6cbcff', 0.75),
+    makeBlobCfg(78, '#3a90ff', 0.6),
+    makeBlobCfg(84, '#8fd0ff', 0.55),
+  ];
+  const BLOB_N = 14;                                // sample points per outline
+  let blobPaths = blobCfgs.map(() => '');
+
+  function buildBlobPath(cfg, t) {
+    const cx = 120, cy = 120, pts = [];
+    for (let i = 0; i < BLOB_N; i++) {
+      const a = (i / BLOB_N) * TAU;
+      let r = cfg.base;
+      for (const h of cfg.harmonics) r += h.amp * Math.sin(h.m * a + t * h.speed + h.phase);
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    const f = (v) => v.toFixed(1);
+    let d = `M ${f(pts[0][0])} ${f(pts[0][1])} `;
+    for (let i = 0; i < BLOB_N; i++) {
+      const p0 = pts[(i - 1 + BLOB_N) % BLOB_N], p1 = pts[i], p2 = pts[(i + 1) % BLOB_N], p3 = pts[(i + 2) % BLOB_N];
+      const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+      const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+      d += `C ${f(c1x)} ${f(c1y)} ${f(c2x)} ${f(c2y)} ${f(p2[0])} ${f(p2[1])} `;
+    }
+    return d + 'Z';
+  }
+
+  // ~30fps morph loop; the waves advance faster while the agent is thinking.
+  let _blobRaf, _blobLast = null, _blobPhase = 0, _blobAcc = 0;
+  function blobTick(now) {
+    _blobRaf = requestAnimationFrame(blobTick);
+    if (_blobLast === null) { _blobLast = now; return; }
+    const dt = (now - _blobLast) / 1000; _blobLast = now;
+    _blobPhase += dt * (loading ? 4 : 1);
+    _blobAcc += dt;
+    if (_blobAcc < 1 / 30) return;
+    _blobAcc = 0;
+    blobPaths = blobCfgs.map((c) => buildBlobPath(c, _blobPhase));
+  }
+  onMount(() => {
+    _blobRaf = requestAnimationFrame(blobTick);
+    return () => cancelAnimationFrame(_blobRaf);
+  });
+
   let messages = [];
   let input = '';
   let loading = false;
@@ -593,6 +659,16 @@
 
 <svelte:window on:keydown={handleGlobalKeydown} />
 
+<div class="orb-bg" class:active={loading}>
+  {#each blobCfgs as c, i}
+    <svg class="orb-ring" viewBox="0 0 240 240" aria-hidden="true"
+         style="color:{c.color}; opacity:{c.op};">
+      <path class="glow" d={blobPaths[i]} fill="none" stroke="currentColor"/>
+      <path class="line" d={blobPaths[i]} fill="none" stroke="currentColor"/>
+    </svg>
+  {/each}
+</div>
+
 <main>
   <header>
     <h1>OpenUAI</h1>
@@ -952,9 +1028,6 @@
   {/if}
 
   <div class="chat" bind:this={chatEl}>
-    {#if messages.length === 0 && !loading}
-      <div class="empty">Start a conversation — I can execute commands, edit files, and manage git repos</div>
-    {/if}
     {#each messages as msg, i}
       {#if msg.role === 'user'}
         <div class="message user">
@@ -1018,11 +1091,6 @@
         </div>
       {/if}
     {/each}
-    {#if loading}
-      <div class="message assistant">
-        <div class="message-content loading">Working...</div>
-      </div>
-    {/if}
   </div>
 
   <div class="input-area">
@@ -1075,27 +1143,32 @@
 
 <style>
   :global(select) {
-    background: #1a1a2e !important;
+    background: #070b12 !important;
     color: #eee !important;
     -webkit-text-fill-color: #eee !important;
     color-scheme: dark;
     opacity: 1 !important;
   }
   :global(select option) {
-    background: #1a1a2e;
+    background: #070b12;
     color: #eee;
   }
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #1a1a2e;
-    color: #eee;
+    background:
+      radial-gradient(1100px 700px at 50% 38%, rgba(33,120,220,0.12), transparent 70%),
+      radial-gradient(900px 600px at 85% 110%, rgba(20,90,180,0.10), transparent 70%),
+      #04070d;
+    color: #dce6f2;
   }
 
   main {
     display: flex;
     flex-direction: column;
     height: 100vh;
+    position: relative;
+    z-index: 1;            /* sits above the ambient orb (z-index:0) */
   }
 
   header {
@@ -1103,25 +1176,32 @@
     justify-content: space-between;
     align-items: center;
     padding: 0.5rem 1rem;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: rgba(9,14,23,0.9);
+    border-bottom: 1px solid #163050;
   }
 
-  header h1 { margin: 0; font-size: 1.2rem; color: #e94560; }
+  header h1 {
+    margin: 0;
+    font-size: 1.2rem;
+    color: #5bb6ff;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+    text-shadow: 0 0 14px rgba(47,158,255,0.55);
+  }
 
   .header-right { display: flex; align-items: center; gap: 0.5rem; }
 
   .cost-badge {
-    background: #0f3460;
+    background: #163050;
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     font-size: 0.8rem;
-    color: #53d769;
+    color: #3ad8ff;
   }
 
   .icon-btn {
     background: none;
-    border: 1px solid #0f3460;
+    border: 1px solid #163050;
     color: #eee;
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
@@ -1129,21 +1209,21 @@
     font-size: 0.85rem;
   }
 
-  .icon-btn:hover { background: #0f3460; }
-  .icon-btn-active { background: #0f3460; color: #53d769 !important; }
+  .icon-btn:hover { background: #163050; }
+  .icon-btn-active { background: #163050; color: #3ad8ff !important; }
 
   .settings {
     padding: 0.75rem 1rem;
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: #0c121d;
+    border-bottom: 1px solid #163050;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
   }
   .settings-group {
-    background: #1a1a2e;
+    background: #070b12;
     border-radius: 6px;
-    border: 1px solid #2a2a4e;
+    border: 1px solid #15202f;
     padding: 0.6rem 0.75rem;
     display: flex;
     flex-direction: column;
@@ -1165,8 +1245,8 @@
   .setting-row input, .setting-row select {
     flex: 1;
     padding: 0.4rem;
-    background: #1a1a2e;
-    border: 1px solid #0f3460;
+    background: #070b12;
+    border: 1px solid #163050;
     color: #eee;
     -webkit-text-fill-color: #eee;
     border-radius: 4px;
@@ -1174,7 +1254,7 @@
 
   .setting-row button {
     padding: 0.4rem 0.75rem;
-    background: #e94560;
+    background: #2f9eff;
     border: none;
     color: white;
     border-radius: 4px;
@@ -1183,11 +1263,11 @@
 
   .setting-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .status-ok { color: #53d769; font-size: 0.85rem; }
+  .status-ok { color: #3ad8ff; font-size: 0.85rem; }
 
   /* MCP Settings */
   .mcp-settings {
-    border-top: 1px solid #0f3460;
+    border-top: 1px solid #163050;
     padding-top: 0.5rem;
     margin-top: 0.25rem;
   }
@@ -1207,7 +1287,7 @@
 
   .mcp-add-btn {
     padding: 0.2rem 0.5rem;
-    background: #0f3460;
+    background: #163050;
     border: none;
     color: #eee;
     border-radius: 4px;
@@ -1241,7 +1321,7 @@
     flex-shrink: 0;
   }
 
-  .mcp-srv-dot-on { background: #53d769; }
+  .mcp-srv-dot-on { background: #3ad8ff; }
 
   .mcp-srv-name {
     font-weight: 500;
@@ -1279,8 +1359,8 @@
   .mcp-link-btn {
     padding: 0 0.35rem;
     background: none;
-    border: 1px solid #0f3460;
-    color: #53d769;
+    border: 1px solid #163050;
+    color: #3ad8ff;
     border-radius: 3px;
     cursor: pointer;
     font-size: 0.7rem;
@@ -1288,7 +1368,7 @@
     flex-shrink: 0;
   }
 
-  .mcp-link-btn:hover { background: #0f3460; }
+  .mcp-link-btn:hover { background: #163050; }
   .mcp-auth-btn {
     background: #e9a045;
     color: #000;
@@ -1301,7 +1381,7 @@
   }
   .mcp-auth-btn:hover { background: #d4903a; }
 
-  .mcp-remove-btn:hover { color: #e94560; border-color: #e94560; }
+  .mcp-remove-btn:hover { color: #2f9eff; border-color: #2f9eff; }
 
   .qr-dialog { text-align: center; }
   .qr-hint { color: #aaa; font-size: 0.85rem; margin: 0.5rem 0; }
@@ -1310,8 +1390,8 @@
 
   /* Sessions panel */
   .sessions-panel {
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: #0c121d;
+    border-bottom: 1px solid #163050;
     max-height: 200px;
     overflow-y: auto;
     padding: 0.25rem 0;
@@ -1344,7 +1424,7 @@
     font-family: inherit;
   }
 
-  .session-resume:hover { background: #1a1a2e; }
+  .session-resume:hover { background: #070b12; }
 
   .session-title {
     font-size: 0.8rem;
@@ -1368,7 +1448,7 @@
     flex-shrink: 0;
   }
 
-  .session-delete:hover { color: #e94560; }
+  .session-delete:hover { color: #2f9eff; }
 
   /* Permission dialog */
   .perm-overlay {
@@ -1382,20 +1462,20 @@
   }
 
   .perm-dialog {
-    background: #16213e;
-    border: 1px solid #0f3460;
+    background: #0c121d;
+    border: 1px solid #163050;
     border-radius: 8px;
     padding: 1.5rem;
     max-width: 500px;
     width: 90%;
   }
 
-  .perm-dialog h3 { margin: 0 0 0.5rem; color: #e94560; }
+  .perm-dialog h3 { margin: 0 0 0.5rem; color: #2f9eff; }
 
   .perm-tool { font-weight: bold; margin: 0.25rem 0; }
 
   .perm-command {
-    background: #1a1a2e;
+    background: #070b12;
     padding: 0.5rem;
     border-radius: 4px;
     font-size: 0.8rem;
@@ -1422,16 +1502,16 @@
   }
 
   .perm-deny { background: #666; }
-  .perm-allow { background: #e94560; }
-  .perm-session { background: #0f3460; }
-  .perm-forever { background: #53d769; color: #000 !important; }
+  .perm-allow { background: #2f9eff; }
+  .perm-session { background: #163050; }
+  .perm-forever { background: #3ad8ff; color: #000 !important; }
 
   /* Update dialog */
   .update-dialog { max-width: 550px; }
-  .update-dialog h3 { color: #53d769; }
+  .update-dialog h3 { color: #3ad8ff; }
   .update-versions { font-size: 1.1rem; margin: 0.5rem 0; }
   .update-notes {
-    background: #1a1a2e;
+    background: #070b12;
     padding: 0.75rem;
     border-radius: 4px;
     font-size: 0.85rem;
@@ -1444,19 +1524,50 @@
     font-size: 1rem;
     margin: 0.5rem 0 0.25rem;
   }
-  .update-error { color: #e94560; font-size: 0.85rem; margin: 0.5rem 0 0; }
+  .update-error { color: #2f9eff; font-size: 0.85rem; margin: 0.5rem 0 0; }
 
   /* Chat */
+  /* ── 3-column workspace ────────────────────────────────────── */
   .chat {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
   }
 
-  .empty { margin: auto; color: #555; font-size: 0.9rem; text-align: center; }
+  /* ── Animated orb (fixed ambient centrepiece) ──────────────── */
+  .orb-bg {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 0;             /* above page background, below main content */
+    pointer-events: none;
+    width: 300px;
+    height: 300px;
+    opacity: 0.85;
+    transition: opacity 0.8s ease;
+  }
+  /* intensify while the agent is thinking */
+  .orb-bg.active { opacity: 1; }
+
+  /* line-ring orb: stroked SVG only — no fills/blur/shadow, so animating it
+     is pure GPU compositing (transform) with zero per-frame repaint. */
+  .orb-ring {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .orb-ring .glow { stroke-width: 5; stroke-opacity: 0.16; stroke-linejoin: round; }
+  .orb-ring .line { stroke-width: 1.3; stroke-linejoin: round; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orb-ring { animation: none; }
+  }
 
   .message {
     padding: 0.5rem 0.75rem;
@@ -1465,19 +1576,30 @@
     line-height: 1.55;
     word-break: break-word;
     text-align: left;
+    /* never extend into the central band where the orb lives */
+    max-width: calc(50% - 200px);
   }
 
-  .message.user { align-self: flex-end; max-width: 85%; background: #0f3460; white-space: pre-wrap; }
+  /* user questions hug the right edge */
+  .message.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #15406e, #0f2b4d);
+    border: 1px solid rgba(47,158,255,0.35);
+    box-shadow: 0 0 16px rgba(47,158,255,0.18);
+    white-space: pre-wrap;
+  }
 
+  /* OpenUAI answers / activity hug the left edge */
   .message.assistant {
-    align-self: stretch;
-    background: #16213e;
-    border: 1px solid #0f3460;
+    align-self: flex-start;
+    background: rgba(12,18,29,0.7);
+    border: 1px solid #163050;
   }
 
   /* Collapsible tool group */
   .tool-group {
-    align-self: stretch;
+    align-self: flex-start;
+    max-width: calc(50% - 200px);
     text-align: left;
     border-left: 2px solid #1b2838;
     margin: 0.1rem 0;
@@ -1534,7 +1656,7 @@
   }
 
   .tool-group-done {
-    color: #53d769;
+    color: #3ad8ff;
   }
 
   .tool-group-cmd {
@@ -1562,15 +1684,15 @@
     flex-wrap: wrap;
   }
 
-  .tool-step-error { color: #e94560; }
+  .tool-step-error { color: #2f9eff; }
 
   .tool-step-icon {
     font-size: 9px;
-    color: #53d769;
+    color: #3ad8ff;
     flex-shrink: 0;
   }
 
-  .tool-step-error .tool-step-icon { color: #e94560; }
+  .tool-step-error .tool-step-icon { color: #2f9eff; }
 
   .tool-step-name {
     color: #888;
@@ -1602,59 +1724,73 @@
   }
 
   .message.error-msg {
-    align-self: stretch;
+    align-self: flex-start;
     background: #2d1515;
     border: 1px solid #5c2020;
-    color: #e94560;
+    color: #ff5c7a;
   }
-
-  .loading { color: #888; font-style: italic; }
 
   .input-area {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
     padding: 0.75rem 1rem;
-    background: #16213e;
-    border-top: 1px solid #0f3460;
+    background: rgba(9,14,23,0.9);
+    border-top: 1px solid #163050;
   }
 
   textarea {
     flex: 1;
-    padding: 0.5rem;
-    background: #1a1a2e;
-    border: 1px solid #0f3460;
-    color: #eee;
-    border-radius: 4px;
+    padding: 0.65rem 0.85rem;
+    background: rgba(7,11,18,0.8);
+    border: 1px solid #1c3a5e;
+    color: #dce6f2;
+    border-radius: 14px;
     resize: none;
     font-family: inherit;
     font-size: 0.9rem;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  textarea:focus {
+    outline: none;
+    border-color: #2f9eff;
+    box-shadow: 0 0 0 1px rgba(47,158,255,0.4), 0 0 18px rgba(47,158,255,0.25);
   }
 
   textarea:disabled { opacity: 0.5; }
 
   .input-area button {
-    padding: 0.5rem 1rem;
-    background: #e94560;
+    padding: 0.5rem 1.1rem;
+    background: linear-gradient(135deg, #3aa6ff, #1f7ce0);
     border: none;
     color: white;
-    border-radius: 4px;
+    border-radius: 12px;
     cursor: pointer;
     font-size: 0.9rem;
+    font-weight: 600;
+    box-shadow: 0 0 16px rgba(47,158,255,0.4);
+    transition: box-shadow 0.2s, filter 0.2s;
   }
 
-  .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .input-area button:hover:not(:disabled) {
+    box-shadow: 0 0 24px rgba(47,158,255,0.6);
+    filter: brightness(1.08);
+  }
 
-  .clear-btn { background: #0f3460 !important; }
-  .stop-btn { background: #c0392b !important; }
-  .stop-btn:hover:not(:disabled) { background: #e74c3c !important; }
+  .input-area button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+  .clear-btn { background: #11243c !important; box-shadow: none !important; }
+  .stop-btn { background: linear-gradient(135deg, #ff4d6d, #c0392b) !important; box-shadow: 0 0 16px rgba(255,77,109,0.45) !important; }
+  .stop-btn:hover:not(:disabled) { filter: brightness(1.1); }
 
   /* Beta features */
   .beta-section {
     margin: 0.75rem 0;
     padding: 0.75rem;
-    background: #1a1a2e;
+    background: #070b12;
     border-radius: 6px;
-    border: 1px solid #2a2a4e;
+    border: 1px solid #15202f;
   }
   .beta-header {
     font-size: 0.75rem;
@@ -1705,7 +1841,7 @@
   }
   .lip-btn:hover { background: #5a1a8a; }
   .lip-recording {
-    background: #e94560 !important;
+    background: #ff4d6d !important;
     animation: pulse-red 1s infinite;
   }
   .lip-transcribing {
@@ -1716,32 +1852,38 @@
   .lip-progress-bar {
     width: 100%;
     height: 6px;
-    background: #1a1a2e;
+    background: #070b12;
     border-radius: 3px;
     overflow: hidden;
     margin: 0.5rem 0;
   }
   .lip-progress-fill {
     height: 100%;
-    background: #53d769;
+    background: #3ad8ff;
     transition: width 0.3s;
   }
 
   /* Voice */
   .mic-btn {
     padding: 0.5rem;
-    background: #0f3460;
-    border: none;
-    color: #eee;
-    border-radius: 4px;
+    background: #11243c;
+    border: 1px solid #1c3a5e;
+    color: #9fc6ef;
+    border-radius: 50%;
     cursor: pointer;
     font-size: 1.1rem;
-    min-width: 38px;
-    transition: background 0.2s;
+    min-width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s, box-shadow 0.2s;
   }
-  .mic-btn:hover { background: #1a4a8a; }
+  .mic-btn:hover { background: #1d5bb0; box-shadow: 0 0 14px rgba(47,158,255,0.4); }
   .mic-recording {
-    background: #e94560 !important;
+    background: #ff4d6d !important;
+    color: #fff;
+    box-shadow: 0 0 16px rgba(255,77,109,0.55);
     animation: pulse-red 1s infinite;
   }
   .mic-transcribing {
@@ -1756,16 +1898,16 @@
   .voice-meter {
     width: 60px;
     height: 28px;
-    background: #0d1b2a;
+    background: #0a0f18;
     border-radius: 4px;
     overflow: hidden;
     display: flex;
     align-items: flex-end;
-    border: 1px solid #0f3460;
+    border: 1px solid #163050;
   }
   .voice-meter-bar {
     height: 100%;
-    background: linear-gradient(to right, #53d769, #e9a045, #e94560);
+    background: linear-gradient(to right, #3ad8ff, #e9a045, #2f9eff);
     transition: width 0.1s ease;
     border-radius: 3px;
     min-width: 2px;
@@ -1798,13 +1940,13 @@
   }
   .message.assistant { position: relative; }
   .message.assistant:hover .speak-btn { opacity: 1; }
-  .speak-btn:hover { color: #53d769; background: rgba(255,255,255,0.05); }
+  .speak-btn:hover { color: #3ad8ff; background: rgba(255,255,255,0.05); }
   .speak-btn:disabled { cursor: wait; opacity: 0.5 !important; }
 
   /* Events panel */
   .events-panel {
-    background: #16213e;
-    border-bottom: 1px solid #0f3460;
+    background: #0c121d;
+    border-bottom: 1px solid #163050;
     max-height: 250px;
     display: flex;
     flex-direction: column;
@@ -1814,7 +1956,7 @@
     display: flex;
     gap: 0.5rem;
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid #0f3460;
+    border-bottom: 1px solid #163050;
   }
 
   .events-toolbar button {
@@ -1826,7 +1968,7 @@
     color: white;
   }
 
-  .events-refresh-btn { background: #0f3460; }
+  .events-refresh-btn { background: #163050; }
   .events-clear-btn { background: #333; }
 
   .events-stats {
@@ -1835,7 +1977,7 @@
     padding: 0.35rem 1rem;
     font-size: 0.75rem;
     color: #888;
-    border-bottom: 1px solid #0f3460;
+    border-bottom: 1px solid #163050;
   }
 
   .events-stats b { color: #eee; }
@@ -1862,14 +2004,14 @@
     border-bottom: 1px solid #111;
   }
 
-  .event-entry:hover { background: #1a1a2e; }
+  .event-entry:hover { background: #070b12; }
 
   .event-source {
-    background: #0f3460;
+    background: #163050;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
     font-weight: 500;
-    color: #53d769;
+    color: #3ad8ff;
     flex-shrink: 0;
   }
 
@@ -1912,7 +2054,7 @@
   }
 
   .event-msg-dir.out { color: #888; }
-  .event-msg-dir.in  { color: #53d769; }
+  .event-msg-dir.in  { color: #3ad8ff; }
 
   .event-msg-body {
     font-size: 0.8rem;
@@ -1937,7 +2079,7 @@
 
   /* MCP Servers */
   .mcp-servers {
-    border-bottom: 1px solid #0f3460;
+    border-bottom: 1px solid #163050;
     padding: 0.35rem 1rem;
   }
 
@@ -1962,12 +2104,12 @@
   }
 
   .mcp-server-status {
-    color: #e94560;
+    color: #2f9eff;
     font-size: 0.7rem;
   }
 
   .mcp-connected {
-    color: #53d769;
+    color: #3ad8ff;
   }
 
   .mcp-server-info {
@@ -1980,15 +2122,15 @@
     margin-top: 0.5rem;
   }
   .mp-banner {
-    background: #1a1a2e;
-    border: 1px solid #e94560;
+    background: #070b12;
+    border: 1px solid #2f9eff;
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
     font-size: 0.75rem;
-    color: #e94560;
+    color: #2f9eff;
     margin-bottom: 0.5rem;
   }
-  .mp-banner a { color: #53d769; }
+  .mp-banner a { color: #3ad8ff; }
   .mp-filters {
     display: flex;
     gap: 0.25rem;
@@ -1996,24 +2138,24 @@
     flex-wrap: wrap;
   }
   .mp-filter-btn {
-    background: #16213e;
-    border: 1px solid #0f3460;
+    background: #0c121d;
+    border: 1px solid #163050;
     color: #888;
     padding: 0.2rem 0.6rem;
     border-radius: 4px;
     font-size: 0.7rem;
     cursor: pointer;
   }
-  .mp-filter-btn:hover { border-color: #e94560; color: #ccc; }
-  .mp-filter-active { background: #0f3460; color: #fff; border-color: #e94560; }
+  .mp-filter-btn:hover { border-color: #2f9eff; color: #ccc; }
+  .mp-filter-active { background: #163050; color: #fff; border-color: #2f9eff; }
   .mp-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 0.5rem;
   }
   .mp-card {
-    background: #16213e;
-    border: 1px solid #0f3460;
+    background: #0c121d;
+    border: 1px solid #163050;
     border-radius: 8px;
     padding: 0.6rem;
     display: flex;
@@ -2029,8 +2171,8 @@
   .mp-card-icon {
     font-size: 0.7rem;
     font-weight: 700;
-    color: #e94560;
-    background: #1a1a2e;
+    color: #2f9eff;
+    background: #070b12;
     padding: 0.15rem 0.3rem;
     border-radius: 4px;
     font-family: monospace;
@@ -2044,7 +2186,7 @@
     margin-left: auto;
     font-size: 0.6rem;
     color: #666;
-    background: #0d1b2a;
+    background: #0a0f18;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
   }
@@ -2054,8 +2196,8 @@
   }
   .mp-card-auth input {
     width: 100%;
-    background: #0d1b2a;
-    border: 1px solid #0f3460;
+    background: #0a0f18;
+    border: 1px solid #163050;
     color: #eee;
     padding: 0.25rem 0.4rem;
     border-radius: 4px;
@@ -2064,11 +2206,11 @@
   }
   .mp-card-status {
     font-size: 0.7rem;
-    color: #53d769;
+    color: #3ad8ff;
     font-weight: 500;
   }
   .mp-install-btn {
-    background: #e94560;
+    background: #2f9eff;
     border: none;
     color: #fff;
     padding: 0.3rem 0.6rem;
@@ -2089,17 +2231,17 @@
   .markdown :global(h1), .markdown :global(h2), .markdown :global(h3) {
     margin: 0.4rem 0 0.2rem;
     font-size: 14px;
-    color: #e94560;
+    color: #2f9eff;
   }
   .markdown :global(h1) { font-size: 15px; }
   .markdown :global(code) {
-    background: #0d1b2a;
+    background: #0a0f18;
     padding: 0.1rem 0.3rem;
     border-radius: 3px;
     font-size: 12px;
   }
   .markdown :global(pre) {
-    background: #0d1b2a;
+    background: #0a0f18;
     padding: 0.5rem;
     border-radius: 6px;
     overflow-x: auto;
@@ -2111,9 +2253,9 @@
     padding: 0;
   }
   .markdown :global(strong) { color: #fff; }
-  .markdown :global(a) { color: #53d769; }
+  .markdown :global(a) { color: #3ad8ff; }
   .markdown :global(blockquote) {
-    border-left: 3px solid #0f3460;
+    border-left: 3px solid #163050;
     margin: 0.4rem 0;
     padding: 0.2rem 0.6rem;
     color: #aaa;
