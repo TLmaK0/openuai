@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
+  import { SendMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -28,7 +28,20 @@
         phase: Math.random() * TAU,
       });
     }
-    return { base, color, op, harmonics };
+    // Speaking ripple = sum of several integer-frequency lobes (so the curve
+    // still closes seamlessly) with RANDOM amplitude/phase/rate each, giving
+    // irregular, asymmetric wave spacing and heights that bob independently.
+    const ripples = [];
+    const rc = 5 + Math.floor(Math.random() * 3); // 5-7 components
+    for (let i = 0; i < rc; i++) {
+      ripples.push({
+        k: 12 + Math.floor(Math.random() * 15), // 12..26 lobes (narrow)
+        amp: 0.4 + Math.random() * 0.9,
+        phase: Math.random() * TAU,
+        rate: 2 + Math.random() * 6,             // in-place bobbing speed
+      });
+    }
+    return { base, color, op, harmonics, ripplePhase: Math.random() * TAU, ripples };
   }
   const blobCfgs = [
     makeBlobCfg(86, '#4aa8ff', 0.9),
@@ -36,15 +49,29 @@
     makeBlobCfg(78, '#3a90ff', 0.6),
     makeBlobCfg(84, '#8fd0ff', 0.55),
   ];
-  const BLOB_N = 14;                                // sample points per outline
+  const BLOB_N = 60;                                // sample points per outline (enough for very tight speaking ripples)
   let blobPaths = blobCfgs.map(() => '');
 
-  function buildBlobPath(cfg, t) {
+  function buildBlobPath(cfg, t, sp) {
     const cx = 120, cy = 120, pts = [];
     for (let i = 0; i < BLOB_N; i++) {
       const a = (i / BLOB_N) * TAU;
       let r = cfg.base;
-      for (const h of cfg.harmonics) r += h.amp * Math.sin(h.m * a + t * h.speed + h.phase);
+      // while speaking, damp the slow travelling wobble (so it stops rotating)
+      const wob = 1 - 0.6 * _speakLevel;
+      for (const h of cfg.harmonics) r += h.amp * wob * Math.sin(h.m * a + t * h.speed + h.phase);
+      if (_speakLevel > 0.01) {
+        // Tall, IN-PLACE audio waves: fixed angular lobes (no a-travel ⇒ no
+        // rotation) whose height is modulated over time → bobs like an equaliser.
+        // swelling envelope → louder/quieter bursts, so peaks rise higher and
+        // troughs dip lower like a real speech waveform
+        const env = 0.45 + 0.95 * Math.abs(Math.sin(sp * 2.3 + cfg.ripplePhase));
+        let rip = 0;
+        for (const c of cfg.ripples) {
+          rip += c.amp * Math.sin(c.k * a + c.phase) * Math.sin(sp * c.rate + c.phase);
+        }
+        r += _speakLevel * _speakGate * 12 * env * rip;
+      }
       pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
     }
     const f = (v) => v.toFixed(1);
@@ -58,17 +85,36 @@
     return d + 'Z';
   }
 
-  // ~30fps morph loop; the waves advance faster while the agent is thinking.
-  let _blobRaf, _blobLast = null, _blobPhase = 0, _blobAcc = 0;
+  // ~30fps morph loop. The waves advance faster while thinking, and fastest
+  // while speaking — where a tight high-frequency ripple makes it read like an
+  // audio waveform. _speakLevel ramps the ripple in/out smoothly.
+  let _blobRaf, _blobLast = null, _blobPhase = 0, _speakPhase = 0, _blobAcc = 0, _speakLevel = 0;
+  // Speech "gate": waves flatten during brief random pauses, like silences.
+  let _speakGate = 0, _gateOpen = true, _gateLeft = 0;
   function blobTick(now) {
     _blobRaf = requestAnimationFrame(blobTick);
     if (_blobLast === null) { _blobLast = now; return; }
     const dt = (now - _blobLast) / 1000; _blobLast = now;
-    _blobPhase += dt * (loading ? 4 : 1);
+    // Freeze the travelling phase while speaking so the orb stops rotating;
+    // the speaking ripple bobs in place instead, driven by _speakPhase.
+    if (!speaking) _blobPhase += dt * (loading ? 4 : 1);
+    _speakPhase += dt * (speaking ? 6 : 0);
+    _speakLevel += ((speaking ? 1 : 0) - _speakLevel) * Math.min(1, dt * 6);
+    if (speaking) {
+      _gateLeft -= dt;
+      if (_gateLeft <= 0) {
+        _gateOpen = !_gateOpen;
+        // active bursts last 0.5–1.5s; pauses (silences) 0.15–0.4s
+        _gateLeft = _gateOpen ? 0.5 + Math.random() * 1.0 : 0.15 + Math.random() * 0.25;
+      }
+      _speakGate += ((_gateOpen ? 1 : 0) - _speakGate) * Math.min(1, dt * 14);
+    } else {
+      _speakGate = 0; _gateOpen = true; _gateLeft = 0;
+    }
     _blobAcc += dt;
     if (_blobAcc < 1 / 30) return;
     _blobAcc = 0;
-    blobPaths = blobCfgs.map((c) => buildBlobPath(c, _blobPhase));
+    blobPaths = blobCfgs.map((c) => buildBlobPath(c, _blobPhase, _speakPhase));
   }
   onMount(() => {
     _blobRaf = requestAnimationFrame(blobTick);
@@ -136,13 +182,35 @@
   // Voice
   let recording = false;
   let transcribing = false;
+  let sttError = '';
   let voiceLevel = 0;
   let audioDevices = [];
   let selectedDevice = '';
   let speaking = false;
   let voiceEnabled = true;
-  let ttsVoice = 'es';
-  const ttsVoices = ['es', 'en', 'fr', 'de', 'it', 'pt', 'ja', 'zh'];
+  let autoSpeakEnabled = localStorage.getItem('autoSpeak') === '1';
+  let ttsVoice = 'es_ES';
+  let ttsVoices = [];          // [{code,name,language,quality,installed}] from Piper catalog
+  $: voiceLanguages = [...new Set(ttsVoices.map(v => v.language))];
+
+  // Short preview phrase per language, spoken when a voice is selected.
+  const voiceSamples = {
+    Spanish: 'Hola, soy OpenUAI. Así sonará mi voz.',
+    English: 'Hi, I am OpenUAI. This is how I sound.',
+    French: 'Bonjour, je suis OpenUAI. Voici ma voix.',
+    German: 'Hallo, ich bin OpenUAI. So klinge ich.',
+    Italian: 'Ciao, sono OpenUAI. Ecco la mia voce.',
+    Portuguese: 'Olá, eu sou OpenUAI. Esta é a minha voz.',
+    Dutch: 'Hallo, ik ben OpenUAI. Zo klink ik.',
+    Catalan: 'Hola, sóc OpenUAI. Aquesta és la meva veu.',
+    Russian: 'Привет, я OpenUAI. Вот как я звучу.',
+  };
+  function voiceSample(lang) {
+    return voiceSamples[lang] || 'Hello, I am OpenUAI. This is a voice sample.';
+  }
+  let piperSupported = true;
+  let voiceDownloading = false;
+  let voiceDownloadError = '';
   let sttLanguage = 'auto';
   const sttLanguages = [
     { code: 'auto', label: 'Auto-detect' },
@@ -190,6 +258,8 @@
     selectedModel = await GetDefaultModel();
     voiceEnabled = await GetVoiceEnabled();
     ttsVoice = await GetTTSVoice();
+    piperSupported = await PiperSupported();
+    ttsVoices = await GetTTSVoices();
     sttLanguage = await GetSTTLanguage();
     audioDevices = await GetAudioDevices() || [];
     selectedDevice = await GetAudioDevice();
@@ -231,6 +301,7 @@
         }
         if (step.content) {
           messages = [...messages, { role: 'assistant', content: step.content }];
+          queueSpeak(step.content);
         }
       } else if (step.type === 'tool_call') {
         const last = messages[messages.length - 1];
@@ -589,35 +660,77 @@
     transcribing = true;
     const result = await StopRecording();
     transcribing = false;
-    if (result.error) return;
+    if (result.error) {
+      sttError = result.error;
+      setTimeout(() => { sttError = ''; }, 4000);
+      return;
+    }
     if (result.text) {
       input = result.text;
       await send();
     }
   }
 
-  async function speakMessage(text) {
-    if (speaking) return;
-    // Strip markdown for cleaner speech
-    const clean = text.replace(/[#*_`~\[\]()>|]/g, '').replace(/\n+/g, ' ').trim();
-    if (!clean) return;
+  // Strip markdown so the speech sounds clean
+  function cleanForSpeech(text) {
+    return text.replace(/[#*_`~\[\]()>|]/g, '').replace(/\n+/g, ' ').trim();
+  }
 
-    speaking = true;
+  // Synthesize + play one utterance, resolving when playback finishes.
+  async function playTTS(clean) {
     const result = await SpeakText(clean);
-    speaking = false;
-
-    if (result.error) {
-      alert('TTS failed: ' + result.error);
-      return;
-    }
-
+    if (result.error) throw new Error(result.error);
     const fmt = result.format || 'wav';
     const audio = new Audio('data:audio/' + fmt + ';base64,' + result.audio_base64);
-    audio.play();
+    await new Promise((resolve) => {
+      audio.onended = resolve;
+      audio.onerror = resolve;
+      audio.play().catch(resolve);
+    });
+  }
+
+  // Manual: triggered by the speaker button on a message.
+  async function speakMessage(text) {
+    if (speaking) return;
+    const clean = cleanForSpeech(text);
+    if (!clean) return;
+    speaking = true;
+    try {
+      await playTTS(clean);
+    } catch (e) {
+      alert('TTS failed: ' + e.message);
+    }
+    speaking = false;
+  }
+
+  // Auto-speak: queue assistant responses and read them in order.
+  let speakQueue = [];
+  async function queueSpeak(text) {
+    if (!autoSpeakEnabled) return;
+    const clean = cleanForSpeech(text);
+    if (!clean) return;
+    speakQueue.push(clean);
+    if (speaking) return;        // a drain loop is already running
+    speaking = true;
+    while (speakQueue.length) {
+      try { await playTTS(speakQueue.shift()); } catch (e) { /* skip on error */ }
+    }
+    speaking = false;
   }
 
   async function changeTTSVoice() {
-    await SetTTSVoice(ttsVoice);
+    voiceDownloading = true;
+    voiceDownloadError = '';
+    const err = await SetTTSVoice(ttsVoice);
+    voiceDownloading = false;
+    if (err) {
+      voiceDownloadError = err;
+      return;
+    }
+    ttsVoices = await GetTTSVoices();
+    // play a short sample in the selected voice's language
+    const v = ttsVoices.find((x) => x.code === ttsVoice);
+    speakMessage(voiceSample(v && v.language));
   }
 
   async function changeSTTLanguage() {
@@ -659,7 +772,7 @@
 
 <svelte:window on:keydown={handleGlobalKeydown} />
 
-<div class="orb-bg" class:active={loading}>
+<div class="orb-bg" class:active={loading || speaking}>
   {#each blobCfgs as c, i}
     <svg class="orb-ring" viewBox="0 0 240 240" aria-hidden="true"
          style="color:{c.color}; opacity:{c.op};">
@@ -725,13 +838,32 @@
       <div class="settings-group">
         <div class="settings-group-title">Voice</div>
         <div class="setting-row">
-          <label>TTS Voice</label>
-          <select bind:value={ttsVoice} on:change={changeTTSVoice}>
-            {#each ttsVoices as v}
-              <option value={v}>{v}</option>
+          <label>Auto-speak</label>
+          <label class="switch-label">
+            <input type="checkbox" bind:checked={autoSpeakEnabled}
+                   on:change={() => localStorage.setItem('autoSpeak', autoSpeakEnabled ? '1' : '0')} />
+            <span>Read responses aloud automatically</span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <label>Voice</label>
+          <select bind:value={ttsVoice} on:change={changeTTSVoice} disabled={voiceDownloading}>
+            {#each voiceLanguages as lang}
+              <optgroup label={lang}>
+                {#each ttsVoices.filter(v => v.language === lang) as v}
+                  <option value={v.code}>{v.name} · {v.quality}{v.installed ? ' ✓' : ''}</option>
+                {/each}
+              </optgroup>
             {/each}
           </select>
         </div>
+        {#if voiceDownloading}
+          <div class="setting-row"><label></label><span class="voice-status">Downloading voice… (first use only)</span></div>
+        {:else if voiceDownloadError}
+          <div class="setting-row"><label></label><span class="voice-status voice-status-err">{voiceDownloadError}</span></div>
+        {:else if !piperSupported}
+          <div class="setting-row"><label></label><span class="voice-status">Neural voice unavailable here — using espeak-ng</span></div>
+        {/if}
         <div class="setting-row">
           <label>STT Language</label>
           <select bind:value={sttLanguage} on:change={changeSTTLanguage}>
@@ -1121,6 +1253,8 @@
     {/if}
     {#if transcribing}
       <div class="transcribing-indicator">Transcribing...</div>
+    {:else if sttError}
+      <div class="transcribing-indicator stt-error">{sttError}</div>
     {/if}
     <textarea
       bind:this={textareaEl}
@@ -1251,6 +1385,23 @@
     -webkit-text-fill-color: #eee;
     border-radius: 4px;
   }
+
+  .switch-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .switch-label input {
+    flex: none;
+    width: auto;
+    padding: 0;
+    accent-color: #2f9eff;
+  }
+  .voice-status { flex: 1; font-size: 0.78rem; color: #6cbcff; }
+  .voice-status-err { color: #ff5c7a; }
 
   .setting-row button {
     padding: 0.4rem 0.75rem;
@@ -1918,6 +2069,12 @@
     color: #e9a045;
     animation: pulse-transcribing 1.2s ease-in-out infinite;
     white-space: nowrap;
+  }
+  .stt-error {
+    color: #ff5c7a;
+    animation: none;
+    white-space: normal;
+    max-width: 260px;
   }
   @keyframes pulse-transcribing {
     0%, 100% { opacity: 0.5; }

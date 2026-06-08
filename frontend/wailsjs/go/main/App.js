@@ -126,6 +126,10 @@ export function GetTTSVoice() {
   return window['go']['main']['App']['GetTTSVoice']();
 }
 
+export function GetTTSVoices() {
+  return window['go']['main']['App']['GetTTSVoices']();
+}
+
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
 }
@@ -156,6 +160,10 @@ export function OpenAIIsLoggedIn() {
 
 export function OpenAILogin() {
   return window['go']['main']['App']['OpenAILogin']();
+}
+
+export function PiperSupported() {
+  return window['go']['main']['App']['PiperSupported']();
 }
 
 export function ReauthMCPServer(arg1) {

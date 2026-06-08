@@ -69,6 +69,8 @@ export function GetSessions():Promise<Array<agent.SessionInfo>>;
 
 export function GetTTSVoice():Promise<string>;
 
+export function GetTTSVoices():Promise<Array<Record<string, any>>>;
+
 export function GetVersion():Promise<string>;
 
 export function GetVoiceEnabled():Promise<boolean>;
@@ -84,6 +86,8 @@ export function LipReadingModelReady():Promise<boolean>;
 export function OpenAIIsLoggedIn():Promise<boolean>;
 
 export function OpenAILogin():Promise<string>;
+
+export function PiperSupported():Promise<boolean>;
 
 export function ReauthMCPServer(arg1:string):Promise<string>;
 
@@ -115,7 +119,7 @@ export function SetProvider(arg1:string):Promise<void>;
 
 export function SetSTTLanguage(arg1:string):Promise<void>;
 
-export function SetTTSVoice(arg1:string):Promise<void>;
+export function SetTTSVoice(arg1:string):Promise<string>;
 
 export function SetVoiceEnabled(arg1:boolean):Promise<void>;
 

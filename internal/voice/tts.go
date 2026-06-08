@@ -4,13 +4,44 @@ import (
 	"encoding/base64"
 	"fmt"
 	"openuai/internal/logger"
+	"openuai/internal/piper"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-// Speak converts text to speech using espeak-ng and returns WAV audio as base64.
-func Speak(text, voice string) SpeakResult {
+// Speak converts text to speech and returns WAV audio as base64. It prefers
+// Piper (local neural TTS, natural voices) and falls back to espeak-ng when
+// Piper is unavailable for the platform or synthesis fails.
+func Speak(text, voice, configDir string) SpeakResult {
+	if voice == "" {
+		voice = "es_ES"
+	}
+
+	if piper.Supported() {
+		if wav, err := piper.Speak(configDir, voice, text); err == nil {
+			logger.Info("Voice TTS: piper %d chars, voice=%s -> %d bytes", len(text), voice, len(wav))
+			return SpeakResult{
+				AudioBase64: base64.StdEncoding.EncodeToString(wav),
+				Format:      "wav",
+				CharCount:   len(text),
+			}
+		} else {
+			logger.Error("Voice TTS: piper failed (%v) — falling back to espeak-ng", err)
+		}
+	}
+
+	return speakEspeak(text, voice)
+}
+
+// speakEspeak is the offline fallback using espeak-ng (robotic but always works).
+func speakEspeak(text, voice string) SpeakResult {
+	// espeak uses 2-letter codes; map "es_ES" -> "es"
+	if i := strings.IndexAny(voice, "_-"); i > 0 {
+		voice = voice[:i]
+	}
+	voice = strings.ToLower(voice)
 	if voice == "" {
 		voice = "es"
 	}

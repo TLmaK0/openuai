@@ -50,18 +50,29 @@ func (r *Recorder) Start() error {
 	tmpDir := os.TempDir()
 	r.tmpFile = filepath.Join(tmpDir, "openuai_voice.wav")
 
+	// Resolve which source to record from. If the user hasn't picked one, avoid
+	// silent digital inputs (e.g. S/PDIF/iec958 on docks) that the system may
+	// default to, and choose a real microphone instead.
+	device := r.Device
+	if device == "" {
+		device = pickInputDevice()
+		if device != "" {
+			logger.Info("Voice recording: auto-selected input %s", device)
+		}
+	}
+
 	// Try parecord (PulseAudio) first, fall back to arecord (ALSA)
 	if path, err := exec.LookPath("parecord"); err == nil {
 		args := []string{"--file-format=wav", "--format=s16le", "--rate=16000", "--channels=1"}
-		if r.Device != "" {
-			args = append(args, "--device="+r.Device)
+		if device != "" {
+			args = append(args, "--device="+device)
 		}
 		args = append(args, r.tmpFile)
 		r.cmd = exec.Command(path, args...)
 	} else if path, err := exec.LookPath("arecord"); err == nil {
 		args := []string{"-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav"}
-		if r.Device != "" {
-			args = append(args, "-D", r.Device)
+		if device != "" {
+			args = append(args, "-D", device)
 		}
 		args = append(args, r.tmpFile)
 		r.cmd = exec.Command(path, args...)
@@ -258,6 +269,44 @@ func (r *Recorder) IsRecording() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.active
+}
+
+// isDigitalOrMonitor reports whether a source name is a non-microphone input
+// (monitor of an output, or a digital S/PDIF/HDMI input that carries no mic).
+func isDigitalOrMonitor(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, ".monitor") ||
+		strings.Contains(n, "iec958") ||
+		strings.Contains(n, "spdif") ||
+		strings.Contains(n, "hdmi")
+}
+
+// pickInputDevice chooses a real microphone when no device is configured.
+// It keeps the system default if that's a usable mic; otherwise it falls back
+// to the first real input device (skipping monitors and digital inputs).
+func pickInputDevice() string {
+	if def := defaultSource(); def != "" && !isDigitalOrMonitor(def) {
+		return "" // system default is fine — let the recorder use it
+	}
+	for _, d := range ListDevices() {
+		if !isDigitalOrMonitor(d.ID) {
+			return d.ID
+		}
+	}
+	return ""
+}
+
+// defaultSource returns the PulseAudio default source name (empty on failure).
+func defaultSource() string {
+	pactl, err := exec.LookPath("pactl")
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command(pactl, "get-default-source").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // ListDevices returns available audio input devices via PulseAudio.

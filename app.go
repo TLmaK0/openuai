@@ -22,6 +22,7 @@ import (
 	"openuai/internal/marketplace"
 	"openuai/internal/mcpclient"
 	"openuai/internal/memory"
+	"openuai/internal/piper"
 	"openuai/internal/tools"
 	"openuai/internal/tray"
 	"openuai/internal/updater"
@@ -1077,11 +1078,7 @@ func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
 
 // SpeakText converts text to speech using local espeak-ng.
 func (a *App) SpeakText(text string) map[string]interface{} {
-	ttsVoice := a.cfg.TTSVoice
-	if ttsVoice == "" {
-		ttsVoice = "es"
-	}
-	result := voice.Speak(text, ttsVoice)
+	result := voice.Speak(text, normalizeVoice(a.cfg.TTSVoice), a.cfg.ConfigDir())
 	return map[string]interface{}{
 		"audio_base64": result.AudioBase64,
 		"format":       result.Format,
@@ -1090,18 +1087,68 @@ func (a *App) SpeakText(text string) map[string]interface{} {
 	}
 }
 
-// GetTTSVoice returns the configured TTS voice name.
-func (a *App) GetTTSVoice() string {
-	if a.cfg.TTSVoice == "" {
-		return "es"
+const defaultVoice = "es_ES-davefx-medium"
+
+// normalizeVoice maps a stored value to a full Piper voice code, tolerating
+// legacy short codes (e.g. "" or "es_ES" -> the default). Full codes (which
+// contain a "-", e.g. "en_US-amy-medium") are kept as-is.
+func normalizeVoice(v string) string {
+	if strings.Contains(v, "-") {
+		return v
 	}
-	return a.cfg.TTSVoice
+	return defaultVoice
 }
 
-// SetTTSVoice sets the TTS voice and persists.
-func (a *App) SetTTSVoice(v string) error {
+// GetTTSVoice returns the configured TTS voice code.
+func (a *App) GetTTSVoice() string {
+	return normalizeVoice(a.cfg.TTSVoice)
+}
+
+// GetTTSVoices returns the online Piper voice catalog with per-voice install state.
+func (a *App) GetTTSVoices() []map[string]interface{} {
+	dir := a.cfg.ConfigDir()
+	cat, err := piper.Catalog(dir)
+	if err != nil {
+		logger.Error("Piper: catalog fetch failed: %s", err.Error())
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(cat))
+	for _, v := range cat {
+		out = append(out, map[string]interface{}{
+			"code":      v.Code,
+			"name":      v.Name,
+			"language":  v.Language,
+			"quality":   v.Quality,
+			"installed": piper.VoiceInstalled(dir, v.Code),
+		})
+	}
+	return out
+}
+
+// PiperSupported reports whether neural (Piper) TTS is available on this platform.
+func (a *App) PiperSupported() bool { return piper.Supported() }
+
+// SetTTSVoice persists the chosen voice and downloads the Piper binary + that
+// voice model on demand (so selecting a language fetches what it needs).
+// Returns an error string ("" on success) the UI can surface.
+func (a *App) SetTTSVoice(v string) string {
+	v = normalizeVoice(v)
 	a.cfg.TTSVoice = v
-	return a.cfg.Save()
+	if err := a.cfg.Save(); err != nil {
+		return err.Error()
+	}
+	if !piper.Supported() {
+		return "" // espeak-ng fallback, nothing to download
+	}
+	if err := piper.EnsureBinary(a.cfg.ConfigDir()); err != nil {
+		logger.Error("Piper: ensure binary failed: %s", err.Error())
+		return err.Error()
+	}
+	if err := piper.EnsureVoice(a.cfg.ConfigDir(), v); err != nil {
+		logger.Error("Piper: ensure voice failed: %s", err.Error())
+		return err.Error()
+	}
+	return ""
 }
 
 // GetSTTLanguage returns the configured STT language (empty or "auto" = auto-detect).

@@ -2,7 +2,9 @@ package voice
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"openuai/internal/logger"
 	"openuai/internal/whisper"
 	"os"
@@ -11,6 +13,39 @@ import (
 	"regexp"
 	"strings"
 )
+
+const noSpeechMsg = "No se detectó voz — revisa el micrófono en Ajustes"
+
+// isSilentWAV returns true when the PCM payload is essentially silence, so we
+// can avoid feeding Whisper empty audio (which makes it hallucinate "[Música]").
+func isSilentWAV(wav []byte) bool {
+	if len(wav) <= 44 {
+		return true
+	}
+	pcm := wav[44:]
+	n := len(pcm) / 2
+	if n == 0 {
+		return true
+	}
+	var sum float64
+	for i := 0; i < n; i++ {
+		s := int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+		sum += float64(s) * float64(s)
+	}
+	return math.Sqrt(sum/float64(n)) < 30
+}
+
+// isNonSpeech matches Whisper's common non-speech hallucinations.
+func isNonSpeech(t string) bool {
+	s := strings.ToLower(strings.TrimSpace(t))
+	s = strings.Trim(s, "[](){}¡!¿?.… \t\n*")
+	switch s {
+	case "", "música", "musica", "music", "blank_audio", "silence", "silencio",
+		"aplausos", "applause", "risas", "laughter", "ruido", "noise":
+		return true
+	}
+	return false
+}
 
 // Transcribe runs whisper.cpp (whisper-cli) on base64-encoded WAV audio and returns the transcript.
 func Transcribe(audioBase64, model, language, configDir string) TranscribeResult {
@@ -37,6 +72,10 @@ func Transcribe(audioBase64, model, language, configDir string) TranscribeResult
 	audioBytes, err := base64.StdEncoding.DecodeString(audioBase64)
 	if err != nil {
 		return TranscribeResult{Error: fmt.Sprintf("decode base64: %v", err)}
+	}
+	if isSilentWAV(audioBytes) {
+		logger.Info("Voice STT: captured audio is silent — skipping transcription")
+		return TranscribeResult{Error: noSpeechMsg}
 	}
 	if err := os.WriteFile(wavFile, audioBytes, 0600); err != nil {
 		return TranscribeResult{Error: fmt.Sprintf("write temp file: %v", err)}
@@ -71,6 +110,10 @@ func Transcribe(audioBase64, model, language, configDir string) TranscribeResult
 	transcript := strings.TrimSpace(raw)
 
 	logger.Info("Voice STT: transcribed → %q", transcript)
+
+	if isNonSpeech(transcript) {
+		return TranscribeResult{Error: noSpeechMsg}
+	}
 
 	return TranscribeResult{
 		Text: transcript,
