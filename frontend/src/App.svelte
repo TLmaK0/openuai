@@ -130,7 +130,9 @@
   // ~30fps morph loop. The waves advance faster while thinking, and fastest
   // while speaking — where a tight high-frequency ripple makes it read like an
   // audio waveform. _speakLevel ramps the ripple in/out smoothly.
-  let _blobRaf, _blobLast = null, _blobPhase = 0, _speakPhase = 0, _blobAcc = 0, _speakLevel = 0;
+  let _blobRaf, _blobLast = null, _blobPhase = 0, _speakPhase = 0, _blobAcc = 0, _speakLevel = 0, _glowPhase = 0;
+  // Glow drift offsets (px), bound to the aura/core transforms in the markup.
+  let auraTX = 0, auraTY = 0, coreTX = 0, coreTY = 0;
   // Speech "gate": waves flatten during brief random pauses, like silences.
   let _speakGate = 0, _gateOpen = true, _gateLeft = 0;
   function blobTick(now) {
@@ -141,6 +143,8 @@
     // the speaking ripple bobs in place instead, driven by _speakPhase.
     if (!speaking) _blobPhase += dt * (loading ? 4 : 1);
     _speakPhase += dt * (speaking ? 6 : 0);
+    // Glow drifts at the same cadence as the waves' motion.
+    _glowPhase += dt * (speaking ? 6 : (loading ? 4 : 1));
     _speakLevel += ((speaking ? 1 : 0) - _speakLevel) * Math.min(1, dt * 6);
     if (speaking) {
       _gateLeft -= dt;
@@ -156,6 +160,12 @@
     _blobAcc += dt;
     if (_blobAcc < 1 / 30) return;
     _blobAcc = 0;
+    // drift the glow within the orb (Lissajous so it wanders, not a clean circle)
+    const g = _glowPhase;
+    coreTX = Math.cos(g * 0.5) * 14 + Math.cos(g * 0.33) * 6;
+    coreTY = Math.sin(g * 0.45) * 14 + Math.sin(g * 0.39) * 6;
+    auraTX = coreTX * 0.5;
+    auraTY = coreTY * 0.5;
     blobPaths = blobCfgs.map((c) => buildBlobPath(c, _blobPhase, _speakPhase));
   }
   onMount(() => {
@@ -857,6 +867,8 @@
 <svelte:window on:keydown={handleGlobalKeydown} />
 
 <div class="orb-bg" class:active={loading || speaking}>
+  <div class="orb-aura" style="transform: translate({auraTX}px, {auraTY}px)"></div>
+  <div class="orb-core" style="transform: translate({coreTX}px, {coreTY}px)"></div>
   {#each blobCfgs as c, i}
     <svg class="orb-ring" viewBox="0 0 240 240" aria-hidden="true"
          style="color:{c.color}; opacity:{c.op};">
@@ -1808,6 +1820,41 @@
     width: 100%;
     height: 100%;
   }
+  /* soft ambient glow behind the line-orb (gradient → no blur filter, cheap;
+     animates only opacity/transform so it stays GPU-composited) */
+  .orb-aura {
+    position: absolute;
+    inset: -22%;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(60,150,255,0.28) 0%, rgba(33,110,210,0.12) 35%, transparent 62%);
+    filter: blur(16px);   /* feather the circular edge into the background */
+    animation: aura-breathe 5.5s ease-in-out infinite;
+  }
+  .orb-bg.active .orb-aura {
+    background: radial-gradient(circle,
+      rgba(90,180,255,0.42) 0%, rgba(45,130,235,0.2) 38%, transparent 64%);
+  }
+  /* smaller, lighter inner core glowing in the orb's hollow centre */
+  .orb-core {
+    position: absolute;
+    inset: 26%;
+    border-radius: 50%;
+    background: radial-gradient(circle,
+      rgba(200,230,255,0.5) 0%, rgba(110,190,255,0.22) 42%, transparent 70%);
+    filter: blur(12px);
+    animation: aura-breathe 4s ease-in-out infinite;
+  }
+  .orb-bg.active .orb-core {
+    background: radial-gradient(circle,
+      rgba(225,242,255,0.68) 0%, rgba(130,200,255,0.36) 44%, transparent 72%);
+  }
+  /* opacity-only breathing → the blurred layers stay cached (no repaint) */
+  @keyframes aura-breathe {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1; }
+  }
+
   .orb-ring .glow { stroke-width: 5; stroke-opacity: 0.16; stroke-linejoin: round; }
   .orb-ring .line { stroke-width: 1.3; stroke-linejoin: round; }
 
