@@ -380,6 +380,24 @@ func (a *Agent) LastAssistantContent() string {
 	return ""
 }
 
+// RewindToUserMessage truncates the conversation so it restarts just before
+// the n-th user message (0-based), discarding it and everything after. Used to
+// edit a previous message and continue from there. Returns false when there is
+// no n-th user message. The system prompt (index 0) is always preserved.
+func (a *Agent) RewindToUserMessage(n int) bool {
+	count := 0
+	for i, m := range a.messages {
+		if m.Role == llm.RoleUser {
+			if count == n {
+				a.messages = a.messages[:i]
+				return true
+			}
+			count++
+		}
+	}
+	return false
+}
+
 func (a *Agent) emit(step StepResult) {
 	if a.onStep != nil {
 		a.onStep(step)

@@ -1,13 +1,55 @@
 <script>
-  import { SendMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
+  import hljs from 'highlight.js';
+  import 'highlight.js/styles/github-dark.css';
+
+  // Render fenced code blocks as a styled card: syntax-highlighted body with a
+  // header showing the language and a Copy button.
+  const codeRenderer = new marked.Renderer();
+  codeRenderer.code = function (token) {
+    const code = typeof token === 'object' ? token.text : token;
+    let lang = (typeof token === 'object' ? token.lang : arguments[1]) || '';
+    lang = lang.trim().split(/\s+/)[0];
+    let html, label;
+    try {
+      if (lang && hljs.getLanguage(lang)) {
+        html = hljs.highlight(code, { language: lang }).value;
+        label = lang;
+      } else {
+        const auto = hljs.highlightAuto(code);
+        html = auto.value;
+        label = auto.language || 'code';
+      }
+    } catch (e) {
+      html = code.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      label = lang || 'code';
+    }
+    return `<div class="code-block"><div class="code-head"><span class="code-lang">${label}</span>` +
+      `<button class="code-copy" type="button">Copy</button></div>` +
+      `<pre class="hljs"><code>${html}</code></pre></div>`;
+  };
 
   marked.setOptions({
     breaks: true,
     gfm: true,
+    renderer: codeRenderer,
   });
+
+  // Copy-button handler (delegated): copies the code block's text to clipboard.
+  function onChatClick(e) {
+    const btn = e.target.closest && e.target.closest('.code-copy');
+    if (!btn) return;
+    const block = btn.closest('.code-block');
+    const pre = block && block.querySelector('pre');
+    if (!pre) return;
+    navigator.clipboard && navigator.clipboard.writeText(pre.innerText);
+    const prev = btn.textContent;
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  }
 
   // Organic morphing blobs for the ambient orb. Each outline is a closed
   // Catmull-Rom spline whose vertex radii are driven by several *travelling*
@@ -485,6 +527,40 @@
     totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
   }
 
+  // Editing a previous user message and continuing from there.
+  let editingIndex = -1;
+  let editText = '';
+  function startEdit(i) {
+    if (loading) return;
+    editingIndex = i;
+    editText = messages[i].content;
+  }
+  function cancelEdit() {
+    editingIndex = -1;
+    editText = '';
+  }
+  async function saveEdit(i) {
+    const content = editText.trim();
+    if (!content || loading) return;
+    // ordinal of this message among user messages (what the agent rewinds to)
+    let n = 0;
+    for (let j = 0; j < i; j++) if (messages[j].role === 'user') n++;
+    // drop this message and everything after, then re-add the edited question
+    messages = [...messages.slice(0, i), { role: 'user', content }];
+    editingIndex = -1;
+    editText = '';
+    loading = true;
+    const resp = await EditMessage(n, content);
+    loading = false;
+    aborting = false;
+    totalCost = resp.cost_usd || 0;
+    totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+  }
+  function editKeydown(e, i) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(i); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+  }
+
   let aborting = false;
   async function abort() {
     if (!loading) return;
@@ -671,9 +747,17 @@
     }
   }
 
-  // Strip markdown so the speech sounds clean
+  // Prepare text for TTS: drop code blocks and emojis (they shouldn't be read
+  // aloud), then strip leftover markdown punctuation and collapse whitespace.
   function cleanForSpeech(text) {
-    return text.replace(/[#*_`~\[\]()>|]/g, '').replace(/\n+/g, ' ').trim();
+    return text
+      .replace(/```[\s\S]*?```/g, ' ')   // fenced code blocks
+      .replace(/`[^`]*`/g, ' ')          // inline code
+      // emoji / pictographs / symbols / flags / variation selectors
+      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{1F1E6}-\u{1F1FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '')
+      .replace(/[#*_`~\[\]()>|]/g, '')   // leftover markdown
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   // Synthesize + play one utterance, resolving when playback finishes.
@@ -1159,11 +1243,22 @@
     </div>
   {/if}
 
-  <div class="chat" bind:this={chatEl}>
+  <div class="chat" bind:this={chatEl} on:click={onChatClick}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
         <div class="message user">
-          <div class="message-content">{msg.content}</div>
+          {#if editingIndex === i}
+            <textarea class="edit-area" bind:value={editText} on:keydown={(e) => editKeydown(e, i)} rows="2"></textarea>
+            <div class="edit-actions">
+              <button class="edit-cancel" on:click={cancelEdit}>Cancel</button>
+              <button class="edit-save" on:click={() => saveEdit(i)} disabled={!editText.trim()}>Save & resend</button>
+            </div>
+          {:else}
+            <div class="message-content">{msg.content}</div>
+            <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </button>
+          {/if}
         </div>
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
@@ -1738,7 +1833,50 @@
     border: 1px solid rgba(47,158,255,0.35);
     box-shadow: 0 0 16px rgba(47,158,255,0.18);
     white-space: pre-wrap;
+    position: relative;
   }
+  .edit-btn {
+    position: absolute;
+    left: -1.6rem;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
+    background: none;
+    border: none;
+    color: #6f86a3;
+    cursor: pointer;
+    padding: 0.2rem;
+    display: flex;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .message.user:hover .edit-btn { opacity: 1; }
+  .edit-btn:hover { color: #3ad8ff; }
+  .edit-btn:disabled { opacity: 0; cursor: default; }
+  .edit-area {
+    width: 16rem;
+    max-width: 100%;
+    background: rgba(7,11,18,0.85);
+    border: 1px solid #2f9eff;
+    color: #dce6f2;
+    border-radius: 10px;
+    padding: 0.5rem;
+    font-family: inherit;
+    font-size: 13px;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .edit-actions { display: flex; gap: 0.4rem; justify-content: flex-end; margin-top: 0.4rem; }
+  .edit-save, .edit-cancel {
+    font-size: 12px;
+    padding: 0.25rem 0.6rem;
+    border-radius: 8px;
+    cursor: pointer;
+    border: none;
+    font-family: inherit;
+  }
+  .edit-save { background: linear-gradient(135deg, #3aa6ff, #1f7ce0); color: #fff; }
+  .edit-save:disabled { opacity: 0.5; cursor: not-allowed; }
+  .edit-cancel { background: #11243c; color: #9fc6ef; border: 1px solid #1c3a5e; }
 
   /* OpenUAI answers / activity hug the left edge */
   .message.assistant {
@@ -2408,6 +2546,46 @@
   .markdown :global(pre code) {
     background: none;
     padding: 0;
+  }
+  /* fenced code blocks rendered as a styled card */
+  .markdown :global(.code-block) {
+    margin: 0.5rem 0;
+    border: 1px solid #1c3a5e;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #0d1117;
+  }
+  .markdown :global(.code-head) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.25rem 0.3rem 0.25rem 0.6rem;
+    background: #0a0f18;
+    border-bottom: 1px solid #15233a;
+  }
+  .markdown :global(.code-lang) {
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: #6f86a3;
+  }
+  .markdown :global(.code-copy) {
+    background: #11243c;
+    border: 1px solid #1c3a5e;
+    color: #9fc6ef;
+    font-size: 10px;
+    padding: 0.12rem 0.5rem;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .markdown :global(.code-copy:hover) { background: #1d5bb0; color: #fff; }
+  .markdown :global(.code-block pre) {
+    margin: 0;
+    border-radius: 0;
+    padding: 0.6rem 0.75rem;
+    background: transparent;
+    font-size: 12px;
   }
   .markdown :global(strong) { color: #fff; }
   .markdown :global(a) { color: #3ad8ff; }

@@ -580,6 +580,39 @@ func (a *App) SendMessage(content string) ChatResponse {
 	}
 }
 
+// EditMessage rewinds the conversation to just before the n-th user message
+// (0-based), then re-runs the agent with the edited content — letting the user
+// edit a previous message and continue from there.
+func (a *App) EditMessage(index int, content string) ChatResponse {
+	logger.Info("EditMessage: rewind to user msg %d, content: %s", index, content)
+
+	a.agentMu.Lock()
+	defer a.agentMu.Unlock()
+
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.agentCancel = cancel
+	defer func() { a.agentCancel = nil }()
+
+	ag := a.ensureAgent()
+	ag.RewindToUserMessage(index)
+	err := ag.Run(ctx, content)
+
+	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
+		logger.Error("Failed to save session: %s", saveErr.Error())
+	}
+	if err != nil {
+		logger.Error("Agent run error: %s", err.Error())
+		return ChatResponse{Error: err.Error()}
+	}
+
+	summary := a.costTracker.Summary()
+	return ChatResponse{
+		InputTokens:  summary.TotalInputTokens,
+		OutputTokens: summary.TotalOutputTokens,
+		CostUSD:      summary.TotalCostUSD,
+	}
+}
+
 // AbortAgent cancels the currently running agent loop.
 func (a *App) AbortAgent() {
 	if cancel := a.agentCancel; cancel != nil {

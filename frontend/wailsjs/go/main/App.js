@@ -42,6 +42,10 @@ export function DownloadLipReadingModel() {
   return window['go']['main']['App']['DownloadLipReadingModel']();
 }
 
+export function EditMessage(arg1, arg2) {
+  return window['go']['main']['App']['EditMessage'](arg1, arg2);
+}
+
 export function GetAudioDevice() {
   return window['go']['main']['App']['GetAudioDevice']();
 }
