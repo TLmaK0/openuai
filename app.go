@@ -177,6 +177,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.GitCommit{})
 	a.registry.Register(tools.GitBranch{})
 	a.registry.Register(tools.WebFetch{})
+	a.registry.Register(tools.ImageSearch{})
 	a.registry.Register(tools.WatchChat{Fn: a.WatchChat})
 	a.registry.Register(tools.UnwatchChat{Fn: a.UnwatchChat})
 	a.registry.Register(tools.SaveMemory{Store: a.memoryStore})

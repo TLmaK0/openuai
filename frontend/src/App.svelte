@@ -415,8 +415,17 @@
     });
   });
 
+  // Auto-scroll to the bottom only when the user is already there. If they've
+  // scrolled up to read history, frequent updates (streaming, tool steps, voice
+  // levels) must NOT yank them back down.
+  let stickToBottom = true;
+  function onChatScroll() {
+    if (!chatEl) return;
+    const dist = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight;
+    stickToBottom = dist < 80;
+  }
   afterUpdate(() => {
-    if (chatEl) chatEl.scrollTop = chatEl.scrollHeight;
+    if (chatEl && stickToBottom) chatEl.scrollTop = chatEl.scrollHeight;
   });
 
   function respondPerm(level, approved) {
@@ -527,6 +536,7 @@
     savedInput = '';
     input = '';
     messages = [...messages, { role: 'user', content }];
+    stickToBottom = true; // sending a message jumps back to the latest
     loading = true;
 
     const resp = await SendMessage(content);
@@ -763,6 +773,9 @@
     return text
       .replace(/```[\s\S]*?```/g, ' ')   // fenced code blocks
       .replace(/`[^`]*`/g, ' ')          // inline code
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')   // images: drop entirely (don't read photos/URLs)
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // links: keep text, drop URL
+      .replace(/https?:\/\/\S+/g, ' ')   // bare URLs
       // emoji / pictographs / symbols / flags / variation selectors
       .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{1F1E6}-\u{1F1FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '')
       .replace(/[#*_`~\[\]()>|]/g, '')   // leftover markdown
@@ -1255,7 +1268,7 @@
     </div>
   {/if}
 
-  <div class="chat" bind:this={chatEl} on:click={onChatClick}>
+  <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
         <div class="message user">
