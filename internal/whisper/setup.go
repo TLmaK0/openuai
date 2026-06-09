@@ -37,24 +37,38 @@ func EnsureReady(configDir, whisperVersion, model string) error {
 	}
 	binPath := filepath.Join(binDir, binName)
 
-	// Check if already installed and correct version
+	// Re-download when the binary is missing, the version changed, or the
+	// preferred variant changed (e.g. a GPU appeared since last run → switch the
+	// CPU build for the CUDA one). The installed variant is recorded so we don't
+	// re-download every launch.
 	versionFile := filepath.Join(binDir, "whisper-version")
+	variantFile := filepath.Join(binDir, "whisper-variant")
+	variant := detectVariant()
 	needDownload := false
 	if _, err := os.Stat(binPath); os.IsNotExist(err) {
 		needDownload = true
 	} else if data, err := os.ReadFile(versionFile); err != nil || strings.TrimSpace(string(data)) != whisperVersion {
 		needDownload = true
+	} else if v, err := os.ReadFile(variantFile); err != nil || strings.TrimSpace(string(v)) != variant {
+		needDownload = true
 	}
 
 	if needDownload {
-		variant := detectVariant()
-		url := fmt.Sprintf("https://github.com/%s/releases/download/whisper-cpp-v%s/%s", ghRepo, whisperVersion, variant)
-		logger.Info("Whisper: downloading %s from %s", variant, url)
-		if err := downloadFile(url, binPath); err != nil {
+		if err := downloadVariant(variant, whisperVersion, binPath); err != nil {
 			return fmt.Errorf("download whisper-cli: %w", err)
 		}
-		os.Chmod(binPath, 0o755)
+		// If we grabbed the CUDA build but it can't load (e.g. the CUDA runtime
+		// isn't installed/compatible), fall back to the CPU build so STT keeps
+		// working instead of breaking outright.
+		if isCUDAVariant(variant) && !runnable(binPath) {
+			cpu := variantName(false)
+			logger.Error("Whisper: CUDA build %q won't run (CUDA runtime missing/incompatible?) — falling back to %s", variant, cpu)
+			if err := downloadVariant(cpu, whisperVersion, binPath); err != nil {
+				return fmt.Errorf("download whisper-cli (cpu fallback): %w", err)
+			}
+		}
 		os.WriteFile(versionFile, []byte(whisperVersion), 0o644)
+		os.WriteFile(variantFile, []byte(variant), 0o644) // record intent (avoids re-download loops; retried on version bump)
 		logger.Info("Whisper: installed %s", binPath)
 	}
 
@@ -122,14 +136,17 @@ func ModelReady(configDir, model string) bool {
 	return err == nil
 }
 
-// detectVariant returns the appropriate binary name for the current platform.
-func detectVariant() string {
+// detectVariant returns the binary name to use: the CUDA build when an NVIDIA
+// GPU is detected, otherwise the CPU build.
+func detectVariant() string { return variantName(hasCUDASupport()) }
+
+// variantName returns the release asset name for the current platform, picking
+// the CUDA build when cuda is true (and one exists for the platform).
+func variantName(cuda bool) string {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
-	hasCUDA := hasCUDASupport()
-
 	switch {
-	case goos == "linux" && goarch == "amd64" && hasCUDA:
+	case goos == "linux" && goarch == "amd64" && cuda:
 		return "whisper-cli-linux-amd64-cuda"
 	case goos == "linux" && goarch == "amd64":
 		return "whisper-cli-linux-amd64"
@@ -137,13 +154,39 @@ func detectVariant() string {
 		return "whisper-cli-linux-arm64"
 	case goos == "darwin":
 		return "whisper-cli-macos-universal"
-	case goos == "windows" && hasCUDA:
+	case goos == "windows" && cuda:
 		return "whisper-cli-windows-amd64-cuda.exe"
 	case goos == "windows":
 		return "whisper-cli-windows-amd64.exe"
 	default:
 		return fmt.Sprintf("whisper-cli-%s-%s", goos, goarch)
 	}
+}
+
+// isCUDAVariant reports whether an asset name is a CUDA build.
+func isCUDAVariant(variant string) bool { return strings.Contains(variant, "-cuda") }
+
+// downloadVariant fetches a whisper-cli release asset to dest and makes it
+// executable.
+func downloadVariant(variant, whisperVersion, dest string) error {
+	url := fmt.Sprintf("https://github.com/%s/releases/download/whisper-cpp-v%s/%s", ghRepo, whisperVersion, variant)
+	logger.Info("Whisper: downloading %s from %s", variant, url)
+	if err := downloadFile(url, dest); err != nil {
+		return err
+	}
+	return os.Chmod(dest, 0o755)
+}
+
+// runnable reports whether the binary can actually start — i.e. its shared
+// libraries resolve. Used to detect a CUDA build that can't load its runtime so
+// we can fall back to the CPU build.
+func runnable(binPath string) bool {
+	out, err := exec.Command(binPath, "--help").CombinedOutput()
+	if err == nil {
+		return true
+	}
+	s := string(out)
+	return !strings.Contains(s, "shared librar") && !strings.Contains(s, "cannot open shared object")
 }
 
 // hasCUDASupport checks if NVIDIA GPU drivers are available.

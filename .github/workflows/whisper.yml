@@ -16,10 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             name: whisper-cli-linux-amd64
             cuda: false
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             name: whisper-cli-linux-amd64-cuda
             cuda: true
           - os: ubuntu-24.04-arm
