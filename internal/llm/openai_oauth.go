@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -21,7 +22,7 @@ const (
 	oauthAuthorizeURL = "https://auth.openai.com/oauth/authorize"
 	oauthTokenURL    = "https://auth.openai.com/oauth/token"
 	oauthRedirectURI = "http://localhost:1455/auth/callback"
-	oauthScope       = "openid profile email offline_access"
+	oauthScope       = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 	oauthCallbackPort = 1455
 )
 
@@ -33,9 +34,10 @@ type OAuthTokens struct {
 }
 
 type OAuthFlow struct {
-	mu           sync.Mutex
-	tokens       *OAuthTokens
+	mu             sync.Mutex
+	tokens         *OAuthTokens
 	onTokensUpdate func(tokens *OAuthTokens)
+	activeServer   *http.Server
 }
 
 func NewOAuthFlow(onUpdate func(tokens *OAuthTokens)) *OAuthFlow {
@@ -88,7 +90,34 @@ func (o *OAuthFlow) Login() error {
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
-	server := startCallbackServer(state, codeCh, errCh)
+	// Tear down any callback server left listening by a previous, abandoned
+	// login attempt — otherwise binding :1455 fails with "address already in use".
+	o.mu.Lock()
+	if o.activeServer != nil {
+		o.activeServer.Close()
+		o.activeServer = nil
+	}
+	o.mu.Unlock()
+
+	server, err := startCallbackServer(state, codeCh, errCh)
+	if err != nil {
+		return fmt.Errorf("start callback server: %w", err)
+	}
+
+	o.mu.Lock()
+	o.activeServer = server
+	o.mu.Unlock()
+
+	// Guarantee the server is closed on every return path so the port is freed
+	// for the next attempt (the error path used to leak it).
+	defer func() {
+		server.Close()
+		o.mu.Lock()
+		if o.activeServer == server {
+			o.activeServer = nil
+		}
+		o.mu.Unlock()
+	}()
 
 	if err := openBrowser(authURL); err != nil {
 		return fmt.Errorf("open browser: %w", err)
@@ -100,11 +129,8 @@ func (o *OAuthFlow) Login() error {
 	case err := <-errCh:
 		return err
 	case <-time.After(5 * time.Minute):
-		server.Close()
 		return fmt.Errorf("login timed out after 5 minutes")
 	}
-
-	server.Close()
 
 	tokens, err := exchangeCode(code, verifier)
 	if err != nil {
@@ -251,7 +277,7 @@ func extractAccountID(accessToken string) string {
 	return ""
 }
 
-func startCallbackServer(expectedState string, codeCh chan<- string, errCh chan<- error) *http.Server {
+func startCallbackServer(expectedState string, codeCh chan<- string, errCh chan<- error) (*http.Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
 		state := r.URL.Query().Get("state")
@@ -278,30 +304,46 @@ func startCallbackServer(expectedState string, codeCh chan<- string, errCh chan<
 		Handler: mux,
 	}
 
+	// Bind synchronously so a port-in-use error surfaces to the caller as a
+	// clean error instead of being raced onto errCh after the browser opens.
+	ln, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return nil, err
+	}
+
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("callback server: %w", err)
 		}
 	}()
 
-	return server
+	return server, nil
 }
 
 func buildAuthorizeURL(state, challenge string) string {
-	u, _ := url.Parse(oauthAuthorizeURL)
-	q := u.Query()
-	q.Set("response_type", "code")
-	q.Set("client_id", oauthClientID)
-	q.Set("redirect_uri", oauthRedirectURI)
-	q.Set("scope", oauthScope)
-	q.Set("code_challenge", challenge)
-	q.Set("code_challenge_method", "S256")
-	q.Set("state", state)
-	q.Set("id_token_add_organizations", "true")
-	q.Set("codex_cli_simplified_flow", "true")
-	q.Set("originator", "codex_cli_rs")
-	u.RawQuery = q.Encode()
-	return u.String()
+	// Match the codex CLI's authorize request byte-for-byte: same parameter
+	// order and RFC 3986 percent-encoding (space -> %20). net/url's Encode()
+	// sorts params and emits "+" for spaces, which the OpenAI authorize
+	// endpoint rejects with authorize_hydra_invalid_request (it treats the
+	// "+"-joined scope as a single invalid scope token).
+	params := [][2]string{
+		{"response_type", "code"},
+		{"client_id", oauthClientID},
+		{"redirect_uri", oauthRedirectURI},
+		{"scope", oauthScope},
+		{"code_challenge", challenge},
+		{"code_challenge_method", "S256"},
+		{"id_token_add_organizations", "true"},
+		{"codex_cli_simplified_flow", "true"},
+		{"state", state},
+		{"originator", "codex_cli_rs"},
+	}
+	parts := make([]string, 0, len(params))
+	for _, p := range params {
+		v := strings.ReplaceAll(url.QueryEscape(p[1]), "+", "%20")
+		parts = append(parts, p[0]+"="+v)
+	}
+	return oauthAuthorizeURL + "?" + strings.Join(parts, "&")
 }
 
 func generatePKCE() (verifier, challenge string, err error) {
@@ -329,7 +371,13 @@ func openBrowser(url string) error {
 	case "darwin":
 		cmd = exec.Command("open", url)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
+		// Do NOT use `cmd /c start <url>`: cmd.exe treats the "&" that
+		// separates query parameters as a command separator, so the browser
+		// only receives the URL up to the first "&" (dropping client_id,
+		// scope, etc.) and the OAuth authorize request fails with
+		// missing_required_parameter. rundll32 receives the whole URL as a
+		// single argument with no shell parsing.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
