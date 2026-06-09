@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"openuai/internal/logger"
+	"openuai/internal/sysproc"
 	"openuai/internal/whisper"
 	"os"
 	"os/exec"
@@ -140,6 +141,7 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		args = append(args, "--prompt", prompt)
 	}
 	cmd := exec.Command(whisperPath, args...)
+	sysproc.HideConsole(cmd) // don't flash a console window on Windows
 	output, err := cmd.Output() // stdout only, logs go to stderr
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

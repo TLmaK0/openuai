@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"openuai/internal/logger"
+	"openuai/internal/sysproc"
 )
 
 const piperVersion = "2023.11.14-2"
@@ -301,6 +302,7 @@ func Speak(configDir, code, text string) ([]byte, error) {
 	// Piper loads its bundled shared libs and espeak-ng-data from its own dir.
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+piperRoot, "DYLD_LIBRARY_PATH="+piperRoot)
 	cmd.Stdin = strings.NewReader(text)
+	sysproc.HideConsole(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("piper synthesis failed: %v — %s", err, string(out))
 	}

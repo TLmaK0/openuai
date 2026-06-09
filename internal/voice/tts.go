@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"openuai/internal/logger"
 	"openuai/internal/piper"
+	"openuai/internal/sysproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,7 @@ func speakEspeak(text, voice string) SpeakResult {
 
 	// espeak-ng -v es -w output.wav "text"
 	cmd := exec.Command(espeakPath, "-v", voice, "-w", wavFile, text)
+	sysproc.HideConsole(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("espeak-ng error: %s\nOutput: %s", err, string(output))

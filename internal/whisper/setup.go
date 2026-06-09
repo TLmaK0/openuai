@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"openuai/internal/logger"
+	"openuai/internal/sysproc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,6 +198,7 @@ func canTranscribe(binPath, modelPath string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, "-m", modelPath, "-f", wav, "-l", "en", "-nt", "-np")
+	sysproc.HideConsole(cmd)
 	err := cmd.Run()
 	if err != nil {
 		logger.Info("Whisper: smoke test failed for %s: %v", filepath.Base(binPath), err)
@@ -232,6 +234,7 @@ func hasCUDASupport() bool {
 	}
 	// Verify nvidia-smi actually works (driver loaded)
 	cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+	sysproc.HideConsole(cmd)
 	out, err := cmd.Output()
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
