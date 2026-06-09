@@ -61,15 +61,30 @@
 
   function makeBlobCfg(base, color, op) {
     const harmonics = [];
+    // Distinct lobe counts (drawn without replacement) so the harmonics always
+    // BEAT against each other and the outline morphs — a ring whose waves share
+    // one lobe count just rigidly rotates as a symmetric shape.
+    const pool = [1, 2, 3, 4, 5, 6];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
     const n = 3 + Math.floor(Math.random() * 2);   // 3-4 overlapping waves
     for (let i = 0; i < n; i++) {
       harmonics.push({
-        m: 2 + Math.floor(Math.random() * 5),       // lobe count
+        m: pool[i],                                 // distinct lobe count
         amp: rand(3, 9),                            // wave height
         speed: rand(0.25, 0.75) * (Math.random() < 0.5 ? -1 : 1), // travel dir/rate
         phase: Math.random() * TAU,
       });
     }
+    // Slow overall breathing (m=0 ⇒ uniform in angle) so the whole ring visibly
+    // expands and contracts, not just its outline wobbling.
+    const breathe = {
+      amp: rand(4, 8),
+      speed: rand(0.4, 0.8) * (Math.random() < 0.5 ? -1 : 1),
+      phase: Math.random() * TAU,
+    };
     // Speaking ripple = sum of several integer-frequency lobes (so the curve
     // still closes seamlessly) with RANDOM amplitude/phase/rate each, giving
     // irregular, asymmetric wave spacing and heights that bob independently.
@@ -83,7 +98,7 @@
         rate: 2 + Math.random() * 6,             // in-place bobbing speed
       });
     }
-    return { base, color, op, harmonics, ripplePhase: Math.random() * TAU, ripples };
+    return { base, color, op, harmonics, breathe, ripplePhase: Math.random() * TAU, ripples };
   }
   const blobCfgs = [
     makeBlobCfg(86, '#4aa8ff', 0.9),
@@ -98,9 +113,10 @@
     const cx = 120, cy = 120, pts = [];
     for (let i = 0; i < BLOB_N; i++) {
       const a = (i / BLOB_N) * TAU;
-      let r = cfg.base;
       // while speaking, damp the slow travelling wobble (so it stops rotating)
       const wob = 1 - 0.6 * _speakLevel;
+      // overall breathe term (m=0): expands/contracts the whole ring over time
+      let r = cfg.base + cfg.breathe.amp * wob * Math.sin(t * cfg.breathe.speed + cfg.breathe.phase);
       for (const h of cfg.harmonics) r += h.amp * wob * Math.sin(h.m * a + t * h.speed + h.phase);
       if (_speakLevel > 0.01) {
         // Tall, IN-PLACE audio waves: fixed angular lobes (no a-travel ⇒ no
@@ -268,6 +284,7 @@
   let wakeListening = false;    // continuous wake-word listening on/off (session only)
   let wakeAwaitingCmd = false;  // wake word fired, capturing the command utterance
   let wakeStatus = '';          // wake model download / status message
+  let wakeHeardTimer;           // dismiss timer for the transient "heard (no wake word)" bubble
   const sttLanguages = [
     { code: 'auto', label: 'Auto-detect' },
     { code: 'es', label: 'Español' },
@@ -425,14 +442,21 @@
     });
 
     // The captured utterance was dropped (no wake word, empty, or STT error).
-    EventsOn('wake_discard', () => {
-      messages = messages.filter((m) => !m.wakePending);
+    // If we have a transcript, show it briefly so it's clear transcription
+    // happened but "<wakeWord>" wasn't detected; otherwise just drop the [...].
+    EventsOn('wake_discard', (heard) => {
+      messages = messages.filter((m) => !m.wakePending && !m.wakeHeard);
+      const txt = (heard || '').trim();
+      if (!txt) return;
+      messages = [...messages, { role: 'user', content: txt, wakeHeard: true }];
+      clearTimeout(wakeHeardTimer);
+      wakeHeardTimer = setTimeout(() => { messages = messages.filter((m) => !m.wakeHeard); }, 3500);
     });
 
     // Wake-word listener heard "<name>, <message>" — auto-send the message.
     EventsOn('wake_message', (text) => {
       wakeAwaitingCmd = false;
-      messages = messages.filter((m) => !m.wakePending);
+      messages = messages.filter((m) => !m.wakePending && !m.wakeHeard);
       if (loading || !text) return;
       input = text;
       send();
@@ -449,6 +473,15 @@
     window.addEventListener('focus', () => {
       if (textareaEl && !showPermDialog) textareaEl.focus();
     });
+
+    // If a wake word is already configured, start hands-free listening
+    // automatically so the selector reflects that it's active on launch.
+    // Done last, after the wake_* handlers above are registered, so no early
+    // capture/discard event is missed.
+    if (wakeWord && wakeWord.trim()) {
+      wakeListening = true;
+      await toggleWakeListening();
+    }
   });
 
   // Auto-scroll to the bottom only when the user is already there. If they've
@@ -803,10 +836,36 @@
     }
   }
 
+  // Month names for spelling out dates so TTS reads them as dates, not digits.
+  const SPEECH_MONTHS = {
+    es: ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'],
+    en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+  };
+
+  // Rewrite numeric dates into spoken words so e.g. "2026-06-09" is read as
+  // "9 de junio de 2026" instead of "2026 guion 06 guion 09". Handles ISO
+  // (YYYY-MM-DD) and day-first slash dates (DD/MM/YYYY). Language follows the
+  // selected TTS voice (Spanish by default).
+  function spellDates(text) {
+    const lang = (ttsVoice || '').toLowerCase().startsWith('en') ? 'en' : 'es';
+    const M = SPEECH_MONTHS[lang];
+    const fmt = (day, mi, year) =>
+      lang === 'en' ? `${M[mi]} ${day}, ${year}` : `${day} de ${M[mi]} de ${year}`;
+    return text
+      .replace(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g, (m, y, mo, d) => {
+        const mi = +mo - 1;
+        return mi >= 0 && mi < 12 && +d >= 1 && +d <= 31 ? fmt(+d, mi, y) : m;
+      })
+      .replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (m, d, mo, y) => {
+        const mi = +mo - 1;
+        return mi >= 0 && mi < 12 && +d >= 1 && +d <= 31 ? fmt(+d, mi, y) : m;
+      });
+  }
+
   // Prepare text for TTS: drop code blocks and emojis (they shouldn't be read
   // aloud), then strip leftover markdown punctuation and collapse whitespace.
   function cleanForSpeech(text) {
-    return text
+    return spellDates(text
       .replace(/```[\s\S]*?```/g, ' ')   // fenced code blocks
       .replace(/`[^`]*`/g, ' ')          // inline code
       .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')   // images: drop entirely (don't read photos/URLs)
@@ -816,7 +875,7 @@
       .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{1F1E6}-\u{1F1FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '')
       .replace(/[#*_`~\[\]()>|]/g, '')   // leftover markdown
       .replace(/\s+/g, ' ')
-      .trim();
+      .trim());
   }
 
   // Synthesize + play one utterance, resolving when playback finishes.
@@ -1332,7 +1391,7 @@
   <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
-        <div class="message user" class:wake-pending={msg.wakePending}>
+        <div class="message user" class:wake-pending={msg.wakePending} class:wake-heard={msg.wakeHeard} title={msg.wakeHeard ? `Oído, pero sin la palabra de activación ("${wakeWord}")` : ''}>
           {#if editingIndex === i}
             <textarea class="edit-area" bind:value={editText} on:keydown={(e) => editKeydown(e, i)} rows="2"></textarea>
             <div class="edit-actions">
@@ -1341,7 +1400,7 @@
             </div>
           {:else}
             <div class="message-content">{msg.content}</div>
-            {#if !msg.wakePending}
+            {#if !msg.wakePending && !msg.wakeHeard}
               <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
               </button>
@@ -2390,6 +2449,18 @@
     color: #3ad8ff;
     letter-spacing: 2px;
     animation: pulse-transcribing 1s ease-in-out infinite;
+  }
+  /* Transient bubble: what was heard when no wake word was detected. */
+  .message.user.wake-heard {
+    opacity: 0.45;
+    font-style: italic;
+    animation: wake-heard-fade 3.5s ease forwards;
+  }
+  @keyframes wake-heard-fade {
+    0% { opacity: 0; }
+    12% { opacity: 0.5; }
+    75% { opacity: 0.45; }
+    100% { opacity: 0; }
   }
   .stt-error {
     color: #ff5c7a;

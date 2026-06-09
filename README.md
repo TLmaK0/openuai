@@ -4,13 +4,16 @@
 
 Autonomous AI agent that reacts to events, executes tasks, and runs as a single binary on any OS. Full system access — file management, shell execution, git operations, web browsing, voice, and more.
 
+![OpenUAI](docs/img/screenshot.png)
+
 ## Features
 
 - **Autonomous agent** — plan-first execution with full tool access: bash, filesystem, git, web
 - **Event-driven** — subscribe to WhatsApp, Teams, email, webhooks; agent reacts automatically
 - **Multi-agent** — spawn concurrent sub-agents for parallel task execution
 - **MCP compatible** — connect to any MCP server to extend capabilities
-- **Voice** — push-to-talk with Whisper STT (auto-detect language) + TTS
+- **Marketplace** — one-click install of curated MCP servers from Settings
+- **Voice** — hands-free wake word ("say a name, then your task"), push-to-talk Whisper STT (auto-detect language) + neural TTS
 - **System tray** — background mode with native OS notifications
 - **REST API** — run headless with 18 endpoints + WebSocket
 - **Cost tracking** — real-time token usage and cost per request

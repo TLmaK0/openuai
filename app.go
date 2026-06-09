@@ -181,8 +181,8 @@ func (a *App) startup(ctx context.Context) {
 		OnCapture: func() {
 			wailsRuntime.EventsEmit(a.ctx, "wake_capturing", nil)
 		},
-		OnDiscard: func() {
-			wailsRuntime.EventsEmit(a.ctx, "wake_discard", nil)
+		OnDiscard: func(heard string) {
+			wailsRuntime.EventsEmit(a.ctx, "wake_discard", heard)
 		},
 	}
 

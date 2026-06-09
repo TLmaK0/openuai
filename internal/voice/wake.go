@@ -34,7 +34,7 @@ type WakeListener struct {
 	OnMessage   func(text string) // called with the full transcript (wake word kept)
 	OnListening func()            // called when the wake word fired and we're awaiting the command
 	OnCapture   func()            // called the moment an utterance is captured, before transcription
-	OnDiscard   func()            // called when a captured utterance is dropped (no wake word, empty, or error)
+	OnDiscard   func(heard string) // called when a captured utterance is dropped; heard is the transcript (or "" on STT error)
 
 	running int32 // atomic: 1 while the loop goroutine is active
 	paused  int32 // atomic: 1 while listening should be suspended
@@ -55,11 +55,12 @@ func (w *WakeListener) SetPaused(p bool) {
 // Running reports whether the listen loop is active.
 func (w *WakeListener) Running() bool { return atomic.LoadInt32(&w.running) == 1 }
 
-// discard notifies the UI that a captured utterance was dropped (so it can
-// remove the "[...]" placeholder shown on capture).
-func (w *WakeListener) discard() {
+// discard notifies the UI that a captured utterance was dropped, passing what
+// was heard (so the UI can briefly show it instead of silently dropping the
+// "[...]" placeholder — making it visible that transcription did happen).
+func (w *WakeListener) discard(heard string) {
 	if w.OnDiscard != nil {
-		w.OnDiscard()
+		w.OnDiscard(heard)
 	}
 }
 
@@ -139,20 +140,20 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		}
 		transcript, err := w.Transcribe(wav)
 		if err != nil || transcript == "" {
-			w.discard()
+			w.discard("")
 			continue
 		}
 		msg, ok := stripWakeWord(transcript, w.WakeWord())
 		if !ok {
 			logger.Debug("Wake listener: heard %q (no wake word)", transcript)
-			w.discard()
+			w.discard(transcript)
 			continue
 		}
 		if msg == "" {
 			// Wake word alone (no command in the same phrase). Say the whole thing
 			// in one breath: "Pepito, qué hora es".
 			logger.Info("Wake listener: wake word only, no command — say it in one phrase")
-			w.discard()
+			w.discard(transcript)
 			continue
 		}
 		// Hand over the full transcript (name included): the wake word is only used
