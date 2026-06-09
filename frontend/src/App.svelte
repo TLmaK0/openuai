@@ -2013,16 +2013,16 @@
     line-height: 1.55;
     word-break: break-word;
     text-align: left;
-    /* never extend into the central band where the orb lives */
-    max-width: calc(50% - 200px);
+    /* wide panels: span almost the full width, leaving a gap on the far side */
+    max-width: calc(100% - 4rem);
   }
 
-  /* user questions hug the right edge */
+  /* user questions hug the right edge — line + transparent fill */
   .message.user {
     align-self: flex-end;
-    background: linear-gradient(135deg, #15406e, #0f2b4d);
+    background: transparent;
     border: 1px solid rgba(47,158,255,0.35);
-    box-shadow: 0 0 16px rgba(47,158,255,0.18);
+    box-shadow: none;
     white-space: pre-wrap;
     position: relative;
   }
@@ -2069,10 +2069,10 @@
   .edit-save:disabled { opacity: 0.5; cursor: not-allowed; }
   .edit-cancel { background: #11243c; color: #9fc6ef; border: 1px solid #1c3a5e; }
 
-  /* OpenUAI answers / activity hug the left edge */
+  /* OpenUAI answers / activity hug the left edge — line + transparent fill */
   .message.assistant {
     align-self: flex-start;
-    background: rgba(12,18,29,0.7);
+    background: transparent;
     border: 1px solid #163050;
   }
 
