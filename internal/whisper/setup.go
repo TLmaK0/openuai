@@ -107,6 +107,21 @@ func ModelPath(configDir, model string) string {
 	return p // return expected path even if missing
 }
 
+// ModelReady reports whether the given model file is present on disk.
+func ModelReady(configDir, model string) bool {
+	if model == "" {
+		model = defaultModel
+	}
+	p := filepath.Join(configDir, "models", "ggml-"+model+".bin")
+	if _, err := os.Stat(p); err == nil {
+		return true
+	}
+	home, _ := os.UserHomeDir()
+	legacy := filepath.Join(home, ".local", "share", "whisper-cpp", "ggml-"+model+".bin")
+	_, err := os.Stat(legacy)
+	return err == nil
+}
+
 // detectVariant returns the appropriate binary name for the current platform.
 func detectVariant() string {
 	goos := runtime.GOOS

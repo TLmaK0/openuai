@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -264,6 +264,10 @@
   let voiceDownloading = false;
   let voiceDownloadError = '';
   let sttLanguage = 'auto';
+  let wakeWord = '';            // name that triggers hands-free listening
+  let wakeListening = false;    // continuous wake-word listening on/off (session only)
+  let wakeAwaitingCmd = false;  // wake word fired, capturing the command utterance
+  let wakeStatus = '';          // wake model download / status message
   const sttLanguages = [
     { code: 'auto', label: 'Auto-detect' },
     { code: 'es', label: 'Español' },
@@ -313,6 +317,7 @@
     piperSupported = await PiperSupported();
     ttsVoices = await GetTTSVoices();
     sttLanguage = await GetSTTLanguage();
+    wakeWord = await GetWakeWord();
     audioDevices = await GetAudioDevices() || [];
     selectedDevice = await GetAudioDevice();
     appVersion = await GetVersion();
@@ -400,6 +405,37 @@
     // Listen for voice level updates
     EventsOn('voice_level', (level) => {
       voiceLevel = level;
+    });
+
+    // Wake model download / status updates.
+    EventsOn('wake_status', (s) => { wakeStatus = s || ''; });
+
+    // Wake word fired; the listener is now capturing the spoken command.
+    EventsOn('wake_listening', () => {
+      wakeAwaitingCmd = true;
+      setTimeout(() => { wakeAwaitingCmd = false; }, 6000);
+    });
+
+    // An utterance was captured and is being transcribed — show a "[...]"
+    // placeholder bubble so it's visible that the mic picked something up.
+    EventsOn('wake_capturing', () => {
+      if (messages.some((m) => m.wakePending)) return;
+      messages = [...messages, { role: 'user', content: '[...]', wakePending: true }];
+      stickToBottom = true;
+    });
+
+    // The captured utterance was dropped (no wake word, empty, or STT error).
+    EventsOn('wake_discard', () => {
+      messages = messages.filter((m) => !m.wakePending);
+    });
+
+    // Wake-word listener heard "<name>, <message>" — auto-send the message.
+    EventsOn('wake_message', (text) => {
+      wakeAwaitingCmd = false;
+      messages = messages.filter((m) => !m.wakePending);
+      if (loading || !text) return;
+      input = text;
+      send();
     });
 
     // Listen for permission requests
@@ -844,6 +880,25 @@
     await SetSTTLanguage(sttLanguage);
   }
 
+  async function saveWakeWord() {
+    await SetWakeWord(wakeWord);
+  }
+
+  // Toggle the continuous wake-word listener. On failure (e.g. no wake word set)
+  // revert the switch and surface the reason.
+  async function toggleWakeListening() {
+    const err = await SetWakeListening(wakeListening);
+    if (err) {
+      wakeListening = false;
+      sttError = err;
+      setTimeout(() => { if (sttError === err) sttError = ''; }, 4000);
+    }
+  }
+
+  // Pause listening whenever the app is otherwise using audio or busy, so the
+  // wake listener never transcribes the assistant's own TTS or a push-to-talk.
+  $: if (wakeListening) SetWakePaused(loading || speaking || transcribing || recording);
+
   function handleGlobalKeydown(e) {
     if (e.key === 'Escape' && loading && !aborting) {
       e.preventDefault();
@@ -981,6 +1036,12 @@
             {/each}
           </select>
         </div>
+        <div class="setting-row">
+          <label>Wake word</label>
+          <input type="text" class="wake-input" bind:value={wakeWord} on:change={saveWakeWord}
+                 placeholder="e.g. Pepito" />
+        </div>
+        <div class="setting-row"><label></label><span class="voice-status">Turn on the listen toggle next to the mic, then say "{wakeWord || 'name'}, …" to send hands-free.</span></div>
         {#if audioDevices.length > 0}
           <div class="setting-row">
             <label>Mic</label>
@@ -1271,7 +1332,7 @@
   <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
-        <div class="message user">
+        <div class="message user" class:wake-pending={msg.wakePending}>
           {#if editingIndex === i}
             <textarea class="edit-area" bind:value={editText} on:keydown={(e) => editKeydown(e, i)} rows="2"></textarea>
             <div class="edit-actions">
@@ -1280,9 +1341,11 @@
             </div>
           {:else}
             <div class="message-content">{msg.content}</div>
-            <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-            </button>
+            {#if !msg.wakePending}
+              <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+            {/if}
           {/if}
         </div>
       {:else if msg.role === 'assistant'}
@@ -1357,6 +1420,11 @@
       {/if}
     </button>
     {/if}
+    <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
+      <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c0 0 3-6 10-6s10 6 10 6"/><path d="M2 10c0 0 3 6 10 6s10-6 10-6"/><circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg>
+      <span class="wake-track"><span class="wake-knob"></span></span>
+    </label>
     <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -1373,6 +1441,10 @@
     {/if}
     {#if transcribing}
       <div class="transcribing-indicator">Transcribing...</div>
+    {:else if wakeStatus}
+      <div class="transcribing-indicator wake-listening-ind">{wakeStatus}</div>
+    {:else if wakeAwaitingCmd}
+      <div class="transcribing-indicator wake-listening-ind">🎙 Listening…</div>
     {:else if sttError}
       <div class="transcribing-indicator stt-error">{sttError}</div>
     {/if}
@@ -2213,6 +2285,49 @@
   }
 
   /* Voice */
+  /* Hands-free wake-word listen toggle (slider) */
+  .wake-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    color: #6f8aa8;
+    user-select: none;
+    transition: color 0.2s;
+  }
+  .wake-toggle input { display: none; }
+  .wake-track {
+    position: relative;
+    width: 30px;
+    height: 16px;
+    background: #1c3a5e;
+    border-radius: 999px;
+    transition: background 0.2s;
+  }
+  .wake-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    background: #9fc6ef;
+    border-radius: 50%;
+    transition: left 0.2s, background 0.2s;
+  }
+  .wake-on { color: #3ad8ff; }
+  .wake-on .wake-track { background: #1d5bb0; box-shadow: 0 0 10px rgba(47,158,255,0.5); }
+  .wake-on .wake-knob { left: 16px; background: #eaf6ff; }
+
+  .wake-input {
+    flex: 1;
+    padding: 0.4rem 0.6rem;
+    background: #0d1b2e;
+    border: 1px solid #1c3a5e;
+    border-radius: 6px;
+    color: #e6f0fa;
+    font-size: 13px;
+  }
+
   .mic-btn {
     padding: 0.5rem;
     background: #11243c;
@@ -2267,6 +2382,14 @@
     color: #e9a045;
     animation: pulse-transcribing 1.2s ease-in-out infinite;
     white-space: nowrap;
+  }
+  .wake-listening-ind { color: #3ad8ff; }
+  /* Placeholder bubble shown while a captured utterance is being transcribed. */
+  .message.user.wake-pending { opacity: 0.6; }
+  .message.user.wake-pending .message-content {
+    color: #3ad8ff;
+    letter-spacing: 2px;
+    animation: pulse-transcribing 1s ease-in-out infinite;
   }
   .stt-error {
     color: #ff5c7a;

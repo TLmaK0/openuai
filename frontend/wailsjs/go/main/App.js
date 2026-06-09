@@ -142,6 +142,14 @@ export function GetVoiceEnabled() {
   return window['go']['main']['App']['GetVoiceEnabled']();
 }
 
+export function GetWakeListening() {
+  return window['go']['main']['App']['GetWakeListening']();
+}
+
+export function GetWakeWord() {
+  return window['go']['main']['App']['GetWakeWord']();
+}
+
 export function GetWatchedChats() {
   return window['go']['main']['App']['GetWatchedChats']();
 }
@@ -236,6 +244,18 @@ export function SetTTSVoice(arg1) {
 
 export function SetVoiceEnabled(arg1) {
   return window['go']['main']['App']['SetVoiceEnabled'](arg1);
+}
+
+export function SetWakeListening(arg1) {
+  return window['go']['main']['App']['SetWakeListening'](arg1);
+}
+
+export function SetWakePaused(arg1) {
+  return window['go']['main']['App']['SetWakePaused'](arg1);
+}
+
+export function SetWakeWord(arg1) {
+  return window['go']['main']['App']['SetWakeWord'](arg1);
 }
 
 export function SkipVersion(arg1) {

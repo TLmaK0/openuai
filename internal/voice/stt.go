@@ -48,7 +48,9 @@ func isNonSpeech(t string) bool {
 }
 
 // Transcribe runs whisper.cpp (whisper-cli) on base64-encoded WAV audio and returns the transcript.
-func Transcribe(audioBase64, model, language, configDir string) TranscribeResult {
+// prompt is an optional initial prompt that biases recognition (e.g. the wake
+// word, so an isolated name like "Pepito" isn't mis-heard); pass "" for none.
+func Transcribe(audioBase64, model, language, prompt, configDir string) TranscribeResult {
 	if model == "" {
 		model = "small"
 	}
@@ -91,6 +93,9 @@ func Transcribe(audioBase64, model, language, configDir string) TranscribeResult
 		"-f", wavFile,
 		"--no-prints",
 		"-l", language,
+	}
+	if prompt != "" {
+		args = append(args, "--prompt", prompt)
 	}
 	cmd := exec.Command(whisperPath, args...)
 	output, err := cmd.Output() // stdout only, logs go to stderr

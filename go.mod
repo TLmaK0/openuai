@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	fyne.io/systray v1.12.0
 	github.com/gen2brain/beeep v0.11.2
+	github.com/gen2brain/malgo v0.11.25
 	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/mark3labs/mcp-go v0.45.0

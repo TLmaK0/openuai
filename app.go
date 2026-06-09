@@ -33,20 +33,21 @@ import (
 )
 
 type App struct {
-	ctx         context.Context
-	cfg         *config.Config
-	claude      *llm.ClaudeProvider
-	openai      *llm.OpenAIProvider
-	oauth       *llm.OAuthFlow
-	costTracker *llm.CostTracker
-	registry    *tools.Registry
-	permissions *agent.PermissionManager
+	ctx          context.Context
+	cfg          *config.Config
+	claude       *llm.ClaudeProvider
+	openai       *llm.OpenAIProvider
+	oauth        *llm.OAuthFlow
+	costTracker  *llm.CostTracker
+	registry     *tools.Registry
+	permissions  *agent.PermissionManager
 	currentAgent *agent.Agent
-	eventBus    *eventbus.Bus
+	eventBus     *eventbus.Bus
 
-	mcpManager  *mcpclient.Manager
-	apiServer   *api.Server
+	mcpManager     *mcpclient.Manager
+	apiServer      *api.Server
 	recorder       *voice.Recorder
+	wake           *voice.WakeListener
 	lipRecorder    *lipreading.Recorder
 	whisperVersion string
 	version        string
@@ -76,11 +77,11 @@ type permAnswer struct {
 
 func NewApp() *App {
 	return &App{
-		costTracker:  llm.NewCostTracker(),
-		permResponse: make(chan permAnswer, 1),
-		watchedChats:       make(map[string]struct{}),
+		costTracker:   llm.NewCostTracker(),
+		permResponse:  make(chan permAnswer, 1),
+		watchedChats:  make(map[string]struct{}),
 		recentSentIDs: make(map[string]int64),
-		lipRecorder:  lipreading.NewRecorder(),
+		lipRecorder:   lipreading.NewRecorder(),
 	}
 }
 
@@ -150,11 +151,39 @@ func (a *App) startup(ctx context.Context) {
 
 	a.openai = llm.NewOpenAIProvider(a.oauth)
 
-	// Voice recorder (uses local parecord/arecord + whisper + espeak-ng)
+	// Voice recorder (native mic capture via miniaudio + whisper + Piper TTS)
 	a.recorder = voice.NewRecorder()
 	a.recorder.Device = cfg.AudioDevice
 	a.recorder.OnLevel = func(level int) {
 		wailsRuntime.EventsEmit(a.ctx, "voice_level", level)
+	}
+
+	// Wake-word listener: hands-free "say the name, then your message".
+	a.wake = &voice.WakeListener{
+		WakeWord: func() string { return a.cfg.WakeWord },
+		Device:   func() string { return a.cfg.AudioDevice },
+		Transcribe: func(wav []byte) (string, error) {
+			// Use the fast model: medium is far too slow on CPU (~16s/utterance),
+			// which breaks interactivity. Full-phrase context lets small recognise
+			// the wake word fine. Bias toward the wake word with --prompt.
+			res := voice.TranscribeWAV(wav, a.cfg.STTModel, a.cfg.STTLanguage, a.cfg.WakeWord, a.cfg.ConfigDir())
+			if res.Error != "" {
+				return "", fmt.Errorf("%s", res.Error)
+			}
+			return res.Text, nil
+		},
+		OnMessage: func(text string) {
+			wailsRuntime.EventsEmit(a.ctx, "wake_message", text)
+		},
+		OnListening: func() {
+			wailsRuntime.EventsEmit(a.ctx, "wake_listening", nil)
+		},
+		OnCapture: func() {
+			wailsRuntime.EventsEmit(a.ctx, "wake_capturing", nil)
+		},
+		OnDiscard: func() {
+			wailsRuntime.EventsEmit(a.ctx, "wake_discard", nil)
+		},
 	}
 
 	// Memory store
@@ -216,7 +245,6 @@ func (a *App) startup(ctx context.Context) {
 			return answer.level, answer.approved
 		},
 	)
-
 
 	// Event bus
 	a.eventBus = eventbus.New()
@@ -382,6 +410,9 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	logger.Info("Shutting down")
+	if a.wake != nil {
+		a.wake.Stop() // terminate the listener so its capture device is released
+	}
 	if a.apiServer != nil {
 		a.apiServer.Shutdown(ctx)
 	}
@@ -765,7 +796,6 @@ func (a *App) GetWatchedChats() []string {
 	return result
 }
 
-
 func (a *App) ClearChat() {
 	logger.Info("Chat cleared")
 
@@ -944,7 +974,6 @@ func (a *App) GetEventStats() eventbus.Stats {
 	return a.eventBus.GetStats()
 }
 
-
 // --- MCP Servers ---
 
 // MCPServerStatus holds the status of an MCP server for the UI.
@@ -1103,7 +1132,7 @@ func (a *App) StopRecording() map[string]interface{} {
 
 // TranscribeAudio transcribes base64-encoded audio using local Whisper.
 func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
-	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage, a.cfg.ConfigDir())
+	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage, "", a.cfg.ConfigDir())
 	return map[string]interface{}{
 		"text":  result.Text,
 		"error": result.Error,
@@ -1197,6 +1226,45 @@ func (a *App) GetSTTLanguage() string {
 func (a *App) SetSTTLanguage(lang string) error {
 	a.cfg.STTLanguage = lang
 	return a.cfg.Save()
+}
+
+// GetWakeWord returns the configured wake word (name that triggers listening).
+func (a *App) GetWakeWord() string { return a.cfg.WakeWord }
+
+// SetWakeWord persists the wake word.
+func (a *App) SetWakeWord(word string) error {
+	a.cfg.WakeWord = strings.TrimSpace(word)
+	return a.cfg.Save()
+}
+
+// GetWakeListening reports whether the continuous wake-word listener is running.
+func (a *App) GetWakeListening() bool {
+	return a.wake != nil && a.wake.Running()
+}
+
+// SetWakeListening turns the continuous wake-word listener on or off. Session
+// state only — it does not persist, so the mic is never auto-enabled on launch.
+func (a *App) SetWakeListening(on bool) string {
+	if a.wake == nil {
+		return "wake listener unavailable"
+	}
+	if !on {
+		a.wake.Stop()
+		return ""
+	}
+	if strings.TrimSpace(a.cfg.WakeWord) == "" {
+		return "Set a wake word in Settings first"
+	}
+	a.wake.Start()
+	return ""
+}
+
+// SetWakePaused suspends/resumes listening (the frontend pauses it while the
+// agent is replying or TTS is playing, so it doesn't hear the assistant).
+func (a *App) SetWakePaused(paused bool) {
+	if a.wake != nil {
+		a.wake.SetPaused(paused)
+	}
 }
 
 // GetVoiceEnabled returns whether voice features are enabled.
@@ -1469,4 +1537,3 @@ func (a *App) RemoveMCPServer(name string) string {
 	logger.Info("MCP server %q removed", name)
 	return ""
 }
-

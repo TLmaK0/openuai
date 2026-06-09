@@ -62,6 +62,7 @@ type Config struct {
 	TTSVoice               string           `json:"tts_voice,omitempty"`
 	STTModel               string           `json:"stt_model,omitempty"`
 	STTLanguage            string           `json:"stt_language,omitempty"`
+	WakeWord               string           `json:"wake_word,omitempty"` // name that triggers hands-free listening (e.g. "Pepito")
 	AudioDevice            string           `json:"audio_device,omitempty"`
 	SkippedVersion         string           `json:"skipped_version,omitempty"`
 	BetaLipReading         bool             `json:"beta_lip_reading,omitempty"`

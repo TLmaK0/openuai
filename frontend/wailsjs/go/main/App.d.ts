@@ -77,6 +77,10 @@ export function GetVersion():Promise<string>;
 
 export function GetVoiceEnabled():Promise<boolean>;
 
+export function GetWakeListening():Promise<boolean>;
+
+export function GetWakeWord():Promise<string>;
+
 export function GetWatchedChats():Promise<Array<string>>;
 
 export function HasAPIKey():Promise<boolean>;
@@ -124,6 +128,12 @@ export function SetSTTLanguage(arg1:string):Promise<void>;
 export function SetTTSVoice(arg1:string):Promise<string>;
 
 export function SetVoiceEnabled(arg1:boolean):Promise<void>;
+
+export function SetWakeListening(arg1:boolean):Promise<string>;
+
+export function SetWakePaused(arg1:boolean):Promise<void>;
+
+export function SetWakeWord(arg1:string):Promise<void>;
 
 export function SkipVersion(arg1:string):Promise<void>;
 
