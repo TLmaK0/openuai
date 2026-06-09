@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,42 @@ func isSilentWAV(wav []byte) bool {
 		sum += float64(s) * float64(s)
 	}
 	return math.Sqrt(sum/float64(n)) < 30
+}
+
+// wavDurationSec estimates a PCM WAV's duration in seconds from its header.
+// Returns 0 if it can't be parsed (caller then uses the full encoder context).
+func wavDurationSec(wav []byte) float64 {
+	if len(wav) < 44 {
+		return 0
+	}
+	channels := int(binary.LittleEndian.Uint16(wav[22:24]))
+	rate := int(binary.LittleEndian.Uint32(wav[24:28]))
+	bits := int(binary.LittleEndian.Uint16(wav[34:36]))
+	frameBytes := channels * bits / 8
+	if rate <= 0 || frameBytes <= 0 {
+		return 0
+	}
+	return float64(len(wav)-44) / float64(frameBytes) / float64(rate)
+}
+
+// audioCtxFor caps whisper's encoder audio context to roughly the clip length.
+// By default whisper.cpp always runs the encoder over a full 30s window (~1500
+// positions, ~50/sec) regardless of how short the audio is — and that fixed
+// pass, not model loading, dominates latency (~5s for a 3s clip). Capping it to
+// the clip length cuts a short utterance to ~1-2s. 0 means "use the default
+// (all)"; we also return 0 once the clip is long enough to need the full window.
+func audioCtxFor(durSec float64) int {
+	if durSec <= 0 {
+		return 0
+	}
+	ctx := int(durSec*50*1.25) + 32 // +25% margin so the tail isn't clipped
+	if ctx < 256 {
+		ctx = 256 // floor: even tiny clips need enough context to stay accurate
+	}
+	if ctx >= 1500 {
+		return 0 // at/over the full window — just use the default
+	}
+	return ctx
 }
 
 // isNonSpeech matches Whisper's common non-speech hallucinations.
@@ -84,8 +121,6 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 	}
 	defer os.Remove(wavFile)
 
-	logger.Info("Voice STT: running whisper-cli on %d bytes (model=%s)", len(audioBytes), model)
-
 	// whisper-cli -m model.bin -f audio.wav --no-prints
 	// Note: do NOT use --no-timestamps with --no-prints, it truncates output (whisper.cpp bug)
 	args := []string{
@@ -94,6 +129,13 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		"--no-prints",
 		"-l", language,
 	}
+	// Cap the encoder's audio context to the clip length so a short utterance
+	// isn't processed over the full 30s window (the main source of STT latency).
+	audioCtx := audioCtxFor(wavDurationSec(audioBytes))
+	if audioCtx > 0 {
+		args = append(args, "-ac", strconv.Itoa(audioCtx))
+	}
+	logger.Info("Voice STT: running whisper-cli on %d bytes (model=%s, audio_ctx=%d)", len(audioBytes), model, audioCtx)
 	if prompt != "" {
 		args = append(args, "--prompt", prompt)
 	}
