@@ -38,7 +38,7 @@ type WakeListener struct {
 	Transcribe  func(wav []byte) (string, error)
 	OnMessage   func(text string) // called with the full transcript (wake word kept)
 	OnListening func()            // called when the wake word fired and we're awaiting the command
-	OnCapture   func()            // called the moment an utterance is captured, before transcription
+	OnCapture   func()            // called the instant speech begins (immediate UI feedback), before the utterance completes
 	OnDiscard   func(heard string) // called when a captured utterance is dropped; heard is the transcript (or "" on STT error)
 	OnSession   func(active bool)  // called when the conversation window opens/closes (UI hint: blink the mic)
 
@@ -170,11 +170,8 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		if !hasSpeech || len(wav) == 0 {
 			continue
 		}
-		// We have audio: tell the UI immediately so it can show a "[...]" placeholder
-		// while we transcribe (otherwise it looks like nothing is being heard).
-		if w.OnCapture != nil {
-			w.OnCapture()
-		}
+		// (The "[...]" placeholder was already shown at speech onset inside
+		// captureUtterance, so the UI reacted the moment it heard us.)
 		transcript, err := w.Transcribe(wav)
 		if err != nil || transcript == "" {
 			w.discard("")
@@ -226,8 +223,10 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 
 // captureUtterance records one utterance from the shared mic using voice-
 // activity detection: it waits for speech to start, then for a trailing pause,
-// and returns the captured WAV plus whether any speech was detected. The mic
-// buffer is reset on entry so each utterance is transcribed in isolation.
+// and returns the captured WAV plus whether any speech was detected. It calls
+// OnCapture the instant speech begins (immediate UI feedback) and, if it bails
+// out mid-capture, clears that placeholder via discard. The mic buffer is reset
+// on entry so each utterance is transcribed in isolation.
 func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechTimeout time.Duration) ([]byte, bool) {
 	mic.Reset()
 
@@ -248,11 +247,19 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 		// Bail out immediately if we've been paused mid-capture (e.g. the user
 		// pressed push-to-talk, or the agent started replying).
 		if atomic.LoadInt32(&w.paused) == 1 {
+			if speechStarted {
+				w.discard("") // clear the "[...]" placeholder we already showed
+			}
 			return nil, false
 		}
 
 		now := time.Now()
 		if mic.Level() >= wakeSpeechOn {
+			if !speechStarted && w.OnCapture != nil {
+				// Show the "[...]" placeholder the instant we hear speech, not after
+				// the whole utterance + trailing silence — otherwise it feels laggy.
+				w.OnCapture()
+			}
 			speechStarted = true
 			lastSpeech = now
 		}

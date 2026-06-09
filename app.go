@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -1151,6 +1152,52 @@ func (a *App) SpeakText(text string) map[string]interface{} {
 		"char_count":   result.CharCount,
 		"error":        result.Error,
 	}
+}
+
+// GetWorkDir returns the directory the agent saves files into (the process
+// working directory), so the frontend can resolve a bare file name the agent
+// mentions into a full path to open. Empty string if it can't be determined.
+func (a *App) GetWorkDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
+}
+
+// OpenPath opens a local file (or folder) with the OS default application, so a
+// link to a file the agent generated opens the document directly. Returns "" on
+// success or an error message. The path must exist (no opening of arbitrary
+// strings); URLs are left to the browser via BrowserOpenURL on the frontend.
+func (a *App) OpenPath(path string) string {
+	path = strings.TrimPrefix(path, "file://")
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "empty path"
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		}
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Sprintf("not found: %s", path)
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", path)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", "", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+	if err := cmd.Start(); err != nil {
+		logger.Error("OpenPath: %s — %s", path, err.Error())
+		return err.Error()
+	}
+	logger.Info("OpenPath: opened %s", path)
+	return ""
 }
 
 const defaultVoice = "es_ES-davefx-medium"

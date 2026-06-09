@@ -83,6 +83,8 @@ export function GetWakeWord():Promise<string>;
 
 export function GetWatchedChats():Promise<Array<string>>;
 
+export function GetWorkDir():Promise<string>;
+
 export function HasAPIKey():Promise<boolean>;
 
 export function InstallMarketplace(arg1:string,arg2:string):Promise<string>;
@@ -92,6 +94,8 @@ export function LipReadingModelReady():Promise<boolean>;
 export function OpenAIIsLoggedIn():Promise<boolean>;
 
 export function OpenAILogin():Promise<string>;
+
+export function OpenPath(arg1:string):Promise<string>;
 
 export function PiperSupported():Promise<boolean>;
 

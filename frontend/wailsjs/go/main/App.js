@@ -154,6 +154,10 @@ export function GetWatchedChats() {
   return window['go']['main']['App']['GetWatchedChats']();
 }
 
+export function GetWorkDir() {
+  return window['go']['main']['App']['GetWorkDir']();
+}
+
 export function HasAPIKey() {
   return window['go']['main']['App']['HasAPIKey']();
 }
@@ -172,6 +176,10 @@ export function OpenAIIsLoggedIn() {
 
 export function OpenAILogin() {
   return window['go']['main']['App']['OpenAILogin']();
+}
+
+export function OpenPath(arg1) {
+  return window['go']['main']['App']['OpenPath'](arg1);
 }
 
 export function PiperSupported() {

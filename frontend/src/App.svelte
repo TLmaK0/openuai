@@ -1,6 +1,6 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx } from '../wailsjs/go/main/App';
-  import { EventsOn } from '../wailsjs/runtime/runtime';
+  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir } from '../wailsjs/go/main/App';
+  import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
   import hljs from 'highlight.js';
@@ -32,23 +32,73 @@
       `<pre class="hljs"><code>${html}</code></pre></div>`;
   };
 
+  // Inline code that is a file name (e.g. `lista_fiesta.pdf`) becomes a clickable
+  // link: clicking resolves it against the working dir and opens the document.
+  const FILE_RE = /^[^\s<>|*?":]+\.(pdf|docx?|xlsx?|pptx?|csv|tsv|txt|md|rtf|odt|ods|odp|png|jpe?g|gif|svg|webp|bmp|zip|tar|gz|html?|json|xml|ics|epub|mp3|mp4|wav|m4a|mov)$/i;
+  const escHtml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  codeRenderer.codespan = function (token) {
+    const text = typeof token === 'object' ? token.text : token;
+    const esc = escHtml(text);
+    if (FILE_RE.test(text)) {
+      return `<code class="file-link" data-file="${esc}" title="Open file">${esc}</code>`;
+    }
+    return `<code>${esc}</code>`;
+  };
+
   marked.setOptions({
     breaks: true,
     gfm: true,
     renderer: codeRenderer,
   });
 
-  // Copy-button handler (delegated): copies the code block's text to clipboard.
+  // Delegated chat clicks: code-copy buttons and links.
   function onChatClick(e) {
     const btn = e.target.closest && e.target.closest('.code-copy');
-    if (!btn) return;
-    const block = btn.closest('.code-block');
-    const pre = block && block.querySelector('pre');
-    if (!pre) return;
-    navigator.clipboard && navigator.clipboard.writeText(pre.innerText);
-    const prev = btn.textContent;
-    btn.textContent = 'Copied';
-    setTimeout(() => { btn.textContent = prev; }, 1500);
+    if (btn) {
+      const block = btn.closest('.code-block');
+      const pre = block && block.querySelector('pre');
+      if (!pre) return;
+      navigator.clipboard && navigator.clipboard.writeText(pre.innerText);
+      const prev = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = prev; }, 1500);
+      return;
+    }
+
+    // Clickable file name (inline code the agent emitted): resolve against the
+    // working dir if it's bare, then open. Silent if it doesn't exist (the
+    // file-name heuristic can match a non-file mention).
+    const fl = e.target.closest && e.target.closest('.file-link');
+    if (fl) {
+      e.preventDefault();
+      openFile(fl.getAttribute('data-file') || '');
+      return;
+    }
+
+    // Links: open externally instead of navigating the embedded webview away.
+    // A web URL goes to the system browser; a local file (the agent's output)
+    // opens directly in the OS default app for that document type.
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (a) {
+      const raw = a.getAttribute('href') || '';
+      if (/^https?:\/\//i.test(raw)) {
+        e.preventDefault();
+        BrowserOpenURL(raw);
+      } else if (raw && !/^(#|mailto:|tel:|javascript:)/i.test(raw)) {
+        e.preventDefault();
+        openFile(decodeURI(raw));
+      }
+    }
+  }
+
+  // Resolve a path (bare name → workDir/name; absolute/file:// kept) and open it
+  // in the OS default app. Failure (e.g. not a real file) is ignored silently.
+  function openFile(p) {
+    if (!p) return;
+    let path = p.replace(/^file:\/\//i, '');
+    const absolute = path.startsWith('/') || path.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(path);
+    if (!absolute && workDir) path = workDir.replace(/\/+$/, '') + '/' + path;
+    OpenPath(path);
   }
 
   // Organic morphing blobs for the ambient orb. Each outline is a closed
@@ -286,6 +336,7 @@
   let wakeStatus = '';          // wake model download / status message
   let wakeHeardTimer;           // dismiss timer for the transient "heard (no wake word)" bubble
   let wakeSession = false;      // conversation window open: capturing without the wake word (mic blinks)
+  let workDir = '';             // dir the agent saves files into; resolves bare file names for click-to-open
   const sttLanguages = [
     { code: 'auto', label: 'Auto-detect' },
     { code: 'es', label: 'Español' },
@@ -341,6 +392,7 @@
     appVersion = await GetVersion();
     betaLipReading = await GetBetaLipReading();
     lipModelReady = await LipReadingModelReady();
+    workDir = await GetWorkDir();
     if (!isReady) showSettings = true;
 
     // Listen for MCP auth completion
@@ -2880,6 +2932,17 @@
   }
   .markdown :global(strong) { color: #fff; }
   .markdown :global(a) { color: #3ad8ff; }
+  .markdown :global(code.file-link) {
+    color: #3ad8ff;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  .markdown :global(code.file-link:hover) {
+    background: #1d5bb0;
+    color: #eaf6ff;
+    text-decoration: underline;
+  }
   .markdown :global(blockquote) {
     border-left: 3px solid #163050;
     margin: 0.4rem 0;
