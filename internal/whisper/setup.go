@@ -1,6 +1,8 @@
 package whisper
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -29,6 +32,18 @@ func EnsureReady(configDir, whisperVersion, model string) error {
 	modelDir := filepath.Join(configDir, "models")
 	os.MkdirAll(binDir, 0o755)
 	os.MkdirAll(modelDir, 0o755)
+
+	// Model first — the binary's GPU smoke test below needs it.
+	modelFile := fmt.Sprintf("ggml-%s.bin", model)
+	modelPath := filepath.Join(modelDir, modelFile)
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		url := fmt.Sprintf("%s/%s", modelBaseURL, modelFile)
+		logger.Info("Whisper: downloading model %s from %s", modelFile, url)
+		if err := downloadFile(url, modelPath); err != nil {
+			return fmt.Errorf("download model: %w", err)
+		}
+		logger.Info("Whisper: model installed %s", modelPath)
+	}
 
 	// Check whisper-cli
 	binName := "whisper-cli"
@@ -57,12 +72,14 @@ func EnsureReady(configDir, whisperVersion, model string) error {
 		if err := downloadVariant(variant, whisperVersion, binPath); err != nil {
 			return fmt.Errorf("download whisper-cli: %w", err)
 		}
-		// If we grabbed the CUDA build but it can't load (e.g. the CUDA runtime
-		// isn't installed/compatible), fall back to the CPU build so STT keeps
-		// working instead of breaking outright.
-		if isCUDAVariant(variant) && !runnable(binPath) {
+		// The CUDA build is only usable if it actually transcribes here: the
+		// runtime may be missing, or — even when the GPU is found — the driver can
+		// be too old for the build's CUDA toolchain (PTX "unsupported toolchain"),
+		// which crashes mid-inference. A real smoke test catches all of these, so
+		// fall back to the CPU build instead of leaving STT broken.
+		if isCUDAVariant(variant) && !canTranscribe(binPath, modelPath) {
 			cpu := variantName(false)
-			logger.Error("Whisper: CUDA build %q won't run (CUDA runtime missing/incompatible?) — falling back to %s", variant, cpu)
+			logger.Error("Whisper: CUDA build %q can't transcribe (runtime missing or driver too old for its CUDA toolchain) — falling back to %s", variant, cpu)
 			if err := downloadVariant(cpu, whisperVersion, binPath); err != nil {
 				return fmt.Errorf("download whisper-cli (cpu fallback): %w", err)
 			}
@@ -70,18 +87,6 @@ func EnsureReady(configDir, whisperVersion, model string) error {
 		os.WriteFile(versionFile, []byte(whisperVersion), 0o644)
 		os.WriteFile(variantFile, []byte(variant), 0o644) // record intent (avoids re-download loops; retried on version bump)
 		logger.Info("Whisper: installed %s", binPath)
-	}
-
-	// Check model
-	modelFile := fmt.Sprintf("ggml-%s.bin", model)
-	modelPath := filepath.Join(modelDir, modelFile)
-	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		url := fmt.Sprintf("%s/%s", modelBaseURL, modelFile)
-		logger.Info("Whisper: downloading model %s from %s", modelFile, url)
-		if err := downloadFile(url, modelPath); err != nil {
-			return fmt.Errorf("download model: %w", err)
-		}
-		logger.Info("Whisper: model installed %s", modelPath)
 	}
 
 	return nil
@@ -177,16 +182,46 @@ func downloadVariant(variant, whisperVersion, dest string) error {
 	return os.Chmod(dest, 0o755)
 }
 
-// runnable reports whether the binary can actually start — i.e. its shared
-// libraries resolve. Used to detect a CUDA build that can't load its runtime so
-// we can fall back to the CPU build.
-func runnable(binPath string) bool {
-	out, err := exec.Command(binPath, "--help").CombinedOutput()
-	if err == nil {
-		return true
+// canTranscribe reports whether the binary can actually run a transcription end
+// to end. A bare --help check isn't enough for CUDA: the binary can load its
+// libraries and detect the GPU yet still abort mid-inference when the driver is
+// too old for the build's CUDA toolchain. So we run a real (tiny, silent)
+// transcription and require a clean exit.
+func canTranscribe(binPath, modelPath string) bool {
+	wav := filepath.Join(os.TempDir(), "openuai_whisper_smoketest.wav")
+	if err := os.WriteFile(wav, silentWAV(8000), 0o600); err != nil { // 0.5s @16kHz mono
+		return true // can't write the probe — don't block install, assume usable
 	}
-	s := string(out)
-	return !strings.Contains(s, "shared librar") && !strings.Contains(s, "cannot open shared object")
+	defer os.Remove(wav)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "-m", modelPath, "-f", wav, "-l", "en", "-nt", "-np")
+	err := cmd.Run()
+	if err != nil {
+		logger.Info("Whisper: smoke test failed for %s: %v", filepath.Base(binPath), err)
+	}
+	return err == nil
+}
+
+// silentWAV builds a minimal 16 kHz mono 16-bit PCM WAV of n silent samples.
+func silentWAV(n int) []byte {
+	dataLen := n * 2
+	buf := make([]byte, 44+dataLen)
+	copy(buf[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:8], uint32(36+dataLen))
+	copy(buf[8:12], "WAVE")
+	copy(buf[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:20], 16) // fmt chunk size
+	binary.LittleEndian.PutUint16(buf[20:22], 1)  // PCM
+	binary.LittleEndian.PutUint16(buf[22:24], 1)  // mono
+	binary.LittleEndian.PutUint32(buf[24:28], 16000)
+	binary.LittleEndian.PutUint32(buf[28:32], 16000*2) // byte rate
+	binary.LittleEndian.PutUint16(buf[32:34], 2)       // block align
+	binary.LittleEndian.PutUint16(buf[34:36], 16)      // bits
+	copy(buf[36:40], "data")
+	binary.LittleEndian.PutUint32(buf[40:44], uint32(dataLen))
+	return buf // samples already zero (silence)
 }
 
 // hasCUDASupport checks if NVIDIA GPU drivers are available.
@@ -203,7 +238,25 @@ func hasCUDASupport() bool {
 
 // downloadFile downloads a URL to a local path atomically.
 func downloadFile(url, destPath string) error {
-	resp, err := http.Get(url)
+	// Retry: the CUDA binary is ~100MB and transient TLS/connection timeouts are
+	// common on large assets.
+	var lastErr error
+	for attempt := 1; attempt <= 4; attempt++ {
+		if attempt > 1 {
+			logger.Info("Whisper: download retry %d", attempt)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+		lastErr = tryDownloadFile(url, destPath)
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+func tryDownloadFile(url, destPath string) error {
+	client := &http.Client{Timeout: 5 * time.Minute} // generous: large CUDA asset
+	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
