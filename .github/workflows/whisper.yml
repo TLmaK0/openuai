@@ -55,24 +55,27 @@ jobs:
         if: matrix.cuda && runner.os == 'Linux'
         uses: Jimver/cuda-toolkit@v0.2.23
         with:
-          cuda: '12.6.3'
+          cuda: '12.2.2'
           method: local
 
       - name: Install CUDA toolkit (Windows)
         if: matrix.cuda && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.23
         with:
-          cuda: '12.6.3'
+          cuda: '12.2.2'
           method: network
 
       - name: Install Linux deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential cmake
 
+      # CUDA 12.2 (matches drivers as old as 535) + native SASS for common
+      # consumer GPUs, plus sm_52 PTX so anything older still JITs. Building
+      # against a newer CUDA produces PTX that older drivers reject at runtime.
       - name: Configure CMake (CUDA)
         if: matrix.cuda
         shell: bash
-        run: cmake -B build -S whisper-cpp-src -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON
+        run: cmake -B build -S whisper-cpp-src -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="52-virtual;75-real;86-real;89-real"
 
       - name: Configure CMake (macOS universal)
         if: runner.os == 'macOS'
