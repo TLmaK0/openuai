@@ -285,6 +285,7 @@
   let wakeAwaitingCmd = false;  // wake word fired, capturing the command utterance
   let wakeStatus = '';          // wake model download / status message
   let wakeHeardTimer;           // dismiss timer for the transient "heard (no wake word)" bubble
+  let wakeSession = false;      // conversation window open: capturing without the wake word (mic blinks)
   const sttLanguages = [
     { code: 'auto', label: 'Auto-detect' },
     { code: 'es', label: 'Español' },
@@ -426,6 +427,10 @@
 
     // Wake model download / status updates.
     EventsOn('wake_status', (s) => { wakeStatus = s || ''; });
+
+    // Conversation window opened/closed — capturing without the wake word.
+    // Drives the blinking mic so it's clear it's still listening for follow-ups.
+    EventsOn('wake_session', (active) => { wakeSession = !!active; });
 
     // Wake word fired; the listener is now capturing the spoken command.
     EventsOn('wake_listening', () => {
@@ -863,19 +868,39 @@
   }
 
   // Prepare text for TTS: drop code blocks and emojis (they shouldn't be read
-  // aloud), then strip leftover markdown punctuation and collapse whitespace.
+  // aloud), strip markdown, and — crucially — process line by line so each list
+  // item / line becomes its own spoken sentence. Lines without terminal
+  // punctuation get a period so the TTS pauses between items instead of running
+  // them together.
   function cleanForSpeech(text) {
-    return spellDates(text
-      .replace(/```[\s\S]*?```/g, ' ')   // fenced code blocks
+    const stripped = text
+      .replace(/```[\s\S]*?```/g, '\n')  // fenced code blocks
       .replace(/`[^`]*`/g, ' ')          // inline code
       .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')   // images: drop entirely (don't read photos/URLs)
       .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // links: keep text, drop URL
       .replace(/https?:\/\/\S+/g, ' ')   // bare URLs
       // emoji / pictographs / symbols / flags / variation selectors
-      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{1F1E6}-\u{1F1FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '')
-      .replace(/[#*_`~\[\]()>|]/g, '')   // leftover markdown
-      .replace(/\s+/g, ' ')
-      .trim());
+      .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{1F1E6}-\u{1F1FF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}]/gu, '');
+
+    const sentences = stripped
+      .split('\n')
+      .map((line) => line
+        .replace(/^\s*[-*+•]\s+/, '')       // bullet list marker
+        .replace(/^\s*\d+[.)]\s+/, '')      // numbered list marker
+        .replace(/[#*_`~\[\]()>|]/g, '')    // leftover markdown
+        .replace(/[ \t]+/g, ' ')
+        .trim())
+      .filter(Boolean)
+      // Capitalize the first letter and add terminal punctuation so each line/
+      // item reads as its own sentence — Piper only pauses at a period when the
+      // next word is capitalized, so lowercase list fragments otherwise run on.
+      .map((line) => line.charAt(0).toUpperCase() + line.slice(1))
+      .map((line) => /[.!?:;…,]$/.test(line) ? line : line + '.');
+
+    // Join into a SINGLE line separated by the periods we just added: Piper
+    // (and espeak) split sentences on punctuation and pause between them, but
+    // process stdin line-by-line — so keeping it one line avoids losing items.
+    return spellDates(sentences.join(' '));
   }
 
   // Synthesize + play one utterance, resolving when playback finishes.
@@ -946,9 +971,11 @@
   // Toggle the continuous wake-word listener. On failure (e.g. no wake word set)
   // revert the switch and surface the reason.
   async function toggleWakeListening() {
+    if (!wakeListening) wakeSession = false; // closing the listener ends any open conversation
     const err = await SetWakeListening(wakeListening);
     if (err) {
       wakeListening = false;
+      wakeSession = false;
       sttError = err;
       setTimeout(() => { if (sttError === err) sttError = ''; }, 4000);
     }
@@ -1484,7 +1511,7 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c0 0 3-6 10-6s10 6 10 6"/><path d="M2 10c0 0 3 6 10 6s10-6 10-6"/><circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg>
       <span class="wake-track"><span class="wake-knob"></span></span>
     </label>
-    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
+    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} class:mic-session={wakeSession && !recording && !transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={wakeSession ? 'Conversation open — talk without the wake word' : recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
       {:else if transcribing}
@@ -2412,6 +2439,16 @@
   .mic-transcribing {
     background: #e9a045 !important;
     cursor: wait;
+  }
+  /* Conversation window open: blink the mic so it's clear it keeps listening. */
+  .mic-session {
+    background: #1d5bb0 !important;
+    color: #eaf6ff;
+    animation: mic-blink 1.1s ease-in-out infinite;
+  }
+  @keyframes mic-blink {
+    0%, 100% { box-shadow: 0 0 4px rgba(58,216,255,0.35); opacity: 0.65; }
+    50% { box-shadow: 0 0 16px rgba(58,216,255,0.85); opacity: 1; }
   }
   @keyframes pulse-red {
     0%, 100% { opacity: 1; }

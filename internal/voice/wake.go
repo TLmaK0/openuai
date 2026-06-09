@@ -20,12 +20,17 @@ const (
 	wakeCmdNoSpeech = 4 * time.Second         // shorter wait when already listening for the command after the wake word
 	wakeMaxUtter    = 18 * time.Second        // hard cap on a single utterance
 	wakePoll        = 100 * time.Millisecond  // level sampling interval
+	wakeSessionWin  = 60 * time.Second        // conversation window after the wake word: keep capturing without it
 )
 
 // WakeListener runs a continuous listen loop: it captures each spoken utterance
 // via simple voice-activity detection, transcribes it, and when the transcript
 // begins with the configured wake word it hands the full transcript (name
-// included) to onMessage. It is paused while the agent is busy or TTS is playing to avoid
+// included) to onMessage. After a wake-word hit it opens a conversation window
+// (wakeSessionWin) during which every utterance is forwarded without needing the
+// word again; the window refreshes on each exchange and after the assistant
+// finishes replying, and closes once it goes idle — then the word is required
+// again. It is paused while the agent is busy or TTS is playing to avoid
 // transcribing the assistant's own voice.
 type WakeListener struct {
 	WakeWord    func() string // current wake word (e.g. "Pepito")
@@ -35,6 +40,7 @@ type WakeListener struct {
 	OnListening func()            // called when the wake word fired and we're awaiting the command
 	OnCapture   func()            // called the moment an utterance is captured, before transcription
 	OnDiscard   func(heard string) // called when a captured utterance is dropped; heard is the transcript (or "" on STT error)
+	OnSession   func(active bool)  // called when the conversation window opens/closes (UI hint: blink the mic)
 
 	running int32 // atomic: 1 while the loop goroutine is active
 	paused  int32 // atomic: 1 while listening should be suspended
@@ -101,9 +107,25 @@ func (w *WakeListener) Stop() {
 }
 
 func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
+	// Conversation-session state (loop-local; only this goroutine touches it).
+	var sessionUntil time.Time
+	sessionActive := false
+	wasPaused := false
+	// setSession toggles the window and notifies the UI only on a real change,
+	// so refreshing the deadline mid-session doesn't spam the event.
+	setSession := func(active bool) {
+		if active != sessionActive {
+			sessionActive = active
+			if w.OnSession != nil {
+				w.OnSession(active)
+			}
+		}
+	}
+
 	// Clear running here too (not only in Stop) so that if the mic can't be
 	// opened the listener resets and a later Start can retry.
 	defer func() {
+		setSession(false) // ensure the UI stops indicating an open conversation
 		atomic.StoreInt32(&w.running, 0)
 		close(done)
 	}()
@@ -123,9 +145,24 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		}
 		if atomic.LoadInt32(&w.paused) == 1 {
 			mic.Reset() // drop audio captured while paused (e.g. the assistant's TTS)
+			wasPaused = true
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
+		// Resuming after a pause (the agent replied + TTS played): give the user a
+		// fresh window to follow up once the assistant has finished speaking.
+		if wasPaused {
+			wasPaused = false
+			if sessionActive {
+				sessionUntil = time.Now().Add(wakeSessionWin)
+			}
+		}
+		// Conversation window went idle → require the wake word again.
+		if sessionActive && time.Now().After(sessionUntil) {
+			logger.Info("Wake listener: conversation window closed (idle)")
+			setSession(false)
+		}
+
 		wav, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech)
 		if ctx.Err() != nil {
 			return
@@ -144,24 +181,43 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 			continue
 		}
 		msg, ok := stripWakeWord(transcript, w.WakeWord())
-		if !ok {
-			logger.Debug("Wake listener: heard %q (no wake word)", transcript)
-			w.discard(transcript)
-			continue
+		inSession := sessionActive && time.Now().Before(sessionUntil)
+
+		if inSession {
+			// Conversation mode: forward everything without the wake word. Ignore a
+			// bare repeat of the name (nothing to act on).
+			if ok && msg == "" {
+				w.discard(transcript)
+				continue
+			}
+		} else {
+			if !ok {
+				logger.Debug("Wake listener: heard %q (no wake word)", transcript)
+				w.discard(transcript)
+				continue
+			}
+			if msg == "" {
+				// Wake word alone (no command in the same phrase). Say the whole thing
+				// in one breath: "Pepito, qué hora es".
+				logger.Info("Wake listener: wake word only, no command — say it in one phrase")
+				w.discard(transcript)
+				continue
+			}
 		}
-		if msg == "" {
-			// Wake word alone (no command in the same phrase). Say the whole thing
-			// in one breath: "Pepito, qué hora es".
-			logger.Info("Wake listener: wake word only, no command — say it in one phrase")
-			w.discard(transcript)
-			continue
-		}
+
 		// Hand over the full transcript (name included): the wake word is only used
 		// to detect activation, not to be removed from what the agent receives.
-		logger.Info("Wake listener: triggered → %q", transcript)
+		if inSession {
+			logger.Info("Wake listener: follow-up → %q", transcript)
+		} else {
+			logger.Info("Wake listener: triggered → %q", transcript)
+		}
 		if w.OnMessage != nil {
 			w.OnMessage(transcript)
 		}
+		// (Re)open the conversation window so the next utterance needs no wake word.
+		sessionUntil = time.Now().Add(wakeSessionWin)
+		setSession(true)
 		// Pause briefly so the frontend can mark itself busy (send + TTS) before
 		// we resume capturing — prevents picking up the assistant's own reply.
 		time.Sleep(1200 * time.Millisecond)

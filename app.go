@@ -184,6 +184,9 @@ func (a *App) startup(ctx context.Context) {
 		OnDiscard: func(heard string) {
 			wailsRuntime.EventsEmit(a.ctx, "wake_discard", heard)
 		},
+		OnSession: func(active bool) {
+			wailsRuntime.EventsEmit(a.ctx, "wake_session", active)
+		},
 	}
 
 	// Memory store

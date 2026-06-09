@@ -293,7 +293,10 @@ func Speak(configDir, code, text string) ([]byte, error) {
 	defer os.Remove(outFile)
 
 	piperRoot := filepath.Dir(binPath(configDir)) // .../piper-tts/piper
-	cmd := exec.Command(binPath(configDir), "-m", model, "-f", outFile)
+	// --sentence_silence: pause between sentences. This build defaults to ~0, so
+	// punctuation alone produces run-on speech (lists read with no gaps); set a
+	// natural pause explicitly so each sentence / list item is separated.
+	cmd := exec.Command(binPath(configDir), "-m", model, "--sentence_silence", "0.3", "-f", outFile)
 	cmd.Dir = piperRoot
 	// Piper loads its bundled shared libs and espeak-ng-data from its own dir.
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+piperRoot, "DYLD_LIBRARY_PATH="+piperRoot)
