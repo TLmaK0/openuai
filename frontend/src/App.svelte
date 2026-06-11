@@ -306,7 +306,7 @@
   let selectedDevice = '';
   let speaking = false;
   let voiceEnabled = true;
-  let autoSpeakEnabled = localStorage.getItem('autoSpeak') === '1';
+  let autoSpeakEnabled = localStorage.getItem('autoSpeak') !== '0';
   let ttsVoice = 'es_ES';
   let ttsVoices = [];          // [{code,name,language,quality,installed}] from Piper catalog
   $: voiceLanguages = [...new Set(ttsVoices.map(v => v.language))];
@@ -865,6 +865,7 @@
 
   async function startRecording() {
     if (recording || transcribing || loading) return;
+    stopSpeaking();              // talking over the agent cuts it off
     const err = await StartRecording();
     if (err) {
       alert('Recording error: ' + err);
@@ -956,16 +957,30 @@
   }
 
   // Synthesize + play one utterance, resolving when playback finishes.
+  let currentAudio = null;
   async function playTTS(clean) {
     const result = await SpeakText(clean);
     if (result.error) throw new Error(result.error);
+    if (ttsStopped) return;      // stopped while synthesizing — don't start playback
     const fmt = result.format || 'wav';
     const audio = new Audio('data:audio/' + fmt + ';base64,' + result.audio_base64);
+    currentAudio = audio;
     await new Promise((resolve) => {
       audio.onended = resolve;
       audio.onerror = resolve;
+      audio.onpause = resolve;   // stopSpeaking() interrupts via pause()
       audio.play().catch(resolve);
     });
+    currentAudio = null;
+  }
+
+  // Stop the current utterance and drop anything queued.
+  let ttsStopped = false;
+  function stopSpeaking() {
+    if (!speaking) return;
+    ttsStopped = true;
+    speakQueue = [];
+    if (currentAudio) currentAudio.pause();
   }
 
   // Manual: triggered by the speaker button on a message.
@@ -974,6 +989,7 @@
     const clean = cleanForSpeech(text);
     if (!clean) return;
     speaking = true;
+    ttsStopped = false;
     try {
       await playTTS(clean);
     } catch (e) {
@@ -991,9 +1007,11 @@
     speakQueue.push(clean);
     if (speaking) return;        // a drain loop is already running
     speaking = true;
-    while (speakQueue.length) {
+    ttsStopped = false;
+    while (speakQueue.length && !ttsStopped) {
       try { await playTTS(speakQueue.shift()); } catch (e) { /* skip on error */ }
     }
+    speakQueue = [];
     speaking = false;
   }
 
@@ -1038,10 +1056,11 @@
   $: if (wakeListening) SetWakePaused(loading || speaking || transcribing || recording);
 
   function handleGlobalKeydown(e) {
-    if (e.key === 'Escape' && loading && !aborting) {
-      e.preventDefault();
-      abort();
-    }
+    if (e.key !== 'Escape') return;
+    // Escape stops everything at once: the voice AND the in-flight request.
+    if (speaking || (loading && !aborting)) e.preventDefault();
+    if (speaking) stopSpeaking();
+    if (loading && !aborting) abort();
   }
 
   function handleKeydown(e) {
@@ -1489,9 +1508,11 @@
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
           <div class="message-content markdown">{@html marked(msg.content)}</div>
-          <button class="speak-btn" on:click={() => speakMessage(msg.content)} disabled={speaking} title="Read aloud">
+          <button class="speak-btn" class:speaking
+                  on:click={() => speaking ? stopSpeaking() : speakMessage(msg.content)}
+                  title={speaking ? 'Stop speaking (Esc)' : 'Read aloud'}>
             {#if speaking}
-              ...
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
             {:else}
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
             {/if}
@@ -2579,7 +2600,7 @@
   .message.assistant { position: relative; }
   .message.assistant:hover .speak-btn { opacity: 1; }
   .speak-btn:hover { color: #3ad8ff; background: rgba(255,255,255,0.05); }
-  .speak-btn:disabled { cursor: wait; opacity: 0.5 !important; }
+  .speak-btn.speaking { opacity: 1; color: #3ad8ff; }
 
   /* Events panel */
   .events-panel {
