@@ -14,14 +14,53 @@ import (
 
 // VAD / capture tuning. Levels are 0-100 from calculateLevel (RMS → dB scale).
 const (
-	wakeSpeechOn    = 28                      // level above which we consider speech present
-	wakeSilenceEnd  = 1300 * time.Millisecond // trailing silence that ends an utterance (tolerates a brief pause after the name)
-	wakeNoSpeech    = 6 * time.Second         // give up waiting for speech to start
-	wakeCmdNoSpeech = 4 * time.Second         // shorter wait when already listening for the command after the wake word
-	wakeMaxUtter    = 18 * time.Second        // hard cap on a single utterance
-	wakePoll        = 100 * time.Millisecond  // level sampling interval
-	wakeSessionWin  = 60 * time.Second        // conversation window after the wake word: keep capturing without it
+	wakeSpeechOn    = 28                     // level above which we consider speech present
+	wakeNoSpeech    = 6 * time.Second        // give up waiting for speech to start
+	wakeCmdNoSpeech = 4 * time.Second        // shorter wait when already listening for the command after the wake word
+	wakeMaxUtter    = 3 * time.Minute        // absolute cap on a whole utterance (runaway noise guard)
+	wakePoll        = 100 * time.Millisecond // level sampling interval
+	wakeSessionWin  = 60 * time.Second       // conversation window after the wake word: keep capturing without it
 )
+
+// Trailing silence that closes an utterance, adaptive to how much speech has
+// been heard so far (see silenceEndFor): a short command should get a snappy
+// response, but right after the name the user often pauses before the command,
+// and mid-dictation they pause to think — both deserve a longer wait.
+const (
+	wakeSilenceEnd  = 900 * time.Millisecond  // normal command: close fast
+	wakeSilenceName = 1500 * time.Millisecond // barely any speech yet — probably the name plus a pause before the command
+	wakeSilenceLong = 2 * time.Second         // long dictation: tolerate thinking pauses
+	wakeNameSpeech  = 1200 * time.Millisecond // total speech below this counts as "barely any" (the name alone)
+	wakeDictSpeech  = 8 * time.Second         // total speech above this counts as dictation
+)
+
+// Long-utterance chunking: whenever the current chunk holds speech and a dip in
+// level appears (a pause between phrases), it is cut, handed to whisper in the
+// background while capture continues, and the chunk transcripts are joined when
+// the utterance ends. So whisper transcribes while the user is still talking —
+// by the time the trailing silence closes the utterance only the small final
+// chunk remains, keeping the perceived latency low no matter how long the
+// dictation runs (up to wakeMaxUtter).
+const (
+	wakeChunkDip       = 400 * time.Millisecond // level dip long enough to cut between phrases (under wakeSilenceEnd)
+	wakeChunkMin       = 2 * time.Second        // don't cut chunks shorter than this (per-run whisper overhead)
+	wakeChunkForce     = 20 * time.Second       // cut even with no dip (continuous sound)
+	wakeChunkMinSpeech = 300 * time.Millisecond // min accumulated speech-level audio for a chunk to be worth transcribing — a clap or cough only spans a tick or two, and feeding whisper near-noise makes it hallucinate text
+	wakeNoiseClose     = 5 * time.Second        // close the utterance when real text was already transcribed this long ago and everything since came back empty — ambient noise above the level threshold would otherwise keep the utterance open (and the user's phrase hostage) indefinitely
+)
+
+// silenceEndFor returns the trailing silence that closes the utterance given
+// how much actual speech has been heard.
+func silenceEndFor(speech time.Duration) time.Duration {
+	switch {
+	case speech < wakeNameSpeech:
+		return wakeSilenceName
+	case speech >= wakeDictSpeech:
+		return wakeSilenceLong
+	default:
+		return wakeSilenceEnd
+	}
+}
 
 // WakeListener runs a continuous listen loop: it captures each spoken utterance
 // via simple voice-activity detection, transcribes it, and when the transcript
@@ -163,18 +202,24 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 			setSession(false)
 		}
 
-		wav, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech)
+		transcript, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech)
 		if ctx.Err() != nil {
 			return
 		}
-		if !hasSpeech || len(wav) == 0 {
+		if !hasSpeech {
 			continue
 		}
 		// (The "[...]" placeholder was already shown at speech onset inside
 		// captureUtterance, so the UI reacted the moment it heard us.)
-		transcript, err := w.Transcribe(wav)
-		if err != nil || transcript == "" {
+		if transcript == "" {
 			w.discard("")
+			continue
+		}
+		// Each chunk was screened individually, but hallucinated chunks can
+		// still join into a repeated-phrase pattern — screen the whole too.
+		if isNonSpeech(transcript) {
+			logger.Debug("Wake listener: dropping non-speech transcript %q", transcript)
+			w.discard(transcript)
 			continue
 		}
 		msg, ok := stripWakeWord(transcript, w.WakeWord())
@@ -222,25 +267,95 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 }
 
 // captureUtterance records one utterance from the shared mic using voice-
-// activity detection: it waits for speech to start, then for a trailing pause,
-// and returns the captured WAV plus whether any speech was detected. It calls
-// OnCapture the instant speech begins (immediate UI feedback) and, if it bails
-// out mid-capture, clears that placeholder via discard. The mic buffer is reset
-// on entry so each utterance is transcribed in isolation.
-func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechTimeout time.Duration) ([]byte, bool) {
+// activity detection and returns its transcript plus whether any speech was
+// detected: it waits for speech to start, then for a trailing pause. Long
+// dictations are chunked (see the wakeChunk* constants): full chunks are cut at
+// a dip in level and transcribed in the background while capture continues, and
+// every chunk transcript is joined once the utterance ends. It calls OnCapture
+// the instant speech begins (immediate UI feedback) and, if it bails out
+// mid-capture, clears that placeholder via discard. The mic buffer is reset on
+// entry so each utterance is transcribed in isolation.
+func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechTimeout time.Duration) (string, bool) {
 	mic.Reset()
 
 	ticker := time.NewTicker(wakePoll)
 	defer ticker.Stop()
 
 	start := time.Now()
+	chunkStart := start
 	speechStarted := false
+	speechDur := time.Duration(0)  // accumulated time with the level above wakeSpeechOn
+	chunkSpeech := time.Duration(0) // same, but within the current chunk only
 	lastSpeech := time.Now()
+
+	// Chunk transcripts, in capture order; full chunks fill their slot from a
+	// background goroutine while later audio is still being recorded.
+	var (
+		partsMu sync.Mutex
+		parts   []string
+		pending sync.WaitGroup
+		// Completion time (UnixNano) of the latest chunk that produced real
+		// text, and of the latest chunk to finish either way. Together they
+		// tell the capture loop "we have the phrase; everything since is
+		// noise" (see wakeNoiseClose).
+		lastTextNanos  int64
+		lastChunkNanos int64
+	)
+	addPart := func(wav []byte) {
+		partsMu.Lock()
+		idx := len(parts)
+		parts = append(parts, "")
+		partsMu.Unlock()
+		pending.Add(1)
+		go func() {
+			defer pending.Done()
+			text, err := w.Transcribe(wav)
+			defer atomic.StoreInt64(&lastChunkNanos, time.Now().UnixNano())
+			if err != nil {
+				// A mostly-silent tail chunk legitimately fails ("no speech") —
+				// the other chunks still make up the utterance.
+				logger.Debug("Wake listener: chunk %d not transcribed: %s", idx, err.Error())
+				return
+			}
+			partsMu.Lock()
+			parts[idx] = strings.TrimSpace(text)
+			partsMu.Unlock()
+			if text != "" {
+				atomic.StoreInt64(&lastTextNanos, time.Now().UnixNano())
+			}
+		}()
+	}
+	// noiseStalled reports whether the utterance already yielded real text but
+	// every chunk completed since then came back empty — i.e. only ambient
+	// noise is keeping the capture alive.
+	noiseStalled := func(now time.Time) bool {
+		lastText := atomic.LoadInt64(&lastTextNanos)
+		lastChunk := atomic.LoadInt64(&lastChunkNanos)
+		return lastText != 0 && lastChunk > lastText &&
+			now.Sub(time.Unix(0, lastText)) >= wakeNoiseClose
+	}
+	finish := func() string {
+		// The tail after the last cut is usually trailing silence — only worth
+		// transcribing when it actually holds speech.
+		if wav := mic.TakeWAV(); wav != nil && chunkSpeech >= wakeChunkMinSpeech {
+			addPart(wav)
+		}
+		pending.Wait()
+		partsMu.Lock()
+		defer partsMu.Unlock()
+		joined := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p != "" {
+				joined = append(joined, p)
+			}
+		}
+		return strings.Join(joined, " ")
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, false
+			return "", false
 		case <-ticker.C:
 		}
 
@@ -250,27 +365,44 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 			if speechStarted {
 				w.discard("") // clear the "[...]" placeholder we already showed
 			}
-			return nil, false
+			return "", false
 		}
 
 		now := time.Now()
 		if mic.Level() >= wakeSpeechOn {
-			if !speechStarted && w.OnCapture != nil {
-				// Show the "[...]" placeholder the instant we hear speech, not after
-				// the whole utterance + trailing silence — otherwise it feels laggy.
-				w.OnCapture()
+			if !speechStarted {
+				if w.OnCapture != nil {
+					// Show the "[...]" placeholder the instant we hear speech, not after
+					// the whole utterance + trailing silence — otherwise it feels laggy.
+					w.OnCapture()
+				}
+				chunkStart = now // don't count the pre-speech wait as chunk audio
 			}
 			speechStarted = true
+			speechDur += wakePoll
+			chunkSpeech += wakePoll
 			lastSpeech = now
 		}
+		silence := now.Sub(lastSpeech)
 
 		switch {
-		case speechStarted && now.Sub(lastSpeech) >= wakeSilenceEnd:
-			return mic.WAV(), true
+		case speechStarted && silence >= silenceEndFor(speechDur):
+			return finish(), true
+		case speechStarted && silence >= wakeChunkDip && noiseStalled(now):
+			logger.Info("Wake listener: closing utterance — only noise since the last transcribed text")
+			return finish(), true
 		case !speechStarted && now.Sub(start) >= noSpeechTimeout:
-			return nil, false
+			return "", false
 		case now.Sub(start) >= wakeMaxUtter:
-			return mic.WAV(), speechStarted
+			return finish(), speechStarted
+		case chunkSpeech >= wakeChunkMinSpeech && now.Sub(chunkStart) >= wakeChunkMin &&
+			(silence >= wakeChunkDip || now.Sub(chunkStart) >= wakeChunkForce):
+			if wav := mic.TakeWAV(); wav != nil {
+				logger.Debug("Wake listener: chunk cut %.1fs into the utterance", now.Sub(start).Seconds())
+				addPart(wav)
+			}
+			chunkStart = now
+			chunkSpeech = 0
 		}
 	}
 }

@@ -122,6 +122,21 @@ func (m *Mic) WAV() []byte {
 	return wavFromPCM(pcm)
 }
 
+// TakeWAV atomically snapshots the audio captured since the last Reset as a
+// 16 kHz mono WAV and clears the buffer, so frames arriving between snapshot
+// and reset are never lost (unlike a WAV() + Reset() pair). Returns nil if the
+// captured audio is too short to be meaningful.
+func (m *Mic) TakeWAV() []byte {
+	m.mu.Lock()
+	pcm := append([]byte(nil), m.buf.Bytes()...)
+	m.buf.Reset()
+	m.mu.Unlock()
+	if len(pcm) < 100 {
+		return nil
+	}
+	return wavFromPCM(pcm)
+}
+
 // Close stops capture and releases the device and audio context. Safe to call
 // more than once.
 func (m *Mic) Close() {

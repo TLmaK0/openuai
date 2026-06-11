@@ -10,7 +10,6 @@ import (
 	"openuai/internal/whisper"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -73,16 +72,56 @@ func audioCtxFor(durSec float64) int {
 	return ctx
 }
 
-// isNonSpeech matches Whisper's common non-speech hallucinations.
+// isNonSpeech matches Whisper's common non-speech hallucinations: sound-effect
+// labels plus the YouTube-ish phrases its decoder invents over music/noise.
 func isNonSpeech(t string) bool {
 	s := strings.ToLower(strings.TrimSpace(t))
-	s = strings.Trim(s, "[](){}¡!¿?.… \t\n*")
+	s = strings.Trim(s, "[](){}¡!¿?.,… \t\n*")
 	switch s {
 	case "", "música", "musica", "music", "blank_audio", "silence", "silencio",
-		"aplausos", "applause", "risas", "laughter", "ruido", "noise":
+		"aplausos", "applause", "risas", "laughter", "ruido", "noise",
+		"suscríbete", "suscribete", "suscríbete al canal", "suscribete al canal",
+		"gracias por ver", "gracias por ver el vídeo", "gracias por ver el video",
+		"thanks for watching", "subscribe",
+		"subtítulos realizados por la comunidad de amara.org",
+		"subtitulos realizados por la comunidad de amara.org":
 		return true
 	}
-	return false
+	return isRepetitionLoop(t)
+}
+
+// isRepetitionLoop reports whether a transcript is a short phrase stuck on
+// repeat — whisper's decoder collapses like that over music or noise
+// ("¡Suscríbete! ¡Suscríbete! ¡Suscríbete! …").
+func isRepetitionLoop(t string) bool {
+	words := strings.Fields(strings.ToLower(t))
+	if len(words) < 5 {
+		return false
+	}
+	distinct := map[string]struct{}{}
+	for _, w := range words {
+		distinct[strings.Trim(w, "[](){}¡!¿?.,… *")] = struct{}{}
+	}
+	return len(distinct)*2 <= len(words)
+}
+
+var (
+	// sttTimestampRe matches whisper-cli's segment prefixes, e.g.
+	// "[00:00:00.000 --> 00:00:02.000]".
+	sttTimestampRe = regexp.MustCompile(`\[\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\]\s*`)
+	// sttAnnotRe matches whisper's non-speech annotations: any bracketed or
+	// parenthesized chunk, e.g. "[Música]", "(Aplausos)", "[tos]".
+	sttAnnotRe = regexp.MustCompile(`\[[^\]]*\]|\([^)]*\)`)
+)
+
+// cleanTranscript strips whisper-cli output down to the spoken text: segment
+// timestamps and non-speech annotations are removed and whitespace collapsed.
+// A clip with only sounds ("[Música]") comes out empty, so the caller treats
+// it as no speech.
+func cleanTranscript(raw string) string {
+	raw = sttTimestampRe.ReplaceAllString(raw, "")
+	raw = sttAnnotRe.ReplaceAllString(raw, " ")
+	return strings.Join(strings.Fields(raw), " ")
 }
 
 // Transcribe runs whisper.cpp (whisper-cli) on base64-encoded WAV audio and returns the transcript.
@@ -106,9 +145,6 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		return TranscribeResult{Error: fmt.Sprintf("model not found at %s — it should be auto-downloaded on startup", mPath)}
 	}
 
-	// Write audio to temp file
-	tmpDir := os.TempDir()
-	wavFile := filepath.Join(tmpDir, "openuai_stt.wav")
 	audioBytes, err := base64.StdEncoding.DecodeString(audioBase64)
 	if err != nil {
 		return TranscribeResult{Error: fmt.Sprintf("decode base64: %v", err)}
@@ -117,10 +153,21 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		logger.Info("Voice STT: captured audio is silent — skipping transcription")
 		return TranscribeResult{Error: noSpeechMsg}
 	}
-	if err := os.WriteFile(wavFile, audioBytes, 0600); err != nil {
-		return TranscribeResult{Error: fmt.Sprintf("write temp file: %v", err)}
+	// Unique temp file per call: long dictations transcribe chunks in the
+	// background while capture continues, so runs can overlap.
+	tmp, err := os.CreateTemp("", "openuai_stt_*.wav")
+	if err != nil {
+		return TranscribeResult{Error: fmt.Sprintf("create temp file: %v", err)}
+	}
+	wavFile := tmp.Name()
+	_, werr := tmp.Write(audioBytes)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
 	}
 	defer os.Remove(wavFile)
+	if werr != nil {
+		return TranscribeResult{Error: fmt.Sprintf("write temp file: %v", werr)}
+	}
 
 	// whisper-cli -m model.bin -f audio.wav --no-prints
 	// Note: do NOT use --no-timestamps with --no-prints, it truncates output (whisper.cpp bug)
@@ -152,11 +199,7 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		return TranscribeResult{Error: fmt.Sprintf("whisper-cli failed: %v", err)}
 	}
 
-	// Strip timestamp prefixes like [00:00:00.000 --> 00:00:02.000]
-	raw := string(output)
-	re := regexp.MustCompile(`\[\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\]\s*`)
-	raw = re.ReplaceAllString(raw, "")
-	transcript := strings.TrimSpace(raw)
+	transcript := cleanTranscript(string(output))
 
 	logger.Info("Voice STT: transcribed → %q", transcript)
 
