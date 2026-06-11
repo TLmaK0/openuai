@@ -90,9 +90,11 @@ func isNonSpeech(t string) bool {
 	return isRepetitionLoop(t)
 }
 
-// isRepetitionLoop reports whether a transcript is a short phrase stuck on
+// isRepetitionLoop reports whether a transcript is a SHORT phrase stuck on
 // repeat — whisper's decoder collapses like that over music or noise
-// ("¡Suscríbete! ¡Suscríbete! ¡Suscríbete! …").
+// ("¡Suscríbete! ¡Suscríbete! ¡Suscríbete! …"). Kept deliberately narrow
+// (≤3 distinct words): a real sentence whisper duplicated verbatim is handled
+// by collapseRepeatedPhrase instead of being dropped.
 func isRepetitionLoop(t string) bool {
 	words := strings.Fields(strings.ToLower(t))
 	if len(words) < 5 {
@@ -102,7 +104,32 @@ func isRepetitionLoop(t string) bool {
 	for _, w := range words {
 		distinct[strings.Trim(w, "[](){}¡!¿?.,… *")] = struct{}{}
 	}
-	return len(distinct)*2 <= len(words)
+	return len(distinct) <= 3
+}
+
+// collapseRepeatedPhrase detects a transcript that is one phrase repeated
+// verbatim two or more times — a whisper decoding artifact on chunked audio
+// ("Hola Pepito, ¿cómo estás? Hola Pepito, ¿cómo estás?") — and returns a
+// single copy. Words are compared case/accent-insensitively; the first
+// occurrence keeps its original punctuation.
+func collapseRepeatedPhrase(t string) string {
+	toks := tokenizeFolded(t)
+	n := len(toks)
+	for size := 1; size <= n/2; size++ {
+		if n%size != 0 {
+			continue
+		}
+		periodic := true
+		for i := size; i < n && periodic; i++ {
+			periodic = toks[i].folded == toks[i%size].folded
+		}
+		if periodic {
+			// Cut just before the second copy starts, dropping any opening
+			// punctuation that belongs to it ("… ¡" → "…").
+			return strings.TrimRight(t[:toks[size].byteStart], " \t\n¡¿([«\"'*-—")
+		}
+	}
+	return t
 }
 
 var (
@@ -199,7 +226,7 @@ func Transcribe(audioBase64, model, language, prompt, configDir string) Transcri
 		return TranscribeResult{Error: fmt.Sprintf("whisper-cli failed: %v", err)}
 	}
 
-	transcript := cleanTranscript(string(output))
+	transcript := collapseRepeatedPhrase(cleanTranscript(string(output)))
 
 	logger.Info("Voice STT: transcribed → %q", transcript)
 

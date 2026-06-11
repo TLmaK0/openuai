@@ -80,6 +80,7 @@ type WakeListener struct {
 	OnCapture   func()            // called the instant speech begins (immediate UI feedback), before the utterance completes
 	OnDiscard   func(heard string) // called when a captured utterance is dropped; heard is the transcript (or "" on STT error)
 	OnSession   func(active bool)  // called when the conversation window opens/closes (UI hint: blink the mic)
+	OnLevel     func(level int)    // live mic level (0-100) at poll cadence while an utterance is being captured; 0 when capture ends
 
 	running int32 // atomic: 1 while the loop goroutine is active
 	paused  int32 // atomic: 1 while listening should be suspended
@@ -203,6 +204,9 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		}
 
 		transcript, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech)
+		if w.OnLevel != nil {
+			w.OnLevel(0) // settle the UI's listening visual between utterances
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -369,6 +373,9 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 		}
 
 		now := time.Now()
+		if speechStarted && w.OnLevel != nil {
+			w.OnLevel(mic.Level()) // drive the UI's listening visual with the live level
+		}
 		if mic.Level() >= wakeSpeechOn {
 			if !speechStarted {
 				if w.OnCapture != nil {
@@ -418,8 +425,9 @@ func TranscribeWAV(wav []byte, model, language, prompt, configDir string) Transc
 const wakeMaxLeadTokens = 2
 
 type wakeTok struct {
-	byteEnd int    // byte index in the original string just past this token
-	folded  string // lowercased, accent-stripped word
+	byteStart int    // byte index in the original string where this token begins
+	byteEnd   int    // byte index in the original string just past this token
+	folded    string // lowercased, accent-stripped word
 }
 
 // stripWakeWord checks whether the transcript opens with the wake word and, if
@@ -463,19 +471,23 @@ func stripWakeWord(transcript, wake string) (string, bool) {
 func tokenizeFolded(s string) []wakeTok {
 	var toks []wakeTok
 	var cur strings.Builder
+	start := 0
 	for i, r := range s {
 		f := foldRune(r)
 		if isAlnum(f) {
+			if cur.Len() == 0 {
+				start = i
+			}
 			cur.WriteRune(f)
 			continue
 		}
 		if cur.Len() > 0 {
-			toks = append(toks, wakeTok{byteEnd: i, folded: cur.String()})
+			toks = append(toks, wakeTok{byteStart: start, byteEnd: i, folded: cur.String()})
 			cur.Reset()
 		}
 	}
 	if cur.Len() > 0 {
-		toks = append(toks, wakeTok{byteEnd: len(s), folded: cur.String()})
+		toks = append(toks, wakeTok{byteStart: start, byteEnd: len(s), folded: cur.String()})
 	}
 	return toks
 }
