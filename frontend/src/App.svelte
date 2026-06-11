@@ -3,8 +3,14 @@
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
   import hljs from 'highlight.js';
   import 'highlight.js/styles/github-dark.css';
+
+  // Render markdown sanitized. The model's output can echo third-party content
+  // (scraped web pages, WhatsApp/Teams messages), so any HTML it carries must
+  // not execute in the webview.
+  const md = (text) => DOMPurify.sanitize(marked(text ?? ''));
 
   // Render fenced code blocks as a styled card: syntax-highlighted body with a
   // header showing the language and a Copy button.
@@ -1450,7 +1456,7 @@
         <h3>Update Available</h3>
         <p class="update-versions">{updateInfo.current_version} &rarr; <strong>{updateInfo.new_version}</strong></p>
         {#if updateInfo.release_notes}
-          <div class="update-notes markdown">{@html marked(updateInfo.release_notes)}</div>
+          <div class="update-notes markdown">{@html md(updateInfo.release_notes)}</div>
         {/if}
         {#if updateError}
           <p class="update-error">{updateError}</p>
@@ -1507,7 +1513,7 @@
         </div>
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
-          <div class="message-content markdown">{@html marked(msg.content)}</div>
+          <div class="message-content markdown">{@html md(msg.content)}</div>
           <button class="speak-btn" class:speaking
                   on:click={() => speaking ? stopSpeaking() : speakMessage(msg.content)}
                   title={speaking ? 'Stop speaking (Esc)' : 'Read aloud'}>
@@ -1549,7 +1555,7 @@
                   </div>
                   {#if step.result}
                     {#if step.result.includes('![image](data:')}
-                      <div class="tool-step-output markdown">{@html marked(step.result)}</div>
+                      <div class="tool-step-output markdown">{@html md(step.result)}</div>
                     {:else}
                       <pre class="tool-step-output">{step.result}</pre>
                     {/if}
