@@ -97,7 +97,10 @@ func (a *Agent) loadSessionFrom(path string) error {
 		return nil
 	}
 
-	a.messages = state.Messages
+	// Keep the freshly-built system prompt (messages[0]); restore only the conversation.
+	if len(state.Messages) > 1 {
+		a.messages = append(a.messages[:1], state.Messages[1:]...)
+	}
 	logger.Info("Session restored: %d messages from %s", len(a.messages), path)
 	return nil
 }
