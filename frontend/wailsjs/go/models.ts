@@ -136,6 +136,20 @@ export namespace llm {
 
 export namespace main {
 	
+	export class ChatHistoryMessage {
+	    role: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatHistoryMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.role = source["role"];
+	        this.content = source["content"];
+	    }
+	}
 	export class ChatResponse {
 	    content: string;
 	    input_tokens: number;

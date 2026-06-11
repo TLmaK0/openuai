@@ -35,6 +35,8 @@ export function GetAudioDevices():Promise<Array<voice.AudioDevice>>;
 
 export function GetBetaLipReading():Promise<boolean>;
 
+export function GetChatHistory():Promise<Array<main.ChatHistoryMessage>>;
+
 export function GetComputerUseDisplay():Promise<string>;
 
 export function GetComputerUseEnabled():Promise<boolean>;

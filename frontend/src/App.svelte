@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -177,9 +177,9 @@
       if (_speakLevel > 0.01) {
         // Tall, IN-PLACE audio waves: fixed angular lobes (no a-travel ⇒ no
         // rotation) whose height is modulated over time → bobs like an equaliser.
-        // swelling envelope → louder/quieter bursts, so peaks rise higher and
-        // troughs dip lower like a real speech waveform
-        const env = 0.45 + 0.95 * Math.abs(Math.sin(sp * 2.3 + cfg.ripplePhase));
+        // With a live Web Audio tap the gate already IS the voice envelope;
+        // otherwise a synthetic swell fakes louder/quieter bursts.
+        const env = _ttsLive ? 1 : 0.45 + 0.95 * Math.abs(Math.sin(sp * 2.3 + cfg.ripplePhase));
         let rip = 0;
         for (const c of cfg.ripples) {
           rip += c.amp * Math.sin(c.k * a + c.phase) * Math.sin(sp * c.rate + c.phase);
@@ -188,10 +188,15 @@
       }
       pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
     }
-    const f = (v) => v.toFixed(1);
+    return splinePath(pts);
+  }
+
+  // Closed Catmull-Rom spline through the sampled outline points.
+  function splinePath(pts) {
+    const n = pts.length, f = (v) => v.toFixed(1);
     let d = `M ${f(pts[0][0])} ${f(pts[0][1])} `;
-    for (let i = 0; i < BLOB_N; i++) {
-      const p0 = pts[(i - 1 + BLOB_N) % BLOB_N], p1 = pts[i], p2 = pts[(i + 1) % BLOB_N], p3 = pts[(i + 2) % BLOB_N];
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
       const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
       const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
       d += `C ${f(c1x)} ${f(c1y)} ${f(c2x)} ${f(c2y)} ${f(p2[0])} ${f(p2[1])} `;
@@ -199,12 +204,47 @@
     return d + 'Z';
   }
 
+  // Incoming "listening" rings undulate like the orb's own outlines: each gets
+  // a few gentle travelling waves of its own, eased down as it closes in.
+  const RING_BORN = 114, RING_DIE = 72, RING_N = 44;
+  function makeRingCfg() {
+    const hs = [];
+    const n = 2 + Math.floor(Math.random() * 2); // 2-3 overlapping waves
+    for (let i = 0; i < n; i++) {
+      hs.push({
+        m: 2 + Math.floor(Math.random() * 5), // 2-6 lobes
+        amp: rand(2, 5),
+        speed: rand(0.6, 1.6) * (Math.random() < 0.5 ? -1 : 1),
+        phase: Math.random() * TAU,
+      });
+    }
+    return hs;
+  }
+  function buildRingPath(g, t) {
+    const cx = 120, cy = 120, pts = [];
+    // waves flatten as the ring closes on the orb, like a settling ripple
+    const sc = 0.4 + 0.6 * ((g.r - RING_DIE) / (RING_BORN - RING_DIE));
+    for (let i = 0; i < RING_N; i++) {
+      const a = (i / RING_N) * TAU;
+      let r = g.r;
+      for (const h of g.cfg) r += sc * h.amp * Math.sin(h.m * a + t * h.speed + h.phase);
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    return splinePath(pts);
+  }
+
   // ~30fps morph loop. The waves advance faster while thinking, and fastest
   // while speaking — where a tight high-frequency ripple makes it read like an
   // audio waveform. _speakLevel ramps the ripple in/out smoothly.
   let _blobRaf, _blobLast = null, _blobPhase = 0, _speakPhase = 0, _blobAcc = 0, _speakLevel = 0, _glowPhase = 0;
+  // Listening visual: inward-travelling rings + smoothed live mic envelope.
+  let _micEnv = 0, _ringAcc = 0, _ringPhase = 0, _inRings = [];
+  let inRings = []; // render snapshot ({d, op}), refreshed at 30fps
   // Glow drift offsets (px), bound to the aura/core transforms in the markup.
   let auraTX = 0, auraTY = 0, coreTX = 0, coreTY = 0;
+  // The core moves like a watching eye: a quick saccade to a fixation point,
+  // a hold there with a barely-visible tremor, then the next dart.
+  let _eyeX = 0, _eyeY = 0, _eyeTX = 0, _eyeTY = 0, _eyeHold = 0;
   // Speech "gate": waves flatten during brief random pauses, like silences.
   let _speakGate = 0, _gateOpen = true, _gateLeft = 0;
   function blobTick(now) {
@@ -213,32 +253,82 @@
     const dt = (now - _blobLast) / 1000; _blobLast = now;
     // Freeze the travelling phase while speaking so the orb stops rotating;
     // the speaking ripple bobs in place instead, driven by _speakPhase.
-    if (!speaking) _blobPhase += dt * (loading ? 4 : 1);
+    // Listening calms the ring instead (attentive stillness) — the motion
+    // there comes from the incoming rings below.
+    if (!speaking) _blobPhase += dt * (loading ? 4 : (listening ? 0.4 : 1));
     _speakPhase += dt * (speaking ? 6 : 0);
     // Glow drifts at the same cadence as the waves' motion.
     _glowPhase += dt * (speaking ? 6 : (loading ? 4 : 1));
     _speakLevel += ((speaking ? 1 : 0) - _speakLevel) * Math.min(1, dt * 6);
     if (speaking) {
-      _gateLeft -= dt;
-      if (_gateLeft <= 0) {
-        _gateOpen = !_gateOpen;
-        // active bursts last 0.5–1.5s; pauses (silences) 0.15–0.4s
-        _gateLeft = _gateOpen ? 0.5 + Math.random() * 1.0 : 0.15 + Math.random() * 0.25;
+      const lv = ttsLevel();
+      if (lv !== null) {
+        // Real playback level: speech RMS sits around 0.05-0.3 → normalize and
+        // track fast so the waves hit on the agent's actual syllables.
+        _speakGate += (Math.min(1.25, lv * 5) - _speakGate) * Math.min(1, dt * 18);
+      } else {
+        // No Web Audio tap — synthetic bursts as before.
+        _gateLeft -= dt;
+        if (_gateLeft <= 0) {
+          _gateOpen = !_gateOpen;
+          // active bursts last 0.5–1.5s; pauses (silences) 0.15–0.4s
+          _gateLeft = _gateOpen ? 0.5 + Math.random() * 1.0 : 0.15 + Math.random() * 0.25;
+        }
+        _speakGate += ((_gateOpen ? 1 : 0) - _speakGate) * Math.min(1, dt * 14);
       }
-      _speakGate += ((_gateOpen ? 1 : 0) - _speakGate) * Math.min(1, dt * 14);
     } else {
       _speakGate = 0; _gateOpen = true; _gateLeft = 0;
     }
+    // Listening: concentric rings born at the edge contract into the orb —
+    // incoming sound. Cadence, speed and brightness follow the live mic level
+    // (smoothed; speech sits around level 30-70 of 100). With the mic quiet
+    // (e.g. whisper transcribing) sparse faint rings keep signalling
+    // "listening"; existing rings finish their travel after capture ends.
+    _micEnv += ((listening ? Math.min(1, voiceLevel / 60) : 0) - _micEnv) * Math.min(1, dt * 10);
+    _ringPhase += dt;
+    if (listening) {
+      _ringAcc -= dt;
+      if (_ringAcc <= 0) {
+        _inRings.push({ r: RING_BORN, cfg: makeRingCfg() });
+        _ringAcc = 0.8 - 0.45 * _micEnv;
+      }
+    } else {
+      _ringAcc = 0;
+    }
+    for (const g of _inRings) g.r -= dt * (20 + 16 * _micEnv);
+    _inRings = _inRings.filter((g) => g.r > RING_DIE);
+    // Eye saccades: pick a new fixation point when the hold expires, then
+    // dart there fast (~150ms) and settle. Glances are mostly small, with the
+    // occasional wide look and a periodic return to centre; the gaze ranges
+    // wider horizontally than vertically, like real eyes.
+    _eyeHold -= dt;
+    if (_eyeHold <= 0) {
+      const roll = Math.random();
+      const rad = roll < 0.2 ? rand(0, 3) : roll < 0.75 ? rand(4, 12) : rand(12, 20);
+      const ang = Math.random() * TAU;
+      _eyeTX = Math.cos(ang) * rad * 1.2;
+      _eyeTY = Math.sin(ang) * rad * 0.7;
+      _eyeHold = 0.7 + Math.random() * 1.8;
+    }
+    _eyeX += (_eyeTX - _eyeX) * Math.min(1, dt * 14);
+    _eyeY += (_eyeTY - _eyeY) * Math.min(1, dt * 14);
     _blobAcc += dt;
     if (_blobAcc < 1 / 30) return;
     _blobAcc = 0;
-    // drift the glow within the orb (Lissajous so it wanders, not a clean circle)
+    // The core follows the eye's gaze; a tiny fixation tremor keeps the hold
+    // from looking frozen (real eyes are never perfectly still).
     const g = _glowPhase;
-    coreTX = Math.cos(g * 0.5) * 14 + Math.cos(g * 0.33) * 6;
-    coreTY = Math.sin(g * 0.45) * 14 + Math.sin(g * 0.39) * 6;
+    coreTX = _eyeX + Math.sin(g * 7.3) * 0.6;
+    coreTY = _eyeY + Math.cos(g * 6.1) * 0.6;
     auraTX = coreTX * 0.5;
     auraTY = coreTY * 0.5;
     blobPaths = blobCfgs.map((c) => buildBlobPath(c, _blobPhase, _speakPhase));
+    // Incoming rings: fade in just inside the edge, fade out as they reach the
+    // orb; brightness tracks the current voice level so they dim on silence.
+    inRings = _inRings.map((g) => ({
+      d: buildRingPath(g, _ringPhase),
+      op: Math.max(0, Math.min(1, Math.min((RING_BORN - g.r) / 8, (g.r - RING_DIE) / 24))) * (0.18 + 0.6 * _micEnv),
+    }));
   }
   onMount(() => {
     _blobRaf = requestAnimationFrame(blobTick);
@@ -340,7 +430,12 @@
   let wakeListening = false;    // continuous wake-word listening on/off (session only)
   let wakeAwaitingCmd = false;  // wake word fired, capturing the command utterance
   let wakeStatus = '';          // wake model download / status message
-  let wakeHeardTimer;           // dismiss timer for the transient "heard (no wake word)" bubble
+  let wakeHeardTimer;           // dismiss timer for the transient "heard (no wake word)" toast
+  let wakeHeardText = '';       // transcript shown in that toast ('' = hidden)
+  let wakeCapturing = false;    // an utterance is being captured/transcribed (orb listening state)
+  // The orb's listening state: hands-free capture, push-to-talk, or whisper
+  // working on what it heard.
+  $: listening = wakeCapturing || recording || transcribing;
   let wakeSession = false;      // conversation window open: capturing without the wake word (mic blinks)
   let workDir = '';             // dir the agent saves files into; resolves bare file names for click-to-open
   const sttLanguages = [
@@ -400,6 +495,15 @@
     lipModelReady = await LipReadingModelReady();
     workDir = await GetWorkDir();
     if (!isReady) showSettings = true;
+
+    // The agent restores the previous conversation on startup — show it,
+    // otherwise the chat looks empty while the agent remembers everything.
+    try {
+      const history = await GetChatHistory();
+      if (history?.length && !messages.length) {
+        messages = history.map((m) => ({ role: m.role, content: m.content }));
+      }
+    } catch (e) { /* no history — start empty */ }
 
     // Listen for MCP auth completion
     EventsOn('mcp_auth_done', async (result) => {
@@ -496,30 +600,28 @@
       setTimeout(() => { wakeAwaitingCmd = false; }, 6000);
     });
 
-    // An utterance was captured and is being transcribed — show a "[...]"
-    // placeholder bubble so it's visible that the mic picked something up.
+    // An utterance is being captured/transcribed — the orb turns into the
+    // listening state (green, rippling with the live mic level). No chat
+    // bubble: appending one yanked the scroll to the bottom mid-read.
     EventsOn('wake_capturing', () => {
-      if (messages.some((m) => m.wakePending)) return;
-      messages = [...messages, { role: 'user', content: '[...]', wakePending: true }];
-      stickToBottom = true;
+      wakeCapturing = true;
     });
 
     // The captured utterance was dropped (no wake word, empty, or STT error).
-    // If we have a transcript, show it briefly so it's clear transcription
-    // happened but "<wakeWord>" wasn't detected; otherwise just drop the [...].
+    // If we have a transcript, show it briefly as a floating toast so it's
+    // clear transcription happened but "<wakeWord>" wasn't detected.
     EventsOn('wake_discard', (heard) => {
-      messages = messages.filter((m) => !m.wakePending && !m.wakeHeard);
-      const txt = (heard || '').trim();
-      if (!txt) return;
-      messages = [...messages, { role: 'user', content: txt, wakeHeard: true }];
+      wakeCapturing = false;
+      wakeHeardText = (heard || '').trim();
       clearTimeout(wakeHeardTimer);
-      wakeHeardTimer = setTimeout(() => { messages = messages.filter((m) => !m.wakeHeard); }, 3500);
+      if (wakeHeardText) wakeHeardTimer = setTimeout(() => { wakeHeardText = ''; }, 3500);
     });
 
     // Wake-word listener heard "<name>, <message>" — auto-send the message.
     EventsOn('wake_message', (text) => {
       wakeAwaitingCmd = false;
-      messages = messages.filter((m) => !m.wakePending && !m.wakeHeard);
+      wakeCapturing = false;
+      wakeHeardText = '';
       if (loading || !text) return;
       input = text;
       send();
@@ -550,11 +652,25 @@
   // Auto-scroll to the bottom only when the user is already there. If they've
   // scrolled up to read history, frequent updates (streaming, tool steps, voice
   // levels) must NOT yank them back down.
+  // Re-stick only when the user reaches the bottom scrolling DOWN. Position
+  // alone can't tell intent: one wheel notch up (~55px) still lands inside any
+  // reasonable "near the bottom" zone, so it would re-stick instantly and the
+  // next re-render (voice levels, agent steps) would snap back down — making
+  // it impossible to scroll up at all.
   let stickToBottom = true;
+  let lastScrollTop = 0;
   function onChatScroll() {
     if (!chatEl) return;
+    const goingDown = chatEl.scrollTop > lastScrollTop;
+    lastScrollTop = chatEl.scrollTop;
     const dist = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight;
-    stickToBottom = dist < 80;
+    if (dist >= 80) stickToBottom = false;
+    else if (goingDown) stickToBottom = true;
+  }
+  // Release on the gesture itself too: a wheel-up while already stuck must
+  // never be eaten by a concurrent snap-to-bottom.
+  function onChatWheel(e) {
+    if (e.deltaY < 0) stickToBottom = false;
   }
   afterUpdate(() => {
     if (chatEl && stickToBottom) chatEl.scrollTop = chatEl.scrollHeight;
@@ -750,7 +866,10 @@
       alert('Failed to resume: ' + err);
       return;
     }
-    messages = [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
+    const history = await GetChatHistory();
+    messages = history?.length
+      ? history.map((m) => ({ role: m.role, content: m.content }))
+      : [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
     showSessions = false;
     totalCost = 0;
     totalTokens = 0;
@@ -962,12 +1081,77 @@
     return spellDates(sentences.join(' '));
   }
 
+  // Web Audio playback for TTS: decoding the clip and playing it through an
+  // analyser gives the agent's REAL voice level per frame, so the orb's
+  // speaking ripple moves with what you hear. (Tapping an <audio> element via
+  // createMediaElementSource is unreliable in WebKitGTK — it can silence the
+  // playback — so the clip is played *inside* Web Audio instead, with a plain
+  // <audio> fallback if decoding or the context fail.)
+  let _ttsCtx = null, _ttsAnalyser = null, _ttsBuf = null, _ttsLive = false;
+  async function ttsCtxReady() {
+    try {
+      if (!_ttsCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        _ttsCtx = new AC();
+        _ttsAnalyser = _ttsCtx.createAnalyser();
+        _ttsAnalyser.fftSize = 512;
+        _ttsBuf = new Uint8Array(_ttsAnalyser.fftSize);
+        _ttsAnalyser.connect(_ttsCtx.destination);
+      }
+      if (_ttsCtx.state === 'suspended') await _ttsCtx.resume();
+      return _ttsCtx.state === 'running';
+    } catch (e) {
+      return false;
+    }
+  }
+  function b64ToBuf(b64) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8.buffer;
+  }
+  // Current playback RMS (0..~0.5 for speech), or null when not playing via
+  // Web Audio (the orb then falls back to synthetic bursts).
+  function ttsLevel() {
+    if (!_ttsLive || !_ttsAnalyser) return null;
+    _ttsAnalyser.getByteTimeDomainData(_ttsBuf);
+    let sum = 0;
+    for (let i = 0; i < _ttsBuf.length; i++) {
+      const v = (_ttsBuf[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.sqrt(sum / _ttsBuf.length);
+  }
+
   // Synthesize + play one utterance, resolving when playback finishes.
-  let currentAudio = null;
+  let currentAudio = null; // <audio> fallback element
+  let _ttsNode = null;     // Web Audio playback node
   async function playTTS(clean) {
     const result = await SpeakText(clean);
     if (result.error) throw new Error(result.error);
     if (ttsStopped) return;      // stopped while synthesizing — don't start playback
+    if (await ttsCtxReady()) {
+      try {
+        const buf = await _ttsCtx.decodeAudioData(b64ToBuf(result.audio_base64));
+        if (ttsStopped) return;  // stopped while decoding
+        const node = _ttsCtx.createBufferSource();
+        node.buffer = buf;
+        node.connect(_ttsAnalyser);
+        _ttsNode = node;
+        _ttsLive = true;
+        await new Promise((resolve) => {
+          node.onended = resolve; // fires on natural end and on stop()
+          node.start();
+        });
+        return;
+      } catch (e) {
+        // decode failed (codec?) — fall through to the <audio> path
+      } finally {
+        _ttsLive = false;
+        _ttsNode = null;
+      }
+    }
+    if (ttsStopped) return;
     const fmt = result.format || 'wav';
     const audio = new Audio('data:audio/' + fmt + ';base64,' + result.audio_base64);
     currentAudio = audio;
@@ -986,6 +1170,7 @@
     if (!speaking) return;
     ttsStopped = true;
     speakQueue = [];
+    if (_ttsNode) { try { _ttsNode.stop(); } catch (e) { /* already stopped */ } }
     if (currentAudio) currentAudio.pause();
   }
 
@@ -1097,7 +1282,7 @@
 
 <svelte:window on:keydown={handleGlobalKeydown} />
 
-<div class="orb-bg" class:active={loading || speaking}>
+<div class="orb-bg" class:active={loading || speaking || listening}>
   <div class="orb-aura" style="transform: translate({auraTX}px, {auraTY}px)"></div>
   <div class="orb-core" style="transform: translate({coreTX}px, {coreTY}px)"></div>
   {#each blobCfgs as c, i}
@@ -1107,6 +1292,14 @@
       <path class="line" d={blobPaths[i]} fill="none" stroke="currentColor"/>
     </svg>
   {/each}
+  {#if inRings.length}
+    <svg class="orb-ring" viewBox="0 0 240 240" aria-hidden="true" style="color:#8fd0ff">
+      {#each inRings as ring}
+        <path d={ring.d} fill="none" stroke="currentColor"
+              stroke-width="1.1" stroke-opacity={ring.op} stroke-linejoin="round"/>
+      {/each}
+    </svg>
+  {/if}
 </div>
 
 <main>
@@ -1492,10 +1685,10 @@
     </div>
   {/if}
 
-  <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll}>
+  <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
-        <div class="message user" class:wake-pending={msg.wakePending} class:wake-heard={msg.wakeHeard} title={msg.wakeHeard ? `Oído, pero sin la palabra de activación ("${wakeWord}")` : ''}>
+        <div class="message user">
           {#if editingIndex === i}
             <textarea class="edit-area" bind:value={editText} on:keydown={(e) => editKeydown(e, i)} rows="2"></textarea>
             <div class="edit-actions">
@@ -1504,11 +1697,9 @@
             </div>
           {:else}
             <div class="message-content">{msg.content}</div>
-            {#if !msg.wakePending && !msg.wakeHeard}
-              <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-              </button>
-            {/if}
+            <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </button>
           {/if}
         </div>
       {:else if msg.role === 'assistant'}
@@ -1606,6 +1797,8 @@
     {/if}
     {#if transcribing}
       <div class="transcribing-indicator">Transcribing...</div>
+    {:else if wakeHeardText}
+      <div class="transcribing-indicator wake-heard-toast" title={`Oído, pero sin la palabra de activación ("${wakeWord}")`}>🎙 «{wakeHeardText}»</div>
     {:else if wakeStatus}
       <div class="transcribing-indicator wake-listening-ind">{wakeStatus}</div>
     {:else if wakeAwaitingCmd}
@@ -2559,23 +2752,20 @@
     white-space: nowrap;
   }
   .wake-listening-ind { color: #3ad8ff; }
-  /* Placeholder bubble shown while a captured utterance is being transcribed. */
-  .message.user.wake-pending { opacity: 0.6; }
-  .message.user.wake-pending .message-content {
-    color: #3ad8ff;
-    letter-spacing: 2px;
-    animation: pulse-transcribing 1s ease-in-out infinite;
-  }
-  /* Transient bubble: what was heard when no wake word was detected. */
-  .message.user.wake-heard {
-    opacity: 0.45;
+  /* Transient toast: what was heard when no wake word was detected. Floats by
+     the input instead of being a chat message, so it never moves the scroll. */
+  .wake-heard-toast {
+    color: #5fd9a8;
     font-style: italic;
+    max-width: 340px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     animation: wake-heard-fade 3.5s ease forwards;
   }
   @keyframes wake-heard-fade {
     0% { opacity: 0; }
-    12% { opacity: 0.5; }
-    75% { opacity: 0.45; }
+    12% { opacity: 0.9; }
+    75% { opacity: 0.85; }
     100% { opacity: 0; }
   }
   .stt-error {

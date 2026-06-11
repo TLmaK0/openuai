@@ -58,6 +58,10 @@ export function GetBetaLipReading() {
   return window['go']['main']['App']['GetBetaLipReading']();
 }
 
+export function GetChatHistory() {
+  return window['go']['main']['App']['GetChatHistory']();
+}
+
 export function GetComputerUseDisplay() {
   return window['go']['main']['App']['GetComputerUseDisplay']();
 }

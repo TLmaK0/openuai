@@ -188,6 +188,9 @@ func (a *App) startup(ctx context.Context) {
 		OnSession: func(active bool) {
 			wailsRuntime.EventsEmit(a.ctx, "wake_session", active)
 		},
+		OnLevel: func(level int) {
+			wailsRuntime.EventsEmit(a.ctx, "voice_level", level)
+		},
 	}
 
 	// Memory store
@@ -1068,6 +1071,31 @@ func (a *App) AddMCPServer(name, command string, args []string, env map[string]s
 // GetSessions returns all archived sessions.
 func (a *App) GetSessions() []agent.SessionInfo {
 	return agent.ListSessions(a.cfg.ConfigDir())
+}
+
+// ChatHistoryMessage is one visible conversation message for the UI.
+type ChatHistoryMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// GetChatHistory returns the agent's restored conversation (user/assistant
+// text only — no system prompt or tool plumbing) so the UI can show it on
+// startup and after resuming a session, instead of greeting the user with an
+// empty chat while the agent remembers everything.
+func (a *App) GetChatHistory() []ChatHistoryMessage {
+	ag := a.ensureAgent()
+	out := []ChatHistoryMessage{}
+	for _, m := range ag.Messages() {
+		if m.Content == "" {
+			continue
+		}
+		switch m.Role {
+		case llm.RoleUser, llm.RoleAssistant:
+			out = append(out, ChatHistoryMessage{Role: string(m.Role), Content: m.Content})
+		}
+	}
+	return out
 }
 
 // ResumeSession loads an archived session by ID.
