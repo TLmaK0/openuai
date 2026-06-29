@@ -27,10 +27,10 @@ const (
 // response, but right after the name the user often pauses before the command,
 // and mid-dictation they pause to think — both deserve a longer wait.
 const (
-	wakeSilenceEnd  = 900 * time.Millisecond  // normal command: close fast
-	wakeSilenceName = 1500 * time.Millisecond // barely any speech yet — probably the name plus a pause before the command
+	wakeSilenceEnd  = 700 * time.Millisecond  // normal command: close fast
+	wakeSilenceName = 800 * time.Millisecond  // barely any speech yet — probably the name plus a pause before the command
 	wakeSilenceLong = 2 * time.Second         // long dictation: tolerate thinking pauses
-	wakeNameSpeech  = 1200 * time.Millisecond // total speech below this counts as "barely any" (the name alone)
+	wakeNameSpeech  = 700 * time.Millisecond  // total speech below this counts as "barely any" (the name alone)
 	wakeDictSpeech  = 8 * time.Second         // total speech above this counts as dictation
 )
 

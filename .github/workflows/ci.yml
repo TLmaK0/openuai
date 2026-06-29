@@ -38,5 +38,8 @@ jobs:
       - name: Vet
         run: go vet -tags webkit2_41 ./...
 
+      - name: Test
+        run: go test -race -tags webkit2_41 ./...
+
       - name: Build
         run: wails build -tags webkit2_41
