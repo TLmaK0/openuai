@@ -203,7 +203,7 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 			setSession(false)
 		}
 
-		transcript, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech)
+		transcript, hasSpeech := w.captureUtterance(ctx, mic, wakeNoSpeech, realClock{})
 		if w.OnLevel != nil {
 			w.OnLevel(0) // settle the UI's listening visual between utterances
 		}
@@ -270,6 +270,39 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 	}
 }
 
+// audioSource is the slice of *Mic that captureUtterance needs: the live level,
+// a WAV snapshot-and-clear, and a buffer reset. Abstracted so the capture loop
+// can be driven by a scripted fake in tests (no real microphone).
+type audioSource interface {
+	Reset()
+	Level() int
+	TakeWAV() []byte
+}
+
+// clock and ticker abstract time so the capture loop — whose whole job is timing
+// silence windows and chunk cuts — can be driven deterministically in tests
+// (advance time and deliver ticks by hand) instead of waiting on wall-clock.
+type clock interface {
+	now() time.Time
+	newTicker(d time.Duration) ticker
+}
+
+type ticker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+// realClock is the production clock backed by the time package.
+type realClock struct{}
+
+func (realClock) now() time.Time                  { return time.Now() }
+func (realClock) newTicker(d time.Duration) ticker { return &realTicker{t: time.NewTicker(d)} }
+
+type realTicker struct{ t *time.Ticker }
+
+func (r *realTicker) C() <-chan time.Time { return r.t.C }
+func (r *realTicker) Stop()               { r.t.Stop() }
+
 // captureUtterance records one utterance from the shared mic using voice-
 // activity detection and returns its transcript plus whether any speech was
 // detected: it waits for speech to start, then for a trailing pause. Long
@@ -279,18 +312,18 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 // the instant speech begins (immediate UI feedback) and, if it bails out
 // mid-capture, clears that placeholder via discard. The mic buffer is reset on
 // entry so each utterance is transcribed in isolation.
-func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechTimeout time.Duration) (string, bool) {
+func (w *WakeListener) captureUtterance(ctx context.Context, mic audioSource, noSpeechTimeout time.Duration, clk clock) (string, bool) {
 	mic.Reset()
 
-	ticker := time.NewTicker(wakePoll)
+	ticker := clk.newTicker(wakePoll)
 	defer ticker.Stop()
 
-	start := time.Now()
+	start := clk.now()
 	chunkStart := start
 	speechStarted := false
 	speechDur := time.Duration(0)  // accumulated time with the level above wakeSpeechOn
 	chunkSpeech := time.Duration(0) // same, but within the current chunk only
-	lastSpeech := time.Now()
+	lastSpeech := clk.now()
 
 	// Chunk transcripts, in capture order; full chunks fill their slot from a
 	// background goroutine while later audio is still being recorded.
@@ -314,7 +347,7 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 		go func() {
 			defer pending.Done()
 			text, err := w.Transcribe(wav)
-			defer atomic.StoreInt64(&lastChunkNanos, time.Now().UnixNano())
+			defer atomic.StoreInt64(&lastChunkNanos, clk.now().UnixNano())
 			if err != nil {
 				// A mostly-silent tail chunk legitimately fails ("no speech") —
 				// the other chunks still make up the utterance.
@@ -325,7 +358,7 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 			parts[idx] = strings.TrimSpace(text)
 			partsMu.Unlock()
 			if text != "" {
-				atomic.StoreInt64(&lastTextNanos, time.Now().UnixNano())
+				atomic.StoreInt64(&lastTextNanos, clk.now().UnixNano())
 			}
 		}()
 	}
@@ -357,10 +390,13 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 	}
 
 	for {
+		// The ticker delivers the time of each tick, so it doubles as the clock
+		// read for this iteration (one source, no skew between them).
+		var now time.Time
 		select {
 		case <-ctx.Done():
 			return "", false
-		case <-ticker.C:
+		case now = <-ticker.C():
 		}
 
 		// Bail out immediately if we've been paused mid-capture (e.g. the user
@@ -372,7 +408,6 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic *Mic, noSpeechT
 			return "", false
 		}
 
-		now := time.Now()
 		if speechStarted && w.OnLevel != nil {
 			w.OnLevel(mic.Level()) // drive the UI's listening visual with the live level
 		}
