@@ -548,35 +548,6 @@ type wakeTok struct {
 // Whisper often mis-hears a short isolated name ("Pepito" → "Papito") and may
 // emit it more than once or wrap it in markdown ("*Papito*"). It also tolerates
 // a filler word before the name and consumes repeated wake words.
-func stripWakeWord(transcript, wake string) (string, bool) {
-	wakeF := alnumFold(wake) // e.g. "Pepito" -> "pepito"
-	if wakeF == "" {
-		return "", false
-	}
-	toks := tokenizeFolded(transcript)
-	if len(toks) == 0 {
-		return "", false
-	}
-	// Find the wake word within the first few tokens.
-	matchIdx := -1
-	for i := 0; i < len(toks) && i <= wakeMaxLeadTokens-1; i++ {
-		if wakeMatches(toks[i].folded, wakeF) {
-			matchIdx = i
-			break
-		}
-	}
-	if matchIdx < 0 {
-		return "", false
-	}
-	// Consume any immediately-following repeats of the wake word.
-	last := matchIdx
-	for last+1 < len(toks) && wakeMatches(toks[last+1].folded, wakeF) {
-		last++
-	}
-	rest := transcript[toks[last].byteEnd:]
-	rest = strings.TrimLeft(rest, " ,.:;!?¡¿-—'\"*\t\n")
-	return strings.TrimSpace(rest), true
-}
 
 // tokenizeFolded splits a string into alnum word tokens, recording where each
 // ends (byte offset into the original) and its folded form.

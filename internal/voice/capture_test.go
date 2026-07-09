@@ -151,10 +151,10 @@ func TestCaptureClosesAtNormalWindow(t *testing.T) {
 	res, cancel := runCapture(w, d, wakeNoSpeech)
 	defer cancel()
 
-	feed(t, d, 40, 8) // 800ms speech -> normal command -> wakeSilenceEnd (700ms)
-	feed(t, d, 0, 6)  // 600ms silence: still under the window
-	assertOpen(t, res, "6 of 7 silence ticks")
-	d.step(0, wakePoll) // 700ms of silence -> close
+	feed(t, d, 40, 8) // 800ms speech -> normal command -> wakeSilenceEnd (1200ms)
+	feed(t, d, 0, 11) // 1100ms silence: still under the window
+	assertOpen(t, res, "11 of 12 silence ticks")
+	d.step(0, wakePoll) // 1200ms of silence -> close
 
 	if r := waitResult(t, res); !r.ok || r.txt != "hola" {
 		t.Fatalf("got (%q, %v), want (\"hola\", true)", r.txt, r.ok)
@@ -167,10 +167,10 @@ func TestCaptureClosesAtNameWindow(t *testing.T) {
 	res, cancel := runCapture(w, d, wakeNoSpeech)
 	defer cancel()
 
-	feed(t, d, 40, 5) // 500ms speech -> "barely any" -> wakeSilenceName (800ms)
-	feed(t, d, 0, 7)  // 700ms silence: the old normal window would have closed here
-	assertOpen(t, res, "7 of 8 silence ticks (name window must wait longer)")
-	d.step(0, wakePoll) // 800ms of silence -> close
+	feed(t, d, 40, 5) // 500ms speech -> "barely any" -> wakeSilenceName (1500ms)
+	feed(t, d, 0, 14) // 1400ms silence: still under the patient name window
+	assertOpen(t, res, "14 of 15 silence ticks (name window must wait longer)")
+	d.step(0, wakePoll) // 1500ms of silence -> close
 
 	if r := waitResult(t, res); !r.ok || r.txt != "hola" {
 		t.Fatalf("got (%q, %v), want (\"hola\", true)", r.txt, r.ok)
@@ -183,10 +183,10 @@ func TestCaptureClosesAtDictationWindow(t *testing.T) {
 	res, cancel := runCapture(w, d, wakeNoSpeech)
 	defer cancel()
 
-	feed(t, d, 40, 80) // 8s speech -> dictation -> wakeSilenceLong (2s)
-	feed(t, d, 0, 19)  // 1.9s silence: still under the patient window
-	assertOpen(t, res, "19 of 20 silence ticks")
-	d.step(0, wakePoll) // 2s of silence -> close
+	feed(t, d, 40, 80) // 8s speech -> dictation -> wakeSilenceLong (2.5s)
+	feed(t, d, 0, 24) // 2.4s silence: still under the patient window
+	assertOpen(t, res, "24 of 25 silence ticks")
+	d.step(0, wakePoll) // 2.5s of silence -> close
 
 	if r := waitResult(t, res); !r.ok {
 		t.Fatalf("got ok=%v, want true", r.ok)
@@ -240,11 +240,11 @@ func TestCaptureChunksAndJoins(t *testing.T) {
 	defer cancel()
 
 	feed(t, d, 40, 20) // 2s speech (>= wakeChunkMin)
-	feed(t, d, 0, 4)   // 400ms dip (>= wakeChunkDip) -> chunk cut
+	feed(t, d, 0, 9)   // 900ms dip (>= wakeChunkDip) -> chunk cut
 	feed(t, d, 40, 5)  // more speech -> second chunk
-	feed(t, d, 0, 6)   // 600ms: under the 700ms close window
+	feed(t, d, 0, 11)  // 1100ms: under the 1200ms close window
 	assertOpen(t, res, "before the trailing window after resumed speech")
-	d.step(0, wakePoll) // 700ms silence -> close
+	d.step(0, wakePoll) // 1200ms silence -> close
 
 	r := waitResult(t, res)
 	if !r.ok || r.txt != "hola hola" {

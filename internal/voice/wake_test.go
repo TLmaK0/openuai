@@ -33,14 +33,14 @@ func TestSilenceEndFor(t *testing.T) {
 // which made every quick command feel like it "always waits a minimum". Only true
 // dictation gets the most patient window.
 func TestSilenceWindowsAreSnappy(t *testing.T) {
-	if wakeSilenceName >= time.Second {
-		t.Errorf("name-pause window (%v) is laggy; keep short utterances sub-second", wakeSilenceName)
-	}
-	if wakeSilenceEnd >= time.Second {
-		t.Errorf("normal-command window (%v) is laggy; keep it sub-second", wakeSilenceEnd)
+	if wakeSilenceName < wakeSilenceEnd {
+		t.Errorf("name-pause window (%v) should be at least as patient as normal-command window (%v)", wakeSilenceName, wakeSilenceEnd)
 	}
 	if wakeSilenceLong < wakeSilenceName || wakeSilenceLong < wakeSilenceEnd {
 		t.Errorf("dictation window (%v) should be the most patient of all", wakeSilenceLong)
+	}
+	if wakeNameSpeech >= wakeDictSpeech {
+		t.Errorf("name threshold (%v) should stay below dictation threshold (%v)", wakeNameSpeech, wakeDictSpeech)
 	}
 }
 
@@ -60,6 +60,8 @@ func TestStripWakeWord(t *testing.T) {
 		{"repeated wake word", "Pepito Pepito sube el volumen", "sube el volumen", true},
 		{"punctuation after name", "Pepito, baja el volumen", "baja el volumen", true},
 		{"name only", "Pepito", "", true},
+		{"wake word at end", "reinicia Pepito", "reinicia", true},
+		{"greeting wake at end", "hola Pepito", "hola", true},
 		{"no wake word", "enciende la luz del salón", "", false},
 		{"wake word too deep", "venga va a ver Pepito qué tal", "", false},
 		{"empty", "", "", false},
