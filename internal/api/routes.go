@@ -28,6 +28,7 @@ func (s *Server) registerRoutes() {
 	api.POST("/permissions/respond", s.handleRespondPermission)
 	api.GET("/notifications", s.handleGetNotifications)
 	api.PUT("/notifications", s.handleSetNotifications)
+	api.POST("/dev/restart", s.handleDevRestart)
 
 	s.echo.GET("/ws", s.hub.handleWS)
 }
@@ -194,6 +195,14 @@ func (s *Server) handleSetNotifications(c echo.Context) error {
 	}
 	s.handlers.SetNotifications(req.Enabled)
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleDevRestart(c echo.Context) error {
+	if s.handlers.RequestRestart == nil {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "restart handler not configured"})
+	}
+	result := s.handlers.RequestRestart()
+	return c.JSON(http.StatusOK, map[string]any{"status": "restarting", "result": result})
 }
 
 // --- Helpers ---

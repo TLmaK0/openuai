@@ -27,9 +27,9 @@ const (
 // response, but right after the name the user often pauses before the command,
 // and mid-dictation they pause to think — both deserve a longer wait.
 const (
-	wakeSilenceEnd  = 700 * time.Millisecond  // normal command: close fast
-	wakeSilenceName = 800 * time.Millisecond  // barely any speech yet — probably the name plus a pause before the command
-	wakeSilenceLong = 2 * time.Second         // long dictation: tolerate thinking pauses
+	wakeSilenceEnd  = 1200 * time.Millisecond // normal command: close fast, but still leave room to finish the sentence
+	wakeSilenceName = 1500 * time.Millisecond // barely any speech yet — probably the name plus a pause before the command
+	wakeSilenceLong = 2500 * time.Millisecond // long dictation: tolerate thinking pauses
 	wakeNameSpeech  = 700 * time.Millisecond  // total speech below this counts as "barely any" (the name alone)
 	wakeDictSpeech  = 8 * time.Second         // total speech above this counts as dictation
 )
@@ -42,11 +42,12 @@ const (
 // chunk remains, keeping the perceived latency low no matter how long the
 // dictation runs (up to wakeMaxUtter).
 const (
-	wakeChunkDip       = 400 * time.Millisecond // level dip long enough to cut between phrases (under wakeSilenceEnd)
-	wakeChunkMin       = 2 * time.Second        // don't cut chunks shorter than this (per-run whisper overhead)
-	wakeChunkForce     = 20 * time.Second       // cut even with no dip (continuous sound)
-	wakeChunkMinSpeech = 300 * time.Millisecond // min accumulated speech-level audio for a chunk to be worth transcribing — a clap or cough only spans a tick or two, and feeding whisper near-noise makes it hallucinate text
-	wakeNoiseClose     = 5 * time.Second        // close the utterance when real text was already transcribed this long ago and everything since came back empty — ambient noise above the level threshold would otherwise keep the utterance open (and the user's phrase hostage) indefinitely
+	wakeChunkDip       = 900 * time.Millisecond  // level dip long enough to cut between phrases without chopping brief thinking pauses
+	wakeChunkMin       = 2 * time.Second         // don't cut chunks shorter than this (per-run whisper overhead)
+	wakeChunkForce     = 20 * time.Second        // cut even with no dip (continuous sound)
+	wakeChunkMinSpeech = 180 * time.Millisecond  // min accumulated speech-level audio for a chunk to be worth transcribing — lowered so short but real utterances ("sí", "hola") are not discarded
+	wakeNoiseClose     = 5 * time.Second         // close the utterance when real text was already transcribed this long ago and everything since came back empty — ambient noise above the level threshold would otherwise keep the utterance open (and the user's phrase hostage) indefinitely
+	wakeJoinWindow     = 2200 * time.Millisecond // after a transcript, briefly wait for a likely continuation and merge it before sending
 )
 
 // silenceEndFor returns the trailing silence that closes the utterance given
@@ -75,9 +76,9 @@ type WakeListener struct {
 	WakeWord    func() string // current wake word (e.g. "Pepito")
 	Device      func() string // mic device name (see ListDevices), "" = default
 	Transcribe  func(wav []byte) (string, error)
-	OnMessage   func(text string) // called with the full transcript (wake word kept)
-	OnListening func()            // called when the wake word fired and we're awaiting the command
-	OnCapture   func()            // called the instant speech begins (immediate UI feedback), before the utterance completes
+	OnMessage   func(text string)  // called with the full transcript (wake word kept)
+	OnListening func()             // called when the wake word fired and we're awaiting the command
+	OnCapture   func()             // called the instant speech begins (immediate UI feedback), before the utterance completes
 	OnDiscard   func(heard string) // called when a captured utterance is dropped; heard is the transcript (or "" on STT error)
 	OnSession   func(active bool)  // called when the conversation window opens/closes (UI hint: blink the mic)
 	OnLevel     func(level int)    // live mic level (0-100) at poll cadence while an utterance is being captured; 0 when capture ends
@@ -146,11 +147,36 @@ func (w *WakeListener) Stop() {
 	logger.Info("Wake listener: stopped")
 }
 
+func likelyContinuation(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	r := []rune(text)
+	last := r[len(r)-1]
+	if last == '.' || last == '!' || last == '?' {
+		return false
+	}
+	words := strings.Fields(text)
+	if len(words) <= 2 {
+		return false
+	}
+	low := strings.ToLower(alnumFold(text))
+	for _, suffix := range []string{"que", "y", "o", "pero", "porque", "si", "entonces", "con", "para", "de", "del", "la", "el", "los", "las", "un", "una", "hola", "oye", "eh", "mmm"} {
+		if strings.HasSuffix(low, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 	// Conversation-session state (loop-local; only this goroutine touches it).
 	var sessionUntil time.Time
 	sessionActive := false
 	wasPaused := false
+	pendingTranscript := ""
+	pendingDeadline := time.Time{}
 	// setSession toggles the window and notifies the UI only on a real change,
 	// so refreshing the deadline mid-session doesn't spam the event.
 	setSession := func(active bool) {
@@ -160,6 +186,19 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 				w.OnSession(active)
 			}
 		}
+	}
+	flushPending := func() {
+		if pendingTranscript == "" {
+			return
+		}
+		if w.OnMessage != nil {
+			w.OnMessage(pendingTranscript)
+		}
+		sessionUntil = time.Now().Add(wakeSessionWin)
+		setSession(true)
+		pendingTranscript = ""
+		pendingDeadline = time.Time{}
+		time.Sleep(1200 * time.Millisecond)
 	}
 
 	// Clear running here too (not only in Stop) so that if the mic can't be
@@ -180,6 +219,10 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 	defer mic.Close()
 
 	for {
+		if pendingTranscript != "" && !pendingDeadline.IsZero() && time.Now().After(pendingDeadline) {
+			flushPending()
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -243,10 +286,18 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 				continue
 			}
 			if msg == "" {
-				// Wake word alone (no command in the same phrase). Say the whole thing
-				// in one breath: "Pepito, qué hora es".
-				logger.Info("Wake listener: wake word only, no command — say it in one phrase")
-				w.discard(transcript)
+				// Wake word alone or greeting with wake word: keep the conversation open
+				// so the user can continue naturally, and also allow simple greetings
+				// like "hola pepito" to reach the assistant instead of disappearing.
+				logger.Info("Wake listener: wake word with no command — opening conversation window")
+				if strings.TrimSpace(transcript) != "" {
+					if w.OnMessage != nil {
+						w.OnMessage(transcript)
+					}
+				}
+				sessionUntil = time.Now().Add(wakeSessionWin)
+				setSession(true)
+				time.Sleep(1200 * time.Millisecond)
 				continue
 			}
 		}
@@ -258,6 +309,20 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		} else {
 			logger.Info("Wake listener: triggered → %q", transcript)
 		}
+		if pendingTranscript != "" {
+			pendingTranscript = strings.TrimSpace(pendingTranscript + " " + transcript)
+			if likelyContinuation(transcript) {
+				pendingDeadline = time.Now().Add(wakeJoinWindow)
+				continue
+			}
+			flushPending()
+			continue
+		}
+		if likelyContinuation(transcript) {
+			pendingTranscript = transcript
+			pendingDeadline = time.Now().Add(wakeJoinWindow)
+			continue
+		}
 		if w.OnMessage != nil {
 			w.OnMessage(transcript)
 		}
@@ -268,6 +333,7 @@ func (w *WakeListener) loop(ctx context.Context, done chan struct{}) {
 		// we resume capturing — prevents picking up the assistant's own reply.
 		time.Sleep(1200 * time.Millisecond)
 	}
+
 }
 
 // audioSource is the slice of *Mic that captureUtterance needs: the live level,
@@ -282,6 +348,7 @@ type audioSource interface {
 // clock and ticker abstract time so the capture loop — whose whole job is timing
 // silence windows and chunk cuts — can be driven deterministically in tests
 // (advance time and deliver ticks by hand) instead of waiting on wall-clock.
+
 type clock interface {
 	now() time.Time
 	newTicker(d time.Duration) ticker
@@ -295,13 +362,23 @@ type ticker interface {
 // realClock is the production clock backed by the time package.
 type realClock struct{}
 
-func (realClock) now() time.Time                  { return time.Now() }
-func (realClock) newTicker(d time.Duration) ticker { return &realTicker{t: time.NewTicker(d)} }
+func (realClock) now() time.Time {
+	return time.Now()
+}
+
+func (realClock) newTicker(d time.Duration) ticker {
+	return &realTicker{t: time.NewTicker(d)}
+}
 
 type realTicker struct{ t *time.Ticker }
 
-func (r *realTicker) C() <-chan time.Time { return r.t.C }
-func (r *realTicker) Stop()               { r.t.Stop() }
+func (r *realTicker) C() <-chan time.Time {
+	return r.t.C
+}
+
+func (r *realTicker) Stop() {
+	r.t.Stop()
+}
 
 // captureUtterance records one utterance from the shared mic using voice-
 // activity detection and returns its transcript plus whether any speech was
@@ -321,7 +398,7 @@ func (w *WakeListener) captureUtterance(ctx context.Context, mic audioSource, no
 	start := clk.now()
 	chunkStart := start
 	speechStarted := false
-	speechDur := time.Duration(0)  // accumulated time with the level above wakeSpeechOn
+	speechDur := time.Duration(0)   // accumulated time with the level above wakeSpeechOn
 	chunkSpeech := time.Duration(0) // same, but within the current chunk only
 	lastSpeech := clk.now()
 
@@ -457,7 +534,7 @@ func TranscribeWAV(wav []byte, model, language, prompt, configDir string) Transc
 
 // wakeMaxLeadTokens is how far into the transcript the wake word may appear
 // (lets natural fillers like "Oye"/"Hola" precede it).
-const wakeMaxLeadTokens = 2
+const wakeMaxLeadTokens = 3
 
 type wakeTok struct {
 	byteStart int    // byte index in the original string where this token begins
@@ -471,35 +548,6 @@ type wakeTok struct {
 // Whisper often mis-hears a short isolated name ("Pepito" → "Papito") and may
 // emit it more than once or wrap it in markdown ("*Papito*"). It also tolerates
 // a filler word before the name and consumes repeated wake words.
-func stripWakeWord(transcript, wake string) (string, bool) {
-	wakeF := alnumFold(wake) // e.g. "Pepito" -> "pepito"
-	if wakeF == "" {
-		return "", false
-	}
-	toks := tokenizeFolded(transcript)
-	if len(toks) == 0 {
-		return "", false
-	}
-	// Find the wake word within the first few tokens.
-	matchIdx := -1
-	for i := 0; i < len(toks) && i <= wakeMaxLeadTokens-1; i++ {
-		if wakeMatches(toks[i].folded, wakeF) {
-			matchIdx = i
-			break
-		}
-	}
-	if matchIdx < 0 {
-		return "", false
-	}
-	// Consume any immediately-following repeats of the wake word.
-	last := matchIdx
-	for last+1 < len(toks) && wakeMatches(toks[last+1].folded, wakeF) {
-		last++
-	}
-	rest := transcript[toks[last].byteEnd:]
-	rest = strings.TrimLeft(rest, " ,.:;!?¡¿-—'\"*\t\n")
-	return strings.TrimSpace(rest), true
-}
 
 // tokenizeFolded splits a string into alnum word tokens, recording where each
 // ends (byte offset into the original) and its folded form.

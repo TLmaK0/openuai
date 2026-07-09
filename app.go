@@ -406,6 +406,7 @@ func (a *App) startup(ctx context.Context) {
 				return map[string]bool{"enabled": a.GetNotificationsEnabled()}
 			},
 			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
+			RequestRestart:   func() any { return a.RequestRestart() },
 		})
 		if err := a.apiServer.Start(); err != nil {
 			logger.Error("Failed to start API server: %s", err.Error())
@@ -413,6 +414,15 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	logger.Info("Startup complete")
+}
+
+func (a *App) RequestRestart() map[string]any {
+	logger.Info("Restart requested")
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		os.Exit(42)
+	}()
+	return map[string]any{"ok": true, "code": 42}
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -1389,6 +1399,10 @@ func (a *App) ApplyUpdate(downloadURL string) string {
 		logger.Error("Update failed: %s", err.Error())
 		return err.Error()
 	}
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		os.Exit(42)
+	}()
 	return ""
 }
 
