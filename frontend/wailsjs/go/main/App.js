@@ -198,6 +198,10 @@ export function RemoveMCPServer(arg1) {
   return window['go']['main']['App']['RemoveMCPServer'](arg1);
 }
 
+export function RequestRestart() {
+  return window['go']['main']['App']['RequestRestart']();
+}
+
 export function ResetCosts() {
   return window['go']['main']['App']['ResetCosts']();
 }

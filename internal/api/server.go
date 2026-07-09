@@ -20,24 +20,25 @@ type Config struct {
 // Handlers holds callback functions wired by the main package.
 // Using func fields avoids importing main (no import cycles).
 type Handlers struct {
-	SendMessage          func(content string) any          // async: returns request_id
-	SendMessageSync      func(content string) any          // blocking: returns ChatResponse
-	GetCostSummary       func() any
-	GetModels            func() any
-	GetModel             func() any
-	SetModel             func(model string) any
-	GetProvider          func() any
-	SetProvider          func(provider string) any
-	GetWatchedChats      func() any
-	WatchChat            func(jid string) any
-	UnwatchChat          func(jid string) any
-	GetEventStats        func() any
-	GetMCPServers        func() any
-	RespondPermission    func(level string, approved bool)
-	ClearChat            func()
-	ResetCosts           func()
-	GetNotifications     func() any
-	SetNotifications     func(enabled bool)
+	SendMessage       func(content string) any // async: returns request_id
+	SendMessageSync   func(content string) any // blocking: returns ChatResponse
+	GetCostSummary    func() any
+	GetModels         func() any
+	GetModel          func() any
+	SetModel          func(model string) any
+	GetProvider       func() any
+	SetProvider       func(provider string) any
+	GetWatchedChats   func() any
+	WatchChat         func(jid string) any
+	UnwatchChat       func(jid string) any
+	GetEventStats     func() any
+	GetMCPServers     func() any
+	RespondPermission func(level string, approved bool)
+	ClearChat         func()
+	ResetCosts        func()
+	GetNotifications  func() any
+	SetNotifications  func(enabled bool)
+	RequestRestart    func() any
 }
 
 // Server is the REST API + WebSocket server.

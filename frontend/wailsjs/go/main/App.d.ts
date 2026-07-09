@@ -105,6 +105,8 @@ export function ReauthMCPServer(arg1:string):Promise<string>;
 
 export function RemoveMCPServer(arg1:string):Promise<string>;
 
+export function RequestRestart():Promise<Record<string, any>>;
+
 export function ResetCosts():Promise<void>;
 
 export function RespondPermission(arg1:string,arg2:boolean):Promise<void>;
