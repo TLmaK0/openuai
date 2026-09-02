@@ -65,7 +65,7 @@ export function GetNotificationsEnabled():Promise<boolean>;
 
 export function GetProvider():Promise<string>;
 
-export function GetProviders():Promise<Array<string>>;
+export function GetProviders():Promise<Array<llm.ProviderInfo>>;
 
 export function GetSTTLanguage():Promise<string>;
 
@@ -87,19 +87,17 @@ export function GetWatchedChats():Promise<Array<string>>;
 
 export function GetWorkDir():Promise<string>;
 
-export function HasAPIKey():Promise<boolean>;
-
 export function InstallMarketplace(arg1:string,arg2:string):Promise<string>;
 
 export function LipReadingModelReady():Promise<boolean>;
 
-export function OpenAIIsLoggedIn():Promise<boolean>;
-
-export function OpenAILogin():Promise<string>;
-
 export function OpenPath(arg1:string):Promise<string>;
 
 export function PiperSupported():Promise<boolean>;
+
+export function ProviderLogin():Promise<string>;
+
+export function ProviderReady():Promise<boolean>;
 
 export function ReauthMCPServer(arg1:string):Promise<string>;
 
@@ -115,8 +113,6 @@ export function ResumeSession(arg1:string):Promise<string>;
 
 export function SendMessage(arg1:string):Promise<main.ChatResponse>;
 
-export function SetAPIKey(arg1:string):Promise<void>;
-
 export function SetAudioDevice(arg1:string):Promise<void>;
 
 export function SetBetaLipReading(arg1:boolean):Promise<void>;
@@ -130,6 +126,8 @@ export function SetComputerUseMonitor(arg1:number):Promise<void>;
 export function SetDefaultModel(arg1:string):Promise<void>;
 
 export function SetProvider(arg1:string):Promise<void>;
+
+export function SetProviderSecret(arg1:string):Promise<void>;
 
 export function SetSTTLanguage(arg1:string):Promise<void>;
 

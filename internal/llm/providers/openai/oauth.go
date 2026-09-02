@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"crypto/rand"
@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	oauthClientID    = "app_EMoamEEZ73f0CkXaXp7hrann"
+	oauthClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	oauthAuthorizeURL = "https://auth.openai.com/oauth/authorize"
-	oauthTokenURL    = "https://auth.openai.com/oauth/token"
-	oauthRedirectURI = "http://localhost:1455/auth/callback"
-	oauthScope       = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+	oauthTokenURL     = "https://auth.openai.com/oauth/token"
+	oauthRedirectURI  = "http://localhost:1455/auth/callback"
+	oauthScope        = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 	oauthCallbackPort = 1455
 )
 

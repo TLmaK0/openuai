@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"bufio"
@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"openuai/internal/logger"
 	"strings"
 	"time"
+
+	"openuai/internal/llm"
+	"openuai/internal/logger"
 )
 
 // maxRetries is the number of additional attempts after the first on transient errors.
@@ -32,16 +34,61 @@ const codexBaseURL = "https://chatgpt.com/backend-api/codex/responses"
 const codexModelsURL = "https://chatgpt.com/backend-api/codex/models"
 const codexClientVersion = "0.115.0"
 
+// tokensKey is where the OAuth tokens live in the provider's own store.
+const tokensKey = "tokens"
+
+func init() {
+	llm.Register(llm.Descriptor{
+		Name:         "openai",
+		DisplayName:  "OpenAI (ChatGPT subscription)",
+		Credential:   llm.CredentialLogin,
+		LoginLabel:   "Login with ChatGPT",
+		DefaultModel: "gpt-5.1-codex",
+		Default:      true,
+		New:          func(store llm.Store) llm.Provider { return New(store) },
+	})
+}
+
 type OpenAIProvider struct {
 	oauth      *OAuthFlow
 	httpClient *http.Client
 }
 
-func NewOpenAIProvider(oauth *OAuthFlow) *OpenAIProvider {
+// New builds the provider, restoring any OAuth session held in store and
+// persisting refreshed tokens back to it.
+func New(store llm.Store) *OpenAIProvider {
+	oauth := NewOAuthFlow(func(tokens *OAuthTokens) {
+		data, err := json.Marshal(tokens)
+		if err != nil {
+			logger.Error("Encoding OAuth tokens: %s", err.Error())
+			return
+		}
+		if err := store.Set(tokensKey, string(data)); err != nil {
+			logger.Error("Persisting OAuth tokens: %s", err.Error())
+			return
+		}
+		logger.Info("OAuth tokens updated")
+	})
+
+	if saved := store.Get(tokensKey); saved != "" {
+		var tokens OAuthTokens
+		if err := json.Unmarshal([]byte(saved), &tokens); err != nil {
+			logger.Error("Restoring saved OAuth tokens: %s", err.Error())
+		} else {
+			logger.Info("Restoring saved OAuth tokens (account: %s)", tokens.AccountID)
+			oauth.SetTokens(&tokens)
+		}
+	}
+
 	return &OpenAIProvider{
 		oauth:      oauth,
 		httpClient: &http.Client{},
 	}
+}
+
+// Ready reports whether an OAuth session is available.
+func (o *OpenAIProvider) Ready() bool {
+	return o.oauth.IsAuthenticated()
 }
 
 func (o *OpenAIProvider) Name() string {
@@ -118,37 +165,16 @@ func (o *OpenAIProvider) FetchModels(ctx context.Context) ([]string, error) {
 	return slugs, nil
 }
 
-// Tool definition for the API
-type ToolDefinition struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Parameters  []ToolParam       `json:"parameters"`
-}
-
-type ToolParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Required    bool   `json:"required"`
-}
-
-// ToolCall represents a tool call from the model
-type ToolCall struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Arguments map[string]string `json:"arguments"`
-}
-
 // codex API request format
 type codexRequest struct {
-	Model             string           `json:"model"`
-	Instructions      string           `json:"instructions,omitempty"`
-	Input             []interface{}    `json:"input"`
-	Tools             []interface{}    `json:"tools,omitempty"`
-	ToolChoice        string           `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool             `json:"parallel_tool_calls"`
-	Stream            bool             `json:"stream"`
-	Store             bool             `json:"store"`
+	Model             string        `json:"model"`
+	Instructions      string        `json:"instructions,omitempty"`
+	Input             []interface{} `json:"input"`
+	Tools             []interface{} `json:"tools,omitempty"`
+	ToolChoice        string        `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool          `json:"parallel_tool_calls"`
+	Stream            bool          `json:"stream"`
+	Store             bool          `json:"store"`
 }
 
 type codexInputMessage struct {
@@ -171,12 +197,12 @@ func imageContentParts(text string, images []string) []map[string]interface{} {
 }
 
 type codexToolResult struct {
-	Type       string `json:"type"`
-	CallID     string `json:"call_id"`
-	Output     string `json:"output"`
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
 }
 
-func buildFunctionTool(td ToolDefinition) map[string]interface{} {
+func buildFunctionTool(td llm.ToolDefinition) map[string]interface{} {
 	properties := map[string]interface{}{}
 	required := []string{}
 
@@ -196,10 +222,10 @@ func buildFunctionTool(td ToolDefinition) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"type": "function",
-		"name": td.Name,
+		"type":        "function",
+		"name":        td.Name,
 		"description": td.Description,
-		"strict": false,
+		"strict":      false,
 		"parameters": map[string]interface{}{
 			"type":       "object",
 			"properties": properties,
@@ -209,7 +235,7 @@ func buildFunctionTool(td ToolDefinition) map[string]interface{} {
 }
 
 // ChatWithTools sends a message with native tool support
-func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []Message, model string, toolDefs []ToolDefinition) (*Response, []ToolCall, error) {
+func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []llm.Message, model string, toolDefs []llm.ToolDefinition) (*llm.Response, []llm.ToolCall, error) {
 	logger.Info("OpenAI ChatWithTools: model=%s messages=%d tools=%d", model, len(messages), len(toolDefs))
 	accessToken, accountID, err := o.oauth.GetAccessToken()
 	if err != nil {
@@ -221,12 +247,12 @@ func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	var input []interface{}
 
 	for _, m := range messages {
-		if m.Role == RoleSystem {
+		if m.Role == llm.RoleSystem {
 			instructions = m.Content
 			continue
 		}
 
-		if m.Role == RoleToolResult {
+		if m.Role == llm.RoleToolResult {
 			input = append(input, codexToolResult{
 				Type:   "function_call_output",
 				CallID: m.ToolCallID,
@@ -344,25 +370,21 @@ func (o *OpenAIProvider) ChatWithTools(ctx context.Context, messages []Message, 
 }
 
 // Chat implements the Provider interface (simple text, no tools)
-func (o *OpenAIProvider) Chat(ctx context.Context, messages []Message, model string) (*Response, error) {
+func (o *OpenAIProvider) Chat(ctx context.Context, messages []llm.Message, model string) (*llm.Response, error) {
 	resp, _, err := o.ChatWithTools(ctx, messages, model, nil)
 	return resp, err
-}
-
-func (o *OpenAIProvider) IsAuthenticated() bool {
-	return o.oauth.IsAuthenticated()
 }
 
 func (o *OpenAIProvider) Login() error {
 	return o.oauth.Login()
 }
 
-func parseSSEResponseWithTools(resp *http.Response, model string) (*Response, []ToolCall, error) {
+func parseSSEResponseWithTools(resp *http.Response, model string) (*llm.Response, []llm.ToolCall, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 	var contentParts []string
-	var toolCalls []ToolCall
+	var toolCalls []llm.ToolCall
 	var inputTokens, outputTokens int
 	var responseModel string
 
@@ -457,7 +479,7 @@ func parseSSEResponseWithTools(resp *http.Response, model string) (*Response, []
 						}
 					}
 
-					tc := ToolCall{
+					tc := llm.ToolCall{
 						ID:        callID,
 						Name:      funcName,
 						Arguments: args,
@@ -502,7 +524,7 @@ func parseSSEResponseWithTools(resp *http.Response, model string) (*Response, []
 	logger.Info("OpenAI SSE complete: model=%s content_len=%d tool_calls=%d tokens_in=%d tokens_out=%d",
 		responseModel, len(content), len(toolCalls), inputTokens, outputTokens)
 
-	return &Response{
+	return &llm.Response{
 		Content:      content,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,

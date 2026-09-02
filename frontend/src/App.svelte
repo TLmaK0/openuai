@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetAPIKey, HasAPIKey, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, OpenAILogin, OpenAIIsLoggedIn, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, ProviderLogin, ProviderReady, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -342,8 +342,7 @@
   let historyIndex = -1;
   let savedInput = '';
   let loggingIn = false;
-  let apiKey = '';
-  let hasKey = false;
+  let secret = '';
   let showSettings = false;
   let models = [];
   let selectedModel = '';
@@ -351,9 +350,11 @@
   let totalTokens = 0;
   let chatEl;
   let textareaEl;
-  let provider = 'openai';
+  let provider = '';
+  // providers holds a descriptor per registered provider: name, display_name,
+  // credential, secret_placeholder, login_label and ready. The UI renders from
+  // these, so it never has to know a provider by name.
   let providers = [];
-  let openaiLoggedIn = false;
 
   // Permission dialog
   let showPermDialog = false;
@@ -473,13 +474,12 @@
   let updateError = '';
   let appVersion = 'dev';
 
-  $: isReady = provider === 'openai' ? openaiLoggedIn : hasKey;
+  $: activeProvider = providers.find((p) => p.name === provider) || null;
+  $: isReady = activeProvider ? activeProvider.ready : false;
 
   onMount(async () => {
     providers = await GetProviders();
     provider = await GetProvider();
-    hasKey = await HasAPIKey();
-    openaiLoggedIn = await OpenAIIsLoggedIn();
     models = await GetModels();
     selectedModel = await GetDefaultModel();
     voiceEnabled = await GetVoiceEnabled();
@@ -749,23 +749,29 @@
     await SetDefaultModel(selectedModel);
   }
 
-  async function loginOpenAI() {
+  // refreshProviders re-reads the descriptors, which is how readiness gets
+  // back to the UI after a login or a secret change.
+  async function refreshProviders() {
+    providers = await GetProviders();
+  }
+
+  async function login() {
     loggingIn = true;
-    const err = await OpenAILogin();
+    const err = await ProviderLogin();
     loggingIn = false;
     if (err) {
       alert('Login failed: ' + err);
-    } else {
-      openaiLoggedIn = true;
-      showSettings = false;
+      return;
     }
+    await refreshProviders();
+    showSettings = false;
   }
 
-  async function saveApiKey() {
-    if (!apiKey) return;
-    await SetAPIKey(apiKey);
-    hasKey = true;
-    apiKey = '';
+  async function saveSecret() {
+    if (!secret) return;
+    await SetProviderSecret(secret);
+    secret = '';
+    await refreshProviders();
     showSettings = false;
   }
 
@@ -1323,26 +1329,27 @@
           <label>Provider</label>
           <select bind:value={provider} on:change={changeProvider}>
             {#each providers as p}
-              <option value={p}>{p === 'openai' ? 'OpenAI (ChatGPT subscription)' : 'Claude (API key)'}</option>
+              <option value={p.name}>{p.display_name || p.name}</option>
             {/each}
           </select>
         </div>
-        {#if provider === 'openai'}
+        {#if activeProvider && activeProvider.credential === 'login'}
           <div class="setting-row">
             <label>Account</label>
-            {#if openaiLoggedIn}
+            {#if activeProvider.ready}
               <span class="status-ok">Logged in</span>
             {:else}
-              <button on:click={loginOpenAI} disabled={loggingIn}>
-                {loggingIn ? 'Opening browser...' : 'Login with ChatGPT'}
+              <button on:click={login} disabled={loggingIn}>
+                {loggingIn ? 'Opening browser...' : activeProvider.login_label || 'Login'}
               </button>
             {/if}
           </div>
-        {:else}
+        {:else if activeProvider && activeProvider.credential === 'secret'}
           <div class="setting-row">
             <label>API Key</label>
-            <input type="password" bind:value={apiKey} placeholder={hasKey ? 'Key saved' : 'sk-ant-...'} />
-            <button on:click={saveApiKey}>Save</button>
+            <input type="password" bind:value={secret}
+                   placeholder={activeProvider.ready ? 'Key saved' : activeProvider.secret_placeholder || ''} />
+            <button on:click={saveSecret}>Save</button>
           </div>
         {/if}
         <div class="setting-row">

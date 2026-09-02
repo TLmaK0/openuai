@@ -1,4 +1,4 @@
-package llm
+package claude
 
 import (
 	"bytes"
@@ -7,23 +7,67 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
+	"openuai/internal/llm"
 	"openuai/internal/logger"
 )
 
 const anthropicAPIURL = "https://api.anthropic.com/v1/messages"
 const anthropicAPIVersion = "2023-06-01"
 
-type ClaudeProvider struct {
-	apiKey     string
-	httpClient *http.Client
+// secretKey is where the API key lives in the provider's own store.
+const secretKey = "api_key"
+
+func init() {
+	llm.Register(llm.Descriptor{
+		Name:              "claude",
+		DisplayName:       "Claude (API key)",
+		Credential:        llm.CredentialSecret,
+		SecretPlaceholder: "sk-ant-...",
+		DefaultModel:      "claude-sonnet-4-20250514",
+		New:               func(store llm.Store) llm.Provider { return New(store) },
+	})
+
+	// Prices per million input/output tokens, declared here so the core ships
+	// no knowledge of this provider's models.
+	for model, price := range map[string][2]float64{
+		"claude-sonnet-4-20250514":   {3.0, 15.0},
+		"claude-opus-4-20250514":     {15.0, 75.0},
+		"claude-haiku-4-20250506":    {0.80, 4.0},
+		"claude-3-5-sonnet-20241022": {3.0, 15.0},
+		"claude-3-5-haiku-20241022":  {0.80, 4.0},
+	} {
+		llm.SetModelPricing(model, price[0], price[1])
+	}
 }
 
-func NewClaudeProvider(apiKey string) *ClaudeProvider {
+type ClaudeProvider struct {
+	store      llm.Store
+	httpClient *http.Client
+
+	mu     sync.RWMutex
+	apiKey string
+}
+
+// New builds the provider, taking its API key from store.
+func New(store llm.Store) *ClaudeProvider {
 	return &ClaudeProvider{
-		apiKey:     apiKey,
+		store:      store,
 		httpClient: &http.Client{},
+		apiKey:     store.Get(secretKey),
 	}
+}
+
+// Ready reports whether an API key has been supplied.
+func (c *ClaudeProvider) Ready() bool {
+	return c.key() != ""
+}
+
+func (c *ClaudeProvider) key() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.apiKey
 }
 
 func (c *ClaudeProvider) Name() string {
@@ -42,11 +86,11 @@ func (c *ClaudeProvider) Models() []string {
 
 // Claude API request types
 type claudeRequest struct {
-	Model     string               `json:"model"`
-	MaxTokens int                  `json:"max_tokens"`
-	System    string               `json:"system,omitempty"`
-	Messages  []claudeAPIMessage   `json:"messages"`
-	Tools     []claudeToolDef      `json:"tools,omitempty"`
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []claudeAPIMessage `json:"messages"`
+	Tools     []claudeToolDef    `json:"tools,omitempty"`
 }
 
 type claudeAPIMessage struct {
@@ -86,9 +130,9 @@ type claudeResponse struct {
 		Name  string          `json:"name,omitempty"`
 		Input json.RawMessage `json:"input,omitempty"`
 	} `json:"content"`
-	Model    string `json:"model"`
+	Model      string `json:"model"`
 	StopReason string `json:"stop_reason"`
-	Usage    struct {
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -99,14 +143,14 @@ type claudeResponse struct {
 }
 
 // Chat implements Provider interface (simple text, no tools)
-func (c *ClaudeProvider) Chat(ctx context.Context, messages []Message, model string) (*Response, error) {
+func (c *ClaudeProvider) Chat(ctx context.Context, messages []llm.Message, model string) (*llm.Response, error) {
 	resp, _, err := c.ChatWithTools(ctx, messages, model, nil)
 	return resp, err
 }
 
 // ChatWithTools implements ToolCallProvider for Claude
-func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, model string, toolDefs []ToolDefinition) (*Response, []ToolCall, error) {
-	if c.apiKey == "" {
+func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []llm.Message, model string, toolDefs []llm.ToolDefinition) (*llm.Response, []llm.ToolCall, error) {
+	if c.key() == "" {
 		return nil, nil, fmt.Errorf("claude API key not set")
 	}
 
@@ -116,12 +160,12 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	var apiMessages []claudeAPIMessage
 
 	for _, m := range messages {
-		if m.Role == RoleSystem {
+		if m.Role == llm.RoleSystem {
 			systemPrompt = m.Content
 			continue
 		}
 
-		if m.Role == RoleToolResult {
+		if m.Role == llm.RoleToolResult {
 			// Tool result → user message with tool_result content block
 			block := claudeContentBlock{
 				Type:      "tool_result",
@@ -135,7 +179,7 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 			continue
 		}
 
-		if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
 			// Assistant message with tool calls → content blocks
 			var blocks []claudeContentBlock
 			if m.Content != "" {
@@ -211,7 +255,7 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("x-api-key", c.key())
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
 	resp, err := c.httpClient.Do(req)
@@ -241,7 +285,7 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 
 	// Extract text content and tool calls
 	var textContent string
-	var toolCalls []ToolCall
+	var toolCalls []llm.ToolCall
 
 	for _, block := range cResp.Content {
 		switch block.Type {
@@ -264,7 +308,7 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 					args[k] = string(b)
 				}
 			}
-			toolCalls = append(toolCalls, ToolCall{
+			toolCalls = append(toolCalls, llm.ToolCall{
 				ID:        block.ID,
 				Name:      block.Name,
 				Arguments: args,
@@ -276,7 +320,7 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	logger.Info("Claude response: model=%s content_len=%d tool_calls=%d tokens_in=%d tokens_out=%d stop=%s",
 		cResp.Model, len(textContent), len(toolCalls), cResp.Usage.InputTokens, cResp.Usage.OutputTokens, cResp.StopReason)
 
-	return &Response{
+	return &llm.Response{
 		Content:      textContent,
 		InputTokens:  cResp.Usage.InputTokens,
 		OutputTokens: cResp.Usage.OutputTokens,
@@ -284,6 +328,10 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []Message, 
 	}, toolCalls, nil
 }
 
-func (c *ClaudeProvider) SetAPIKey(key string) {
-	c.apiKey = key
+// SetSecret stores the API key and persists it.
+func (c *ClaudeProvider) SetSecret(secret string) error {
+	c.mu.Lock()
+	c.apiKey = secret
+	c.mu.Unlock()
+	return c.store.Set(secretKey, secret)
 }

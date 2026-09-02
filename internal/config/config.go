@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type OAuthTokens struct {
@@ -22,7 +23,7 @@ type MCPServerConfig struct {
 	AutoStart bool              `json:"auto_start"`
 	Subscribe []string          `json:"subscribe,omitempty"`
 	// URL is the HTTP endpoint for remote MCP servers (mutually exclusive with Command).
-	URL       string            `json:"url,omitempty"`
+	URL string `json:"url,omitempty"`
 	// OAuth tokens for HTTP MCP servers (persisted across restarts).
 	OAuthTokens *MCPOAuthTokens `json:"oauth_tokens,omitempty"`
 }
@@ -48,29 +49,39 @@ type MCPOAuthTokens struct {
 }
 
 type Config struct {
-	Provider        string            `json:"provider"`
-	ClaudeAPIKey    string            `json:"claude_api_key,omitempty"`
-	DefaultModel    string            `json:"default_model"`
-	OpenAITokens    *OAuthTokens      `json:"openai_tokens,omitempty"`
-	MCPServers      []MCPServerConfig `json:"mcp_servers,omitempty"`
-	WatchedChats       []string          `json:"watched_chats,omitempty"`
-	MaxConcurrentAgents    int              `json:"max_concurrent_agents,omitempty"`
-	NotificationsEnabled   *bool            `json:"notifications_enabled,omitempty"`
-	APIEnabled             bool             `json:"api_enabled,omitempty"`
-	APIPort                int              `json:"api_port,omitempty"`
-	VoiceEnabled           *bool            `json:"voice_enabled,omitempty"`
-	TTSVoice               string           `json:"tts_voice,omitempty"`
-	STTModel               string           `json:"stt_model,omitempty"`
-	STTLanguage            string           `json:"stt_language,omitempty"`
-	WakeWord               string           `json:"wake_word,omitempty"` // name that triggers hands-free listening (e.g. "Pepito")
-	AudioDevice            string           `json:"audio_device,omitempty"`
-	SkippedVersion         string           `json:"skipped_version,omitempty"`
-	BetaLipReading         bool             `json:"beta_lip_reading,omitempty"`
-	ComputerUseEnabled     bool             `json:"computer_use_enabled,omitempty"`
-	ComputerUseDisplay     string           `json:"computer_use_display,omitempty"` // X display, e.g. ":0" (screen) or ":99" (virtual)
-	ComputerUseMonitor     *int             `json:"computer_use_monitor,omitempty"` // monitor index (xrandr); nil = primary (0), -1 = whole desktop
-	ComputerUseProfile     string           `json:"computer_use_profile,omitempty"` // chrome user-data-dir; empty = the user's own profile/session
-	path               string
+	Provider     string `json:"provider"`
+	DefaultModel string `json:"default_model"`
+	// Providers holds each provider's own credentials and settings, keyed by
+	// provider name. The core declares no provider-specific fields: a
+	// provider reaches its slot through ProviderStore.
+	Providers map[string]map[string]string `json:"providers,omitempty"`
+	// ClaudeAPIKey and OpenAITokens are the pre-registry shape. They are
+	// still read, migrated into Providers by Load, and then dropped.
+	ClaudeAPIKey         string            `json:"claude_api_key,omitempty"`
+	OpenAITokens         *OAuthTokens      `json:"openai_tokens,omitempty"`
+	MCPServers           []MCPServerConfig `json:"mcp_servers,omitempty"`
+	WatchedChats         []string          `json:"watched_chats,omitempty"`
+	MaxConcurrentAgents  int               `json:"max_concurrent_agents,omitempty"`
+	NotificationsEnabled *bool             `json:"notifications_enabled,omitempty"`
+	APIEnabled           bool              `json:"api_enabled,omitempty"`
+	APIPort              int               `json:"api_port,omitempty"`
+	VoiceEnabled         *bool             `json:"voice_enabled,omitempty"`
+	TTSVoice             string            `json:"tts_voice,omitempty"`
+	STTModel             string            `json:"stt_model,omitempty"`
+	STTLanguage          string            `json:"stt_language,omitempty"`
+	WakeWord             string            `json:"wake_word,omitempty"` // name that triggers hands-free listening (e.g. "Pepito")
+	AudioDevice          string            `json:"audio_device,omitempty"`
+	SkippedVersion       string            `json:"skipped_version,omitempty"`
+	BetaLipReading       bool              `json:"beta_lip_reading,omitempty"`
+	ComputerUseEnabled   bool              `json:"computer_use_enabled,omitempty"`
+	ComputerUseDisplay   string            `json:"computer_use_display,omitempty"` // X display, e.g. ":0" (screen) or ":99" (virtual)
+	ComputerUseMonitor   *int              `json:"computer_use_monitor,omitempty"` // monitor index (xrandr); nil = primary (0), -1 = whole desktop
+	ComputerUseProfile   string            `json:"computer_use_profile,omitempty"` // chrome user-data-dir; empty = the user's own profile/session
+	path                 string
+
+	// providersMu guards Providers, which providers write to from their own
+	// goroutines (an OAuth refresh lands mid-request).
+	providersMu sync.Mutex
 }
 
 func Load() (*Config, error) {
@@ -84,11 +95,9 @@ func Load() (*Config, error) {
 	}
 
 	path := filepath.Join(configDir, "config.json")
-	cfg := &Config{
-		Provider:     "openai",
-		DefaultModel: "gpt-5.1-codex",
-		path:         path,
-	}
+	// Provider and DefaultModel are deliberately left empty: which provider
+	// to start with is the registry's business, not this package's.
+	cfg := &Config{path: path}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -102,7 +111,70 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.path = path
+	cfg.migrateProviderCredentials()
 	return cfg, nil
+}
+
+// migrateProviderCredentials moves credentials written in the pre-registry
+// shape into the per-provider store, so an existing installation keeps its
+// API key and its OAuth session. Already-migrated values win, and the legacy
+// fields are cleared so the next Save writes only the current shape.
+func (c *Config) migrateProviderCredentials() {
+	if c.ClaudeAPIKey != "" {
+		if c.providerValue("claude", "api_key") == "" {
+			c.setProviderValue("claude", "api_key", c.ClaudeAPIKey)
+		}
+		c.ClaudeAPIKey = ""
+	}
+
+	if c.OpenAITokens != nil {
+		if c.providerValue("openai", "tokens") == "" {
+			if data, err := json.Marshal(c.OpenAITokens); err == nil {
+				c.setProviderValue("openai", "tokens", string(data))
+			}
+		}
+		c.OpenAITokens = nil
+	}
+}
+
+func (c *Config) providerValue(provider, key string) string {
+	c.providersMu.Lock()
+	defer c.providersMu.Unlock()
+	return c.Providers[provider][key]
+}
+
+func (c *Config) setProviderValue(provider, key, value string) {
+	c.providersMu.Lock()
+	defer c.providersMu.Unlock()
+	if c.Providers == nil {
+		c.Providers = map[string]map[string]string{}
+	}
+	if c.Providers[provider] == nil {
+		c.Providers[provider] = map[string]string{}
+	}
+	c.Providers[provider][key] = value
+}
+
+// ProviderStore returns the settings slot belonging to one provider.
+func (c *Config) ProviderStore(provider string) *ProviderStore {
+	return &ProviderStore{cfg: c, provider: provider}
+}
+
+// ProviderStore is one provider's view of the configuration: its own
+// credentials and settings, and nothing else.
+type ProviderStore struct {
+	cfg      *Config
+	provider string
+}
+
+func (s *ProviderStore) Get(key string) string {
+	return s.cfg.providerValue(s.provider, key)
+}
+
+// Set stores a value and persists the configuration immediately.
+func (s *ProviderStore) Set(key, value string) error {
+	s.cfg.setProviderValue(s.provider, key, value)
+	return s.cfg.Save()
 }
 
 func (c *Config) ConfigDir() string {
@@ -110,7 +182,9 @@ func (c *Config) ConfigDir() string {
 }
 
 func (c *Config) Save() error {
+	c.providersMu.Lock()
 	data, err := json.MarshalIndent(c, "", "  ")
+	c.providersMu.Unlock()
 	if err != nil {
 		return err
 	}

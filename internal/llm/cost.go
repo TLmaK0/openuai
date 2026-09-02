@@ -20,14 +20,13 @@ type CostSummary struct {
 	Entries           []CostEntry `json:"entries"`
 }
 
-// pricing per million tokens
-var modelPricing = map[string][2]float64{
-	"claude-sonnet-4-20250514":    {3.0, 15.0},
-	"claude-opus-4-20250514":      {15.0, 75.0},
-	"claude-haiku-4-20250506":     {0.80, 4.0},
-	"claude-3-5-sonnet-20241022":  {3.0, 15.0},
-	"claude-3-5-haiku-20241022":   {0.80, 4.0},
-}
+// pricing per million tokens, declared by each provider through
+// SetModelPricing. The core ships no prices of its own: a model it has never
+// heard of is simply counted as free.
+var (
+	pricingMu    sync.RWMutex
+	modelPricing = map[string][2]float64{}
+)
 
 type CostTracker struct {
 	mu      sync.Mutex
@@ -89,7 +88,9 @@ func (ct *CostTracker) Reset() {
 }
 
 func calculateCost(model string, inputTokens, outputTokens int) float64 {
+	pricingMu.RLock()
 	pricing, ok := modelPricing[model]
+	pricingMu.RUnlock()
 	if !ok {
 		return 0
 	}
@@ -98,6 +99,10 @@ func calculateCost(model string, inputTokens, outputTokens int) float64 {
 	return inputCost + outputCost
 }
 
+// SetModelPricing declares what a model costs per million input and output
+// tokens. Providers call it for the models they serve.
 func SetModelPricing(model string, inputPerMillion, outputPerMillion float64) {
+	pricingMu.Lock()
+	defer pricingMu.Unlock()
 	modelPricing[model] = [2]float64{inputPerMillion, outputPerMillion}
 }

@@ -56,6 +56,28 @@ export namespace eventbus {
 
 export namespace llm {
 	
+	export class ProviderInfo {
+	    name: string;
+	    display_name: string;
+	    credential: string;
+	    secret_placeholder?: string;
+	    login_label?: string;
+	    ready: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.display_name = source["display_name"];
+	        this.credential = source["credential"];
+	        this.secret_placeholder = source["secret_placeholder"];
+	        this.login_label = source["login_label"];
+	        this.ready = source["ready"];
+	    }
+	}
 	export class CostEntry {
 	    // Go type: time
 	    timestamp: any;

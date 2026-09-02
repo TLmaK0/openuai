@@ -19,6 +19,9 @@ import (
 	"openuai/internal/eventbus"
 	"openuai/internal/lipreading"
 	"openuai/internal/llm"
+	// Registers the providers that ship in the binary. This blank import is
+	// the one place an in-tree provider has to be named.
+	_ "openuai/internal/llm/providers/all"
 	"openuai/internal/logger"
 	"openuai/internal/marketplace"
 	"openuai/internal/mcpclient"
@@ -36,9 +39,7 @@ import (
 type App struct {
 	ctx          context.Context
 	cfg          *config.Config
-	claude       *llm.ClaudeProvider
-	openai       *llm.OpenAIProvider
-	oauth        *llm.OAuthFlow
+	providers    map[string]llm.Provider
 	costTracker  *llm.CostTracker
 	registry     *tools.Registry
 	permissions  *agent.PermissionManager
@@ -92,7 +93,7 @@ func (a *App) startup(ctx context.Context) {
 	cfg, err := config.Load()
 	if err != nil {
 		println("Error loading config:", err.Error())
-		cfg = &config.Config{Provider: "openai", DefaultModel: "gpt-5.1-codex"}
+		cfg = &config.Config{}
 	}
 	a.cfg = cfg
 
@@ -102,6 +103,10 @@ func (a *App) startup(ctx context.Context) {
 	}
 	logger.Info("OpenUAI %s starting up", a.version)
 	logger.Info("Config dir: %s", cfg.ConfigDir())
+
+	// Model providers: every one that registered itself, each handed its own
+	// slot in the configuration. Nothing here names a provider.
+	a.buildProviders()
 	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
 
 	// Check for updates in background (delay to let frontend mount and register event listeners)
@@ -124,33 +129,6 @@ func (a *App) startup(ctx context.Context) {
 			logger.Error("Whisper setup: %s", err.Error())
 		}
 	}()
-
-	// Claude provider
-	a.claude = llm.NewClaudeProvider(cfg.ClaudeAPIKey)
-
-	// OpenAI OAuth provider
-	a.oauth = llm.NewOAuthFlow(func(tokens *llm.OAuthTokens) {
-		logger.Info("OAuth tokens updated")
-		a.cfg.OpenAITokens = &config.OAuthTokens{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresAt:    tokens.ExpiresAt,
-			AccountID:    tokens.AccountID,
-		}
-		a.cfg.Save()
-	})
-
-	if cfg.OpenAITokens != nil {
-		logger.Info("Restoring saved OAuth tokens (account: %s)", cfg.OpenAITokens.AccountID)
-		a.oauth.SetTokens(&llm.OAuthTokens{
-			AccessToken:  cfg.OpenAITokens.AccessToken,
-			RefreshToken: cfg.OpenAITokens.RefreshToken,
-			ExpiresAt:    cfg.OpenAITokens.ExpiresAt,
-			AccountID:    cfg.OpenAITokens.AccountID,
-		})
-	}
-
-	a.openai = llm.NewOpenAIProvider(a.oauth)
 
 	// Voice recorder (native mic capture via miniaudio + whisper + Piper TTS)
 	a.recorder = voice.NewRecorder()
@@ -461,11 +439,36 @@ func (a *App) updateTrayTooltip() {
 	}
 }
 
-func (a *App) activeProvider() llm.Provider {
-	if a.cfg.Provider == "claude" {
-		return a.claude
+// buildProviders instantiates every registered provider and settles which one
+// is active, so that a configuration naming an unknown provider — or a fresh
+// one naming none — still starts on something usable.
+func (a *App) buildProviders() {
+	a.providers = make(map[string]llm.Provider)
+	for _, d := range llm.Descriptors() {
+		a.providers[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
 	}
-	return a.openai
+
+	if _, known := a.providers[a.cfg.Provider]; !known {
+		d, ok := llm.DefaultDescriptor()
+		if !ok {
+			logger.Error("No model provider is registered")
+			return
+		}
+		if a.cfg.Provider != "" {
+			logger.Info("Configured provider %q is not registered, falling back to %q", a.cfg.Provider, d.Name)
+		}
+		a.cfg.Provider = d.Name
+		a.cfg.DefaultModel = ""
+	}
+	if a.cfg.DefaultModel == "" {
+		if d, ok := llm.Lookup(a.cfg.Provider); ok {
+			a.cfg.DefaultModel = d.DefaultModel
+		}
+	}
+}
+
+func (a *App) activeProvider() llm.Provider {
+	return a.providers[a.cfg.Provider]
 }
 
 // --- Provider management ---
@@ -475,61 +478,63 @@ func (a *App) GetProvider() string {
 }
 
 func (a *App) SetProvider(provider string) error {
+	d, ok := llm.Lookup(provider)
+	if !ok {
+		return fmt.Errorf("unknown provider: %s", provider)
+	}
 	logger.Info("Provider changed to: %s", provider)
 	a.cfg.Provider = provider
+	a.cfg.DefaultModel = d.DefaultModel
 	a.currentAgent = nil // reset agent for new provider
 	return a.cfg.Save()
 }
 
-func (a *App) GetProviders() []string {
-	return []string{"openai", "claude"}
+// GetProviders describes every registered provider, so the UI can render one
+// it has never heard of instead of branching on names.
+func (a *App) GetProviders() []llm.ProviderInfo {
+	descriptors := llm.Descriptors()
+	infos := make([]llm.ProviderInfo, 0, len(descriptors))
+	for _, d := range descriptors {
+		infos = append(infos, d.Info(a.providers[d.Name]))
+	}
+	return infos
 }
 
-// --- OpenAI OAuth ---
+// --- Provider credentials ---
 
-func (a *App) OpenAILogin() string {
-	logger.Info("Starting OpenAI OAuth login")
-	if err := a.openai.Login(); err != nil {
-		logger.Error("OpenAI login failed: %s", err.Error())
+// ProviderLogin runs the active provider's interactive login. It returns the
+// error text, or an empty string on success.
+func (a *App) ProviderLogin() string {
+	logger.Info("Starting login for provider: %s", a.cfg.Provider)
+	if err := llm.Login(a.activeProvider()); err != nil {
+		logger.Error("Login failed: %s", err.Error())
 		return err.Error()
 	}
-	logger.Info("OpenAI login successful")
+	logger.Info("Login successful")
 	return ""
 }
 
-func (a *App) OpenAIIsLoggedIn() bool {
-	return a.openai.IsAuthenticated()
+// SetProviderSecret hands a secret (an API key) to the active provider, which
+// persists it in its own store.
+func (a *App) SetProviderSecret(secret string) error {
+	logger.Info("Credentials updated for provider: %s", a.cfg.Provider)
+	return llm.SetSecret(a.activeProvider(), secret)
 }
 
-// --- Claude API Key ---
-
-func (a *App) SetAPIKey(key string) error {
-	logger.Info("Claude API key updated")
-	a.claude.SetAPIKey(key)
-	a.cfg.ClaudeAPIKey = key
-	return a.cfg.Save()
-}
-
-func (a *App) HasAPIKey() bool {
-	return a.cfg.ClaudeAPIKey != ""
+// ProviderReady reports whether the active provider holds the credentials it
+// needs to serve a request.
+func (a *App) ProviderReady() bool {
+	return llm.Ready(a.activeProvider())
 }
 
 // --- Models ---
 
 func (a *App) GetModels() []string {
-	// For OpenAI/Codex, the available models are gated per account and change
-	// over time — fetch them live so the list never goes stale. Fall back to
-	// the provider's static list if not authenticated or the query fails.
-	if a.cfg.Provider != "claude" && a.openai.IsAuthenticated() {
-		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
-		defer cancel()
-		if models, err := a.openai.FetchModels(ctx); err == nil {
-			return models
-		} else {
-			logger.Info("FetchModels failed, using static list: %s", err.Error())
-		}
-	}
-	return a.activeProvider().Models()
+	// Some providers gate the available models per account, so prefer the live
+	// list and fall back to the static one when it cannot be fetched.
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	return llm.AvailableModels(ctx, a.activeProvider())
 }
 
 func (a *App) GetDefaultModel() string {

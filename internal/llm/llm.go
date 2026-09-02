@@ -1,3 +1,6 @@
+// Package llm holds the contract between the core and the model providers.
+// No code in this package talks to a model API: providers live behind the
+// boundary, in their own packages, and register themselves (see registry.go).
 package llm
 
 import "context"
@@ -21,12 +24,6 @@ type Message struct {
 	Images []string `json:"images,omitempty"`
 }
 
-// ToolCallProvider extends Provider with native tool calling support
-type ToolCallProvider interface {
-	Provider
-	ChatWithTools(ctx context.Context, messages []Message, model string, toolDefs []ToolDefinition) (*Response, []ToolCall, error)
-}
-
 type Response struct {
 	Content      string `json:"content"`
 	InputTokens  int    `json:"input_tokens"`
@@ -34,8 +31,35 @@ type Response struct {
 	Model        string `json:"model"`
 }
 
+// ToolDefinition describes a tool the model may call.
+type ToolDefinition struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Parameters  []ToolParam `json:"parameters"`
+}
+
+type ToolParam struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+// ToolCall represents a tool call from the model.
+type ToolCall struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments"`
+}
+
 type Provider interface {
 	Chat(ctx context.Context, messages []Message, model string) (*Response, error)
 	Name() string
 	Models() []string
+}
+
+// ToolCallProvider extends Provider with native tool calling support
+type ToolCallProvider interface {
+	Provider
+	ChatWithTools(ctx context.Context, messages []Message, model string, toolDefs []ToolDefinition) (*Response, []ToolCall, error)
 }

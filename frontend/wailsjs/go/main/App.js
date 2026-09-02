@@ -162,10 +162,6 @@ export function GetWorkDir() {
   return window['go']['main']['App']['GetWorkDir']();
 }
 
-export function HasAPIKey() {
-  return window['go']['main']['App']['HasAPIKey']();
-}
-
 export function InstallMarketplace(arg1, arg2) {
   return window['go']['main']['App']['InstallMarketplace'](arg1, arg2);
 }
@@ -174,20 +170,20 @@ export function LipReadingModelReady() {
   return window['go']['main']['App']['LipReadingModelReady']();
 }
 
-export function OpenAIIsLoggedIn() {
-  return window['go']['main']['App']['OpenAIIsLoggedIn']();
-}
-
-export function OpenAILogin() {
-  return window['go']['main']['App']['OpenAILogin']();
-}
-
 export function OpenPath(arg1) {
   return window['go']['main']['App']['OpenPath'](arg1);
 }
 
 export function PiperSupported() {
   return window['go']['main']['App']['PiperSupported']();
+}
+
+export function ProviderLogin() {
+  return window['go']['main']['App']['ProviderLogin']();
+}
+
+export function ProviderReady() {
+  return window['go']['main']['App']['ProviderReady']();
 }
 
 export function ReauthMCPServer(arg1) {
@@ -218,10 +214,6 @@ export function SendMessage(arg1) {
   return window['go']['main']['App']['SendMessage'](arg1);
 }
 
-export function SetAPIKey(arg1) {
-  return window['go']['main']['App']['SetAPIKey'](arg1);
-}
-
 export function SetAudioDevice(arg1) {
   return window['go']['main']['App']['SetAudioDevice'](arg1);
 }
@@ -248,6 +240,10 @@ export function SetDefaultModel(arg1) {
 
 export function SetProvider(arg1) {
   return window['go']['main']['App']['SetProvider'](arg1);
+}
+
+export function SetProviderSecret(arg1) {
+  return window['go']['main']['App']['SetProviderSecret'](arg1);
 }
 
 export function SetSTTLanguage(arg1) {
