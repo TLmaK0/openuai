@@ -494,17 +494,16 @@ func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc
 	return nil
 }
 
-// closableProvider is a provider that owns something to shut down — in
-// practice a plugin's child process. Providers compiled into the binary do
-// not implement it, which is what tells the two apart without naming a type.
-type closableProvider interface {
-	Close() error
-}
-
 // stopProviderPlugin stops p if it runs as a child process. A provider
 // compiled into the binary has nothing to stop.
+//
+// plugin.ProviderPlugin is what says "child process", rather than a bare
+// Close method: only the plugin package can implement it, so a compiled-in
+// provider that grows a Close is not mistaken for a plugin and dropped from
+// the provider map. Naming plugin.Client instead would not work — a
+// tools-capable plugin is wrapped, so the concrete type differs.
 func stopProviderPlugin(name string, p llm.Provider) {
-	client, ok := p.(closableProvider)
+	client, ok := p.(plugin.ProviderPlugin)
 	if !ok {
 		return
 	}
@@ -533,7 +532,7 @@ func (a *App) takeProviderPlugins() map[string]llm.Provider {
 
 	taken := map[string]llm.Provider{}
 	for name, p := range a.providers {
-		if _, isPlugin := p.(closableProvider); isPlugin {
+		if _, isPlugin := p.(plugin.ProviderPlugin); isPlugin {
 			taken[name] = p
 			delete(a.providers, name)
 		}

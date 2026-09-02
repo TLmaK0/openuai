@@ -425,6 +425,28 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, model string)
 	return result.Response, nil
 }
 
+// ProviderPlugin is a provider that runs as a child process, which is what
+// Provider returns. The core tells a plugin from a compiled-in provider by
+// asking for this interface: a plugin has a process to stop when the app quits
+// or the plugin is removed, and a compiled-in provider does not.
+//
+// The marker method is unexported, so only this package can satisfy it. An
+// interface of Close alone would say "owns something to shut down" while being
+// read as "runs as a child process": the day a compiled-in provider grows a
+// Close — an HTTP client with an idle connection pool is enough — it would be
+// stopped on shutdown, which is probably harmless, and dropped from the
+// provider map, which is not. Naming the concrete type instead is not an
+// option either, since Provider returns one of two shapes.
+type ProviderPlugin interface {
+	llm.Provider
+	// Close stops the child process, for good.
+	Close() error
+	// runsAsAChildProcess cannot be implemented outside this package.
+	runsAsAChildProcess()
+}
+
+func (c *Client) runsAsAChildProcess() {}
+
 // Provider returns the client in the shape the core should hold it.
 //
 // The agent loop decides whether to use native tool calls with a type
@@ -433,7 +455,7 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, model string)
 // probe even for a plugin that declared no tool support, take the native path
 // and fail every turn on its first iteration. So the method lives on a type
 // that only exists when the plugin said it has tools.
-func (c *Client) Provider() llm.Provider {
+func (c *Client) Provider() ProviderPlugin {
 	if c.desc.SupportsTools {
 		return toolCallClient{c}
 	}
@@ -529,6 +551,8 @@ func (c *Client) FetchModels(ctx context.Context) ([]string, error) {
 var (
 	_ llm.Provider          = (*Client)(nil)
 	_ llm.ToolCallProvider  = toolCallClient{}
+	_ ProviderPlugin        = (*Client)(nil)
+	_ ProviderPlugin        = toolCallClient{}
 	_ llm.ReadinessReporter = (*Client)(nil)
 	_ llm.SecretSetter      = (*Client)(nil)
 	_ llm.LoginStarter      = (*Client)(nil)

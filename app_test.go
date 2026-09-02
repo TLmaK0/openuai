@@ -70,6 +70,22 @@ func (p inTreeProvider) Chat(context.Context, []llm.Message, string) (*llm.Respo
 func (p inTreeProvider) Name() string     { return p.name }
 func (p inTreeProvider) Models() []string { return []string{"m"} }
 
+// closingInTreeProvider is a compiled-in provider that owns something to shut
+// down — an HTTP client with an idle connection pool is enough of a reason to
+// grow a Close method. It runs no child process, so nothing about it should
+// reach the plugin lifecycle.
+type closingInTreeProvider struct {
+	inTreeProvider
+	closed *closeCounter
+}
+
+func (p closingInTreeProvider) Close() error {
+	p.closed.mu.Lock()
+	defer p.closed.mu.Unlock()
+	p.closed.count++
+	return nil
+}
+
 func appWith(providers map[string]llm.Provider) *App {
 	return &App{providers: providers, cfg: &config.Config{}}
 }
@@ -103,6 +119,47 @@ func TestTakeProviderPluginsCollectsEveryChildProcess(t *testing.T) {
 	}
 	if app.provider("first") != nil || app.provider("second") != nil {
 		t.Error("a taken plugin is still in the provider map")
+	}
+}
+
+// The plugin lifecycle asks "does this run as a child process", and the answer
+// must not be "does this have a Close method". A compiled-in provider that
+// grows one would otherwise be collected as a plugin: closed on shutdown,
+// which is probably harmless, and dropped from the provider map, which leaves
+// the app with a provider it can no longer serve a turn with.
+func TestACompiledInProviderWithACloseIsNotAPlugin(t *testing.T) {
+	plug, plugClosed := startedPluginClient(t, "plugin")
+	closed := &closeCounter{}
+	app := appWith(map[string]llm.Provider{
+		"plugin":  plug,
+		"in-tree": closingInTreeProvider{inTreeProvider{name: "in-tree"}, closed},
+	})
+
+	taken := app.takeProviderPlugins()
+	if len(taken) != 1 {
+		t.Fatalf("took %d providers, want only the plugin", len(taken))
+	}
+	if _, ok := taken["plugin"]; !ok {
+		t.Errorf("took %v, want the plugin", taken)
+	}
+	for name, p := range taken {
+		stopProviderPlugin(name, p)
+	}
+
+	if app.provider("in-tree") == nil {
+		t.Error("a compiled-in provider with a Close was dropped from the provider map")
+	}
+	if closed.get() != 0 {
+		t.Errorf("a compiled-in provider was closed %d times, want 0", closed.get())
+	}
+	if plugClosed.get() != 1 {
+		t.Errorf("the plugin was closed %d times, want 1", plugClosed.get())
+	}
+
+	// The same by name, which is the path a removal takes.
+	stopProviderPlugin("in-tree", app.takeProvider("in-tree"))
+	if closed.get() != 0 {
+		t.Errorf("removing by name closed a compiled-in provider %d times, want 0", closed.get())
 	}
 }
 
