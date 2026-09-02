@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -290,5 +292,47 @@ func TestShutdownStopsProviderPlugins(t *testing.T) {
 	// A provider compiled into the binary has no process and is left alone.
 	if app.provider("in-tree") == nil {
 		t.Error("shutdown dropped a compiled-in provider")
+	}
+}
+
+// A plugin declares the prices of the models it serves, so removing it has to
+// withdraw them. Left behind, they price models nothing can serve any more,
+// and a later plugin reusing a model name would inherit them.
+func TestRemovingAPluginWithdrawsItsPrices(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	// The config needs somewhere to save; ProviderStore.Set and the plugin
+	// accessors both persist.
+	cfg.SetPath(filepath.Join(dir, "config.json"))
+
+	desc := plugin.Description{
+		Name:    "priced",
+		Pricing: map[string][2]float64{"priced-large": {4.0, 8.0}},
+	}
+	raw, err := json.Marshal(desc)
+	if err != nil {
+		t.Fatalf("encoding the description: %v", err)
+	}
+	if err := cfg.SetProviderPlugin(config.ProviderPluginConfig{
+		Name: "priced", Command: "priced", Description: raw,
+	}); err != nil {
+		t.Fatalf("SetProviderPlugin() = %v", err)
+	}
+
+	llm.SetModelPricing("priced-large", 4.0, 8.0)
+	if _, ok := llm.ModelPricing("priced-large"); !ok {
+		t.Fatal("the price was not declared to begin with")
+	}
+
+	app := appWith(map[string]llm.Provider{})
+	app.cfg = cfg
+	app.cfg.Provider = "something-else"
+
+	if errText := app.RemoveProviderPlugin("priced"); errText != "" {
+		t.Fatalf("RemoveProviderPlugin() = %q, want no error", errText)
+	}
+
+	if price, ok := llm.ModelPricing("priced-large"); ok {
+		t.Errorf("the removed plugin's price is still in the table: %v", price)
 	}
 }

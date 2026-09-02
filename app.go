@@ -623,8 +623,23 @@ func (a *App) AddProviderPlugin(command string, args []string, env map[string]st
 // RemoveProviderPlugin forgets a plugin, stopping it if it is running. It
 // returns the error text, or an empty string on success.
 func (a *App) RemoveProviderPlugin(name string) string {
-	if _, exists := a.cfg.ProviderPlugin(name); !exists {
+	cfgPlugin, exists := a.cfg.ProviderPlugin(name)
+	if !exists {
 		return fmt.Sprintf("no provider plugin named %s", name)
+	}
+
+	// The prices it declared go with it: left behind they would price models
+	// nothing can serve, and a later plugin reusing a model name would
+	// inherit them.
+	if len(cfgPlugin.Description) > 0 {
+		var desc plugin.Description
+		if err := json.Unmarshal(cfgPlugin.Description, &desc); err == nil {
+			models := make([]string, 0, len(desc.Pricing))
+			for model := range desc.Pricing {
+				models = append(models, model)
+			}
+			llm.UnsetModelPricing(models...)
+		}
 	}
 
 	llm.Unregister(name)

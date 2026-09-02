@@ -171,6 +171,10 @@ func (c *Config) setProviderValue(provider, key, value string) {
 	c.Providers[provider][key] = value
 }
 
+// SetPath points the configuration at a file. It exists for callers that
+// build a Config without Load, which otherwise has nowhere to save.
+func (c *Config) SetPath(path string) { c.path = path }
+
 // ProviderPlugin returns the configuration of the named plugin. It is read
 // under the same lock Save() holds, because Save marshals the slice.
 func (c *Config) ProviderPlugin(name string) (ProviderPluginConfig, bool) {
