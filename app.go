@@ -476,6 +476,15 @@ func (a *App) loadProviderPlugins() {
 // prices of the models it serves, so its usage is costed like any other
 // provider's.
 func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc plugin.Description) error {
+	// Describe checks this when a plugin is added, but a cached description
+	// comes back from a file a person can edit. An entry asking for a
+	// credential the plugin cannot accept would otherwise reach the settings
+	// screen as a field that rejects whatever is typed into it, which is the
+	// state the check exists to make impossible.
+	if err := desc.Validate(); err != nil {
+		return err
+	}
+
 	dial := plugin.StdioDialer(cfgPlugin.Command, cfgPlugin.Args, cfgPlugin.Env)
 	descriptor := desc.Descriptor(func(llm.Store) llm.Provider {
 		// A plugin keeps its own credentials: it is a separate program, which

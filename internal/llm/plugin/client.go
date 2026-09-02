@@ -430,7 +430,7 @@ func Describe(ctx context.Context, dial Dialer) (Description, error) {
 	if desc.Name == "" {
 		return Description{}, fmt.Errorf("provider plugin described itself without a name")
 	}
-	if err := desc.validate(); err != nil {
+	if err := desc.Validate(); err != nil {
 		return Description{}, err
 	}
 	return desc, nil

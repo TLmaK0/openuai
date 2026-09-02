@@ -85,15 +85,16 @@ type ModelsResult struct {
 	Models []string `json:"models"`
 }
 
-// validate reports a description that contradicts itself, so that it is
+// Validate reports a description that contradicts itself, so that it is
 // refused when the plugin is added — the one moment there is someone standing
-// there to read the message — rather than accepted and worked around later.
+// there to read the message — and again whenever a cached description is
+// registered, since that one comes from a file a person can edit.
 //
 // Coercing was worse than refusing: a plugin that needs no credential
 // declares neither a kind nor setSecret support, and the old default turned
 // that into a secret field on the settings screen which rejected whatever was
 // typed into it.
-func (d Description) validate() error {
+func (d Description) Validate() error {
 	switch llm.CredentialKind(d.Credential) {
 	case llm.CredentialSecret:
 		if !d.SupportsSecret {
@@ -115,7 +116,7 @@ func (d Description) validate() error {
 
 // credentialKind is the kind of credential the settings screen should ask
 // for. A description that named one has been checked against the capability
-// backing it by validate; one that named none, or named something this core
+// backing it by Validate; one that named none, or named something this core
 // does not know, is answered from what the plugin says it can do — never with
 // a widget whose input the plugin will refuse.
 func (d Description) credentialKind() llm.CredentialKind {

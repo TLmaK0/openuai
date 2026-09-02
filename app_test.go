@@ -393,3 +393,57 @@ func TestRemovingAPluginWithdrawsItsPrices(t *testing.T) {
 		t.Errorf("the removed plugin's price is still in the table: %v", price)
 	}
 }
+
+// The cross-check that refuses a self-contradictory description runs in
+// Describe, which is only reached when a plugin is added. A cached description
+// comes back from a file a person can edit, so an entry asking for a
+// credential the plugin cannot accept would otherwise be registered and reach
+// the settings screen as a key field that rejects whatever is typed into it.
+func TestACachedDescriptionIsCrossCheckedToo(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.SetPath(filepath.Join(dir, "config.json"))
+
+	// A hand-edited entry: it asks for a secret, and declares no support for
+	// taking one.
+	contradictory, err := json.Marshal(plugin.Description{
+		Name:       "handedited",
+		Credential: string(llm.CredentialSecret),
+	})
+	if err != nil {
+		t.Fatalf("encoding the description: %v", err)
+	}
+	sound, err := json.Marshal(plugin.Description{
+		Name:           "sound",
+		Credential:     string(llm.CredentialSecret),
+		SupportsSecret: true,
+	})
+	if err != nil {
+		t.Fatalf("encoding the description: %v", err)
+	}
+	for _, entry := range []config.ProviderPluginConfig{
+		{Name: "handedited", Command: "handedited", Description: contradictory},
+		{Name: "sound", Command: "sound", Description: sound},
+	} {
+		if err := cfg.SetProviderPlugin(entry); err != nil {
+			t.Fatalf("SetProviderPlugin(%s) = %v", entry.Name, err)
+		}
+	}
+	t.Cleanup(func() {
+		llm.Unregister("handedited")
+		llm.Unregister("sound")
+	})
+
+	app := appWith(map[string]llm.Provider{})
+	app.cfg = cfg
+	app.loadProviderPlugins()
+
+	if _, ok := llm.Lookup("handedited"); ok {
+		t.Error("a description asking for a credential it cannot accept was registered")
+	}
+	// The sound entry beside it is still loaded: one bad entry is skipped, not
+	// the whole list.
+	if _, ok := llm.Lookup("sound"); !ok {
+		t.Error("a sound cached description was not registered")
+	}
+}
