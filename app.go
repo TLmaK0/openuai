@@ -709,15 +709,31 @@ func (a *App) SetProvider(provider string) error {
 	return a.cfg.Save()
 }
 
-// GetProviders describes every registered provider, so the UI can render one
-// it has never heard of instead of branching on names.
-func (a *App) GetProviders() []llm.ProviderInfo {
+// GetProviders names every registered provider, so the UI can list one it has
+// never heard of instead of branching on names.
+//
+// It asks the providers nothing. Readiness used to be gathered here, which
+// meant listing the providers started every plugin process just to ask
+// whether it held its credentials — on a screen that only ever shows the
+// active provider's readiness. That belongs to GetActiveProvider.
+func (a *App) GetProviders() []llm.ProviderSummary {
 	descriptors := llm.Descriptors()
-	infos := make([]llm.ProviderInfo, 0, len(descriptors))
+	summaries := make([]llm.ProviderSummary, 0, len(descriptors))
 	for _, d := range descriptors {
-		infos = append(infos, d.Info(a.provider(d.Name)))
+		summaries = append(summaries, d.Summary())
 	}
-	return infos
+	return summaries
+}
+
+// GetActiveProvider describes the provider in use: which credential it needs
+// and whether it already has it. This is the only place a provider is asked,
+// so at most one plugin process is involved.
+func (a *App) GetActiveProvider() llm.ProviderInfo {
+	d, ok := llm.Lookup(a.cfg.Provider)
+	if !ok {
+		return llm.ProviderInfo{}
+	}
+	return d.Info(a.provider(d.Name))
 }
 
 // --- Provider credentials ---

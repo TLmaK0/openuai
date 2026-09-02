@@ -122,6 +122,10 @@ export function GetProvider() {
   return window['go']['main']['App']['GetProvider']();
 }
 
+export function GetActiveProvider() {
+  return window['go']['main']['App']['GetActiveProvider']();
+}
+
 export function GetProviderPlugins() {
   return window['go']['main']['App']['GetProviderPlugins']();
 }

@@ -67,9 +67,11 @@ export function GetNotificationsEnabled():Promise<boolean>;
 
 export function GetProvider():Promise<string>;
 
+export function GetActiveProvider():Promise<llm.ProviderInfo>;
+
 export function GetProviderPlugins():Promise<Array<main.ProviderPluginInfo>>;
 
-export function GetProviders():Promise<Array<llm.ProviderInfo>>;
+export function GetProviders():Promise<Array<llm.ProviderSummary>>;
 
 export function GetSTTLanguage():Promise<string>;
 

@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, ProviderLogin, ProviderReady, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -474,12 +474,15 @@
   let updateError = '';
   let appVersion = 'dev';
 
-  $: activeProvider = providers.find((p) => p.name === provider) || null;
+  // activeProvider is fetched rather than derived: it carries the credential
+  // kind and readiness, and only the provider in use is ever asked.
+  let activeProvider = null;
   $: isReady = activeProvider ? activeProvider.ready : false;
 
   onMount(async () => {
     providers = await GetProviders();
     provider = await GetProvider();
+    activeProvider = await GetActiveProvider();
     models = await GetModels();
     selectedModel = await GetDefaultModel();
     voiceEnabled = await GetVoiceEnabled();
@@ -744,15 +747,16 @@
 
   async function changeProvider() {
     await SetProvider(provider);
+    activeProvider = await GetActiveProvider();
     models = await GetModels();
     selectedModel = models[0] || '';
     await SetDefaultModel(selectedModel);
   }
 
-  // refreshProviders re-reads the descriptors, which is how readiness gets
-  // back to the UI after a login or a secret change.
-  async function refreshProviders() {
-    providers = await GetProviders();
+  // refreshActiveProvider re-reads the provider in use, which is how
+  // readiness gets back to the UI after a login or a secret change.
+  async function refreshActiveProvider() {
+    activeProvider = await GetActiveProvider();
   }
 
   async function login() {
@@ -763,7 +767,7 @@
       alert('Login failed: ' + err);
       return;
     }
-    await refreshProviders();
+    await refreshActiveProvider();
     showSettings = false;
   }
 
@@ -771,7 +775,7 @@
     if (!secret) return;
     await SetProviderSecret(secret);
     secret = '';
-    await refreshProviders();
+    await refreshActiveProvider();
     showSettings = false;
   }
 

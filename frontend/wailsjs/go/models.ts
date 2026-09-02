@@ -56,6 +56,20 @@ export namespace eventbus {
 
 export namespace llm {
 	
+	export class ProviderSummary {
+	    name: string;
+	    display_name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.display_name = source["display_name"];
+	    }
+	}
 	export class ProviderInfo {
 	    name: string;
 	    display_name: string;

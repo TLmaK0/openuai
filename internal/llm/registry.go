@@ -169,6 +169,24 @@ func Lookup(name string) (Descriptor, bool) {
 	return d, ok
 }
 
+// ProviderSummary names a registered provider for a list. It deliberately
+// carries no readiness: asking a provider whether it is ready can be
+// expensive — one that runs as a separate process has to be started first —
+// and a list of providers has no use for it.
+type ProviderSummary struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+}
+
+// Summary names d for a list of providers, without asking it anything.
+func (d Descriptor) Summary() ProviderSummary {
+	display := d.DisplayName
+	if display == "" {
+		display = d.Name
+	}
+	return ProviderSummary{Name: d.Name, DisplayName: display}
+}
+
 // ProviderInfo is the view of a registered provider handed to the UI. It
 // carries what the UI needs in order to render a provider it has never heard
 // of: a label, which credential widget to draw, and whether the provider can

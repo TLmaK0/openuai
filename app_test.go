@@ -185,3 +185,82 @@ func TestProviderMapIsSafeUnderConcurrentUse(t *testing.T) {
 		t.Error("the compiled-in provider went missing")
 	}
 }
+
+// countingDialer records how many times a plugin process was started.
+type countingDialer struct {
+	mu      sync.Mutex
+	starts  int
+	counter *closeCounter
+}
+
+func (d *countingDialer) dial() plugin.Conn {
+	d.mu.Lock()
+	d.starts++
+	d.mu.Unlock()
+	return countingConn{mu: &d.counter.mu, closed: &d.counter.count}
+}
+
+func (d *countingDialer) startCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.starts
+}
+
+// Listing the providers must ask them nothing. Gathering readiness here used
+// to start every plugin process — on a screen that only shows the active
+// provider's readiness — so the app froze for as long as the slowest plugin
+// took to answer, on start-up.
+func TestGetProvidersStartsNoPluginProcess(t *testing.T) {
+	llm.Unregister("listed-plugin")
+	dialer := &countingDialer{counter: &closeCounter{}}
+	client := plugin.NewClient(
+		plugin.Description{Name: "listed-plugin", DisplayName: "Listed", SupportsReady: true},
+		dialer.dial,
+	)
+	if err := llm.RegisterDynamic(plugin.Description{
+		Name:        "listed-plugin",
+		DisplayName: "Listed",
+		Credential:  string(llm.CredentialSecret),
+	}.Descriptor(func(llm.Store) llm.Provider { return client })); err != nil {
+		t.Fatalf("RegisterDynamic() = %v", err)
+	}
+	defer llm.Unregister("listed-plugin")
+
+	app := appWith(map[string]llm.Provider{"listed-plugin": client})
+
+	summaries := app.GetProviders()
+	if dialer.startCount() != 0 {
+		t.Errorf("listing the providers started %d plugin processes, want 0", dialer.startCount())
+	}
+
+	var found bool
+	for _, s := range summaries {
+		if s.Name == "listed-plugin" {
+			found = true
+			if s.DisplayName != "Listed" {
+				t.Errorf("summary display name = %q, want Listed", s.DisplayName)
+			}
+		}
+	}
+	if !found {
+		t.Error("the plugin is missing from the provider list")
+	}
+
+	// Asking about the provider in use does start it, which is the one place
+	// that is worth paying for.
+	app.cfg.Provider = "listed-plugin"
+	info := app.GetActiveProvider()
+	if info.Name != "listed-plugin" || info.Credential != "secret" {
+		t.Errorf("GetActiveProvider() = %+v", info)
+	}
+	if dialer.startCount() != 1 {
+		t.Errorf("asking the active provider started %d processes, want 1", dialer.startCount())
+	}
+
+	// An unknown active provider is reported as empty rather than crashing
+	// the settings screen.
+	app.cfg.Provider = "never-registered"
+	if got := app.GetActiveProvider(); got.Name != "" {
+		t.Errorf("GetActiveProvider() for an unknown name = %+v, want empty", got)
+	}
+}
