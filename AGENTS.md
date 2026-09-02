@@ -1,5 +1,19 @@
 # Agents Research
 
+## Working Copies
+
+Several agents may be working in this repository at the same time, so the main
+checkout is shared and must be left alone. Never commit to it directly.
+
+Work in a dedicated git worktree on its own branch:
+
+```
+git worktree add .claude/worktrees/<topic> -b <topic> origin/master
+```
+
+Do all editing, committing and testing inside that worktree, and remove it once
+the branch is merged (`git worktree remove .claude/worktrees/<topic>`).
+
 ## Versioning Policy
 
 - **Patch releases only** (v0.4.x): all new features, fixes, and improvements bump the patch version (e.g. v0.4.1 → v0.4.2 → v0.4.3).
