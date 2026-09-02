@@ -953,3 +953,60 @@ func TestAFailedCredentialRestoreIsReported(t *testing.T) {
 		t.Errorf("the unauthenticated connection was closed %d times, want 1", closed)
 	}
 }
+
+// A caller's deadline has to bound the whole call, not just the request. The
+// settings screen asks the active provider whether it is ready, synchronously,
+// and starting the process is serialized — so waiting for another caller to
+// finish its credential restore used to happen before the probe's own deadline
+// began counting. Measured at 14.7 s against a 5 s bound.
+func TestADeadlineBoundsTheWaitToStartThePlugin(t *testing.T) {
+	restoring := make(chan struct{})
+	resume := make(chan struct{})
+	defer close(resume)
+
+	restarted := newFakeConn(map[string]any{
+		MethodChat:  ChatResult{Response: &llm.Response{Content: "after"}},
+		MethodReady: ReadyResult{Ready: true},
+	})
+	restarted.onCall = func(method string) {
+		if method != MethodSetSecret {
+			return
+		}
+		close(restoring)
+		<-resume
+	}
+
+	client := restartedWithASecret(t, restarted)
+	defer client.Close()
+
+	// One turn is inside connect, holding the right to start the process.
+	go client.Chat(context.Background(), nil, "m")
+	<-restoring
+
+	// A second caller with its own deadline must come back on that deadline.
+	const deadline = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := client.Chat(ctx, nil, "m")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Chat() = nil error, want the deadline")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Chat() = %v, want a deadline error", err)
+		}
+		if elapsed := time.Since(start); elapsed > 20*deadline {
+			t.Errorf("Chat() gave up after %v, want it bounded by its %v deadline", elapsed, deadline)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Chat() with a %v deadline never returned: the wait to start the plugin is unbounded", deadline)
+	}
+}

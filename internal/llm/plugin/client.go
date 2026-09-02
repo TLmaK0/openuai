@@ -22,7 +22,8 @@ import (
 // call the core makes on its own behalf carries one.
 const (
 	// readyTimeout bounds a readiness check, which the settings screen makes
-	// for every registered provider.
+	// for the active provider. It bounds the whole call, waiting for another
+	// caller's process start included — see Client.starting.
 	readyTimeout = 5 * time.Second
 	// secretTimeout bounds handing over a credential.
 	secretTimeout = 15 * time.Second
@@ -74,11 +75,17 @@ type Client struct {
 	dial   Dialer
 	nextID int64
 
-	// startMu serializes starting the process, so a connection is built once
-	// and prepared before anyone can use it. It is held across the pipe, which
-	// mu deliberately is not: Close takes mu alone and stays responsive while
-	// a process is starting.
-	startMu sync.Mutex
+	// starting serializes starting the process, so a connection is built once
+	// and prepared before anyone can be given it. It is held across the pipe,
+	// which mu deliberately is not: Close takes mu alone and stays responsive
+	// while a process is starting.
+	//
+	// It is a channel rather than a mutex because a caller with a deadline has
+	// to be able to give up waiting for it. sync.Mutex cannot be acquired with
+	// a context, so a readiness probe waited out another caller's credential
+	// restore before its own deadline began counting — measured at 14.7 s
+	// against a 5 s bound, on a call the settings screen makes synchronously.
+	starting chan struct{}
 
 	mu   sync.Mutex
 	conn Conn
@@ -102,8 +109,22 @@ type Client struct {
 
 // NewClient builds a provider backed by the plugin that desc describes.
 func NewClient(desc Description, dial Dialer) *Client {
-	return &Client{desc: desc, dial: dial}
+	return &Client{desc: desc, dial: dial, starting: make(chan struct{}, 1)}
 }
+
+// acquireStart takes the right to start the process, or gives up when ctx
+// does. A caller that gives up here reports what a caller whose request timed
+// out reports: the plugin did not answer in the time it was given.
+func (c *Client) acquireStart(ctx context.Context) error {
+	select {
+	case c.starting <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%s: waiting for the process to start: %w", c.label(), ctx.Err())
+	}
+}
+
+func (c *Client) releaseStart() { <-c.starting }
 
 // Description returns what the plugin said about itself.
 func (c *Client) Description() Description { return c.desc }
@@ -181,8 +202,10 @@ func (c *Client) label() string {
 // a nil dereference in request — and meant another call could reach the
 // process ahead of its credential.
 func (c *Client) connect(ctx context.Context) (Conn, error) {
-	c.startMu.Lock()
-	defer c.startMu.Unlock()
+	if err := c.acquireStart(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseStart()
 
 	c.mu.Lock()
 	if c.stopped {
@@ -397,7 +420,7 @@ func (c *Client) send(ctx context.Context, conn Conn, method string, params any,
 // Describe asks a plugin who it is. It is the only call made before the
 // plugin is registered, and the only one whose result is cached.
 func Describe(ctx context.Context, dial Dialer) (Description, error) {
-	probe := &Client{dial: dial}
+	probe := NewClient(Description{}, dial)
 	defer probe.Close()
 
 	var desc Description
