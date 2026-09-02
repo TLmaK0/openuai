@@ -38,8 +38,12 @@ import (
 )
 
 type App struct {
-	ctx          context.Context
-	cfg          *config.Config
+	ctx context.Context
+	cfg *config.Config
+	// providers is written while the app runs — a plugin can be added or
+	// removed from the settings screen — and read from the goroutines that
+	// run agent turns, so it is guarded.
+	providersMu  sync.RWMutex
 	providers    map[string]llm.Provider
 	costTracker  *llm.CostTracker
 	registry     *tools.Registry
@@ -415,7 +419,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	// Providers that run as child processes have to be stopped explicitly, or
 	// they outlive the app that started them.
-	stopProviderPlugins(a.providers)
+	for name, p := range a.takeProviderPlugins() {
+		stopProviderPlugin(name, p)
+	}
 	tray.Stop()
 }
 
@@ -487,25 +493,58 @@ func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc
 	return nil
 }
 
-// stopProviderPlugin stops the named provider if it runs as a child process,
-// and drops it from providers either way.
-func stopProviderPlugin(providers map[string]llm.Provider, name string) {
-	if client, ok := providers[name].(*plugin.Client); ok {
-		if err := client.Close(); err != nil {
-			logger.Error("Stopping provider plugin %s: %s", name, err.Error())
-		}
+// stopProviderPlugin stops p if it runs as a child process. A provider
+// compiled into the binary has nothing to stop.
+func stopProviderPlugin(name string, p llm.Provider) {
+	client, ok := p.(*plugin.Client)
+	if !ok {
+		return
 	}
-	delete(providers, name)
+	if err := client.Close(); err != nil {
+		logger.Error("Stopping provider plugin %s: %s", name, err.Error())
+	}
 }
 
-// stopProviderPlugins stops every provider that runs as a child process.
-// Providers compiled into the binary need nothing.
-func stopProviderPlugins(providers map[string]llm.Provider) {
-	for name := range providers {
-		if _, isPlugin := providers[name].(*plugin.Client); isPlugin {
-			stopProviderPlugin(providers, name)
+// takeProvider removes name from the provider map and returns what was there,
+// so the caller can stop it without holding the lock: stopping a plugin waits
+// on a process, and an agent turn must not block behind that.
+func (a *App) takeProvider(name string) llm.Provider {
+	a.providersMu.Lock()
+	defer a.providersMu.Unlock()
+
+	p := a.providers[name]
+	delete(a.providers, name)
+	return p
+}
+
+// takeProviderPlugins removes every provider that runs as a child process and
+// returns them, leaving the compiled-in ones in place.
+func (a *App) takeProviderPlugins() map[string]llm.Provider {
+	a.providersMu.Lock()
+	defer a.providersMu.Unlock()
+
+	taken := map[string]llm.Provider{}
+	for name, p := range a.providers {
+		if _, isPlugin := p.(*plugin.Client); isPlugin {
+			taken[name] = p
+			delete(a.providers, name)
 		}
 	}
+	return taken
+}
+
+// setProvider puts a built provider in the map.
+func (a *App) setProvider(name string, p llm.Provider) {
+	a.providersMu.Lock()
+	defer a.providersMu.Unlock()
+	a.providers[name] = p
+}
+
+// provider returns the built provider registered under name, or nil.
+func (a *App) provider(name string) llm.Provider {
+	a.providersMu.RLock()
+	defer a.providersMu.RUnlock()
+	return a.providers[name]
 }
 
 // --- Provider plugins ---
@@ -556,16 +595,19 @@ func (a *App) AddProviderPlugin(command string, args []string, env map[string]st
 	// registration, and the process it may have running, have to go first.
 	if _, exists := a.cfg.ProviderPlugin(desc.Name); exists {
 		llm.Unregister(desc.Name)
-		stopProviderPlugin(a.providers, desc.Name)
+		stopProviderPlugin(desc.Name, a.takeProvider(desc.Name))
 	}
 	if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
 		return err.Error()
 	}
 	if err := a.cfg.SetProviderPlugin(cfgPlugin); err != nil {
+		// The plugin could not be remembered, so it must not stay registered
+		// either: a provider the next start cannot rebuild is worse than none.
+		llm.Unregister(desc.Name)
 		return err.Error()
 	}
 
-	a.providers[desc.Name] = a.newProvider(desc.Name)
+	a.setProvider(desc.Name, a.newProvider(desc.Name))
 	return ""
 }
 
@@ -577,7 +619,7 @@ func (a *App) RemoveProviderPlugin(name string) string {
 	}
 
 	llm.Unregister(name)
-	stopProviderPlugin(a.providers, name)
+	stopProviderPlugin(name, a.takeProvider(name))
 
 	if err := a.cfg.RemoveProviderPlugin(name); err != nil {
 		return err.Error()
@@ -602,6 +644,7 @@ func (a *App) RemoveProviderPlugin(name string) string {
 // is active, so that a configuration naming an unknown provider — or a fresh
 // one naming none — still starts on something usable.
 func (a *App) buildProviders() {
+	a.providersMu.Lock()
 	rebuilt := make(map[string]llm.Provider)
 	for _, d := range llm.Descriptors() {
 		// Keep providers already built, so a running plugin is not restarted
@@ -613,8 +656,10 @@ func (a *App) buildProviders() {
 		rebuilt[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
 	}
 	a.providers = rebuilt
+	_, known := rebuilt[a.cfg.Provider]
+	a.providersMu.Unlock()
 
-	if _, known := a.providers[a.cfg.Provider]; !known {
+	if !known {
 		d, ok := llm.DefaultDescriptor()
 		if !ok {
 			logger.Error("No model provider is registered")
@@ -643,7 +688,7 @@ func (a *App) newProvider(name string) llm.Provider {
 }
 
 func (a *App) activeProvider() llm.Provider {
-	return a.providers[a.cfg.Provider]
+	return a.provider(a.cfg.Provider)
 }
 
 // --- Provider management ---
@@ -670,7 +715,7 @@ func (a *App) GetProviders() []llm.ProviderInfo {
 	descriptors := llm.Descriptors()
 	infos := make([]llm.ProviderInfo, 0, len(descriptors))
 	for _, d := range descriptors {
-		infos = append(infos, d.Info(a.providers[d.Name]))
+		infos = append(infos, d.Info(a.provider(d.Name)))
 	}
 	return infos
 }
