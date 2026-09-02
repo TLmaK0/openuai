@@ -158,6 +158,22 @@ export namespace llm {
 
 export namespace main {
 	
+	export class ProviderPluginInfo {
+	    name: string;
+	    command: string;
+	    args?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderPluginInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.command = source["command"];
+	        this.args = source["args"];
+	    }
+	}
 	export class ChatHistoryMessage {
 	    role: string;
 	    content: string;

@@ -104,6 +104,33 @@ func Register(d Descriptor) {
 	descriptors[d.Name] = d
 }
 
+// RegisterDynamic registers a provider discovered at runtime rather than
+// compiled in, so a bad one is reported instead of crashing the process.
+func RegisterDynamic(d Descriptor) error {
+	if d.Name == "" {
+		return fmt.Errorf("provider registered without a name")
+	}
+	if d.New == nil {
+		return fmt.Errorf("provider %q registered without a constructor", d.Name)
+	}
+
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if _, dup := descriptors[d.Name]; dup {
+		return fmt.Errorf("a provider named %q is already registered", d.Name)
+	}
+	descriptors[d.Name] = d
+	return nil
+}
+
+// Unregister removes a dynamically registered provider. Unregistering an
+// unknown name does nothing.
+func Unregister(name string) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(descriptors, name)
+}
+
 // Descriptors returns every registered provider, ordered by name so the order
 // does not depend on package initialisation.
 func Descriptors() []Descriptor {

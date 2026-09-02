@@ -19,6 +19,7 @@ import (
 	"openuai/internal/eventbus"
 	"openuai/internal/lipreading"
 	"openuai/internal/llm"
+	"openuai/internal/llm/plugin"
 	// Registers the providers that ship in the binary. This blank import is
 	// the one place an in-tree provider has to be named.
 	_ "openuai/internal/llm/providers/all"
@@ -106,6 +107,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Model providers: every one that registered itself, each handed its own
 	// slot in the configuration. Nothing here names a provider.
+	a.loadProviderPlugins()
 	a.buildProviders()
 	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
 
@@ -439,14 +441,149 @@ func (a *App) updateTrayTooltip() {
 	}
 }
 
+// loadProviderPlugins registers the providers that run as separate
+// executables, from the description each one gave when it was added. No plugin
+// is started here: a description is cached precisely so that listing the
+// providers costs nothing.
+func (a *App) loadProviderPlugins() {
+	for _, cfgPlugin := range a.cfg.ProviderPlugins {
+		if len(cfgPlugin.Description) == 0 {
+			logger.Error("Provider plugin %s has no cached description, skipping", cfgPlugin.Name)
+			continue
+		}
+
+		var desc plugin.Description
+		if err := json.Unmarshal(cfgPlugin.Description, &desc); err != nil {
+			logger.Error("Provider plugin %s has an unreadable description: %s", cfgPlugin.Name, err.Error())
+			continue
+		}
+		if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
+			logger.Error("Provider plugin %s: %s", cfgPlugin.Name, err.Error())
+		}
+	}
+}
+
+// registerProviderPlugin puts one plugin in the registry and declares the
+// prices of the models it serves, so its usage is costed like any other
+// provider's.
+func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc plugin.Description) error {
+	dial := plugin.StdioDialer(cfgPlugin.Command, cfgPlugin.Args, cfgPlugin.Env)
+	descriptor := desc.Descriptor(func(llm.Store) llm.Provider {
+		// A plugin keeps its own credentials: it is a separate program, which
+		// is what lets an interactive login run behind the boundary.
+		return plugin.NewClient(desc, dial)
+	})
+
+	if err := llm.RegisterDynamic(descriptor); err != nil {
+		return err
+	}
+	for model, price := range desc.Pricing {
+		llm.SetModelPricing(model, price[0], price[1])
+	}
+	logger.Info("Provider plugin %s registered (%s)", desc.Name, cfgPlugin.Command)
+	return nil
+}
+
+// --- Provider plugins ---
+
+// ProviderPluginInfo is the UI-facing view of a configured plugin: what it is
+// and what runs it, without the cached description.
+type ProviderPluginInfo struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
+// GetProviderPlugins lists the configured provider plugins.
+func (a *App) GetProviderPlugins() []ProviderPluginInfo {
+	infos := make([]ProviderPluginInfo, 0, len(a.cfg.ProviderPlugins))
+	for _, p := range a.cfg.ProviderPlugins {
+		infos = append(infos, ProviderPluginInfo{Name: p.Name, Command: p.Command, Args: p.Args})
+	}
+	return infos
+}
+
+// AddProviderPlugin runs a candidate plugin once to ask what it is, registers
+// it, and remembers it. It returns the error text, or an empty string on
+// success. The plugin is available without restarting the core.
+func (a *App) AddProviderPlugin(command string, args []string, env map[string]string) string {
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+
+	desc, err := plugin.Describe(ctx, plugin.StdioDialer(command, args, env))
+	if err != nil {
+		logger.Error("Adding provider plugin: %s", err.Error())
+		return err.Error()
+	}
+
+	raw, err := json.Marshal(desc)
+	if err != nil {
+		return err.Error()
+	}
+	cfgPlugin := config.ProviderPluginConfig{
+		Name:        desc.Name,
+		Command:     command,
+		Args:        args,
+		Env:         env,
+		Description: raw,
+	}
+
+	// Replacing an existing plugin of the same name means its old
+	// registration has to go first.
+	if _, exists := a.cfg.ProviderPlugin(desc.Name); exists {
+		llm.Unregister(desc.Name)
+		delete(a.providers, desc.Name)
+	}
+	if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
+		return err.Error()
+	}
+	if err := a.cfg.SetProviderPlugin(cfgPlugin); err != nil {
+		return err.Error()
+	}
+
+	a.providers[desc.Name] = a.newProvider(desc.Name)
+	return ""
+}
+
+// RemoveProviderPlugin forgets a plugin, stopping it if it is running. It
+// returns the error text, or an empty string on success.
+func (a *App) RemoveProviderPlugin(name string) string {
+	if _, exists := a.cfg.ProviderPlugin(name); !exists {
+		return fmt.Sprintf("no provider plugin named %s", name)
+	}
+
+	if client, ok := a.providers[name].(*plugin.Client); ok {
+		client.Close()
+	}
+	llm.Unregister(name)
+	delete(a.providers, name)
+
+	if err := a.cfg.RemoveProviderPlugin(name); err != nil {
+		return err.Error()
+	}
+
+	// The active provider may have just been removed: settle on a valid one.
+	a.buildProviders()
+	a.currentAgent = nil
+	logger.Info("Provider plugin %s removed", name)
+	return ""
+}
+
 // buildProviders instantiates every registered provider and settles which one
 // is active, so that a configuration naming an unknown provider — or a fresh
 // one naming none — still starts on something usable.
 func (a *App) buildProviders() {
-	a.providers = make(map[string]llm.Provider)
+	rebuilt := make(map[string]llm.Provider)
 	for _, d := range llm.Descriptors() {
-		a.providers[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
+		// Keep providers already built, so a running plugin is not restarted
+		// and an in-memory credential is not lost.
+		if existing, ok := a.providers[d.Name]; ok {
+			rebuilt[d.Name] = existing
+			continue
+		}
+		rebuilt[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
 	}
+	a.providers = rebuilt
 
 	if _, known := a.providers[a.cfg.Provider]; !known {
 		d, ok := llm.DefaultDescriptor()
@@ -465,6 +602,15 @@ func (a *App) buildProviders() {
 			a.cfg.DefaultModel = d.DefaultModel
 		}
 	}
+}
+
+// newProvider builds one registered provider.
+func (a *App) newProvider(name string) llm.Provider {
+	d, ok := llm.Lookup(name)
+	if !ok {
+		return nil
+	}
+	return d.New(a.cfg.ProviderStore(name))
 }
 
 func (a *App) activeProvider() llm.Provider {

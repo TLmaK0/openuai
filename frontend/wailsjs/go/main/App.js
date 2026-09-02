@@ -6,6 +6,10 @@ export function AbortAgent() {
   return window['go']['main']['App']['AbortAgent']();
 }
 
+export function AddProviderPlugin(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddProviderPlugin'](arg1, arg2, arg3);
+}
+
 export function AddMCPServer(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['AddMCPServer'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
@@ -118,6 +122,10 @@ export function GetProvider() {
   return window['go']['main']['App']['GetProvider']();
 }
 
+export function GetProviderPlugins() {
+  return window['go']['main']['App']['GetProviderPlugins']();
+}
+
 export function GetProviders() {
   return window['go']['main']['App']['GetProviders']();
 }
@@ -188,6 +196,10 @@ export function ProviderReady() {
 
 export function ReauthMCPServer(arg1) {
   return window['go']['main']['App']['ReauthMCPServer'](arg1);
+}
+
+export function RemoveProviderPlugin(arg1) {
+  return window['go']['main']['App']['RemoveProviderPlugin'](arg1);
 }
 
 export function RemoveMCPServer(arg1) {

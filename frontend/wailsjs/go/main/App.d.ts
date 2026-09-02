@@ -9,6 +9,8 @@ import {agent} from '../models';
 
 export function AbortAgent():Promise<void>;
 
+export function AddProviderPlugin(arg1:string,arg2:Array<string>,arg3:Record<string, string>):Promise<string>;
+
 export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>,arg7:string):Promise<string>;
 
 export function ApplyUpdate(arg1:string):Promise<string>;
@@ -65,6 +67,8 @@ export function GetNotificationsEnabled():Promise<boolean>;
 
 export function GetProvider():Promise<string>;
 
+export function GetProviderPlugins():Promise<Array<main.ProviderPluginInfo>>;
+
 export function GetProviders():Promise<Array<llm.ProviderInfo>>;
 
 export function GetSTTLanguage():Promise<string>;
@@ -100,6 +104,8 @@ export function ProviderLogin():Promise<string>;
 export function ProviderReady():Promise<boolean>;
 
 export function ReauthMCPServer(arg1:string):Promise<string>;
+
+export function RemoveProviderPlugin(arg1:string):Promise<string>;
 
 export function RemoveMCPServer(arg1:string):Promise<string>;
 

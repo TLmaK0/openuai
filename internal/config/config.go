@@ -48,6 +48,20 @@ type MCPOAuthTokens struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 }
 
+// ProviderPluginConfig configures a model provider that runs as a separate
+// executable, spoken to over stdin/stdout. Adding one needs no rebuild of the
+// core.
+type ProviderPluginConfig struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	// Description caches what the plugin answered when it was added, so the
+	// provider list can be built at startup without running every plugin.
+	// Its shape belongs to the plugin protocol, not to this package.
+	Description json.RawMessage `json:"description,omitempty"`
+}
+
 type Config struct {
 	Provider     string `json:"provider"`
 	DefaultModel string `json:"default_model"`
@@ -55,6 +69,8 @@ type Config struct {
 	// provider name. The core declares no provider-specific fields: a
 	// provider reaches its slot through ProviderStore.
 	Providers map[string]map[string]string `json:"providers,omitempty"`
+	// ProviderPlugins are the providers that run as separate executables.
+	ProviderPlugins []ProviderPluginConfig `json:"provider_plugins,omitempty"`
 	// ClaudeAPIKey and OpenAITokens are the pre-registry shape. They are
 	// still read, migrated into Providers by Load, and then dropped.
 	ClaudeAPIKey         string            `json:"claude_api_key,omitempty"`
@@ -153,6 +169,46 @@ func (c *Config) setProviderValue(provider, key, value string) {
 		c.Providers[provider] = map[string]string{}
 	}
 	c.Providers[provider][key] = value
+}
+
+// ProviderPlugin returns the configuration of the named plugin.
+func (c *Config) ProviderPlugin(name string) (ProviderPluginConfig, bool) {
+	for _, p := range c.ProviderPlugins {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return ProviderPluginConfig{}, false
+}
+
+// SetProviderPlugin adds or replaces a plugin's configuration and persists it.
+func (c *Config) SetProviderPlugin(plugin ProviderPluginConfig) error {
+	for i, p := range c.ProviderPlugins {
+		if p.Name == plugin.Name {
+			c.ProviderPlugins[i] = plugin
+			return c.Save()
+		}
+	}
+	c.ProviderPlugins = append(c.ProviderPlugins, plugin)
+	return c.Save()
+}
+
+// RemoveProviderPlugin drops a plugin's configuration, along with any
+// credentials the core was holding for it, and persists the result.
+func (c *Config) RemoveProviderPlugin(name string) error {
+	kept := make([]ProviderPluginConfig, 0, len(c.ProviderPlugins))
+	for _, p := range c.ProviderPlugins {
+		if p.Name != name {
+			kept = append(kept, p)
+		}
+	}
+	c.ProviderPlugins = kept
+
+	c.providersMu.Lock()
+	delete(c.Providers, name)
+	c.providersMu.Unlock()
+
+	return c.Save()
 }
 
 // ProviderStore returns the settings slot belonging to one provider.
