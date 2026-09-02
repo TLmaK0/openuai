@@ -2,10 +2,12 @@ package plugin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,7 +83,15 @@ func runTestPlugin() {
 
 		switch req.Method {
 		case MethodDescribe:
-			if mode == "chatty" {
+			if mode == "longline" {
+				// One line well over the drain's per-line cap, written before
+				// any ordinary logging. A drain that gives up on an over-long
+				// line stops reading here, and the pipe fills on what comes
+				// next.
+				os.Stderr.Write(bytes.Repeat([]byte("y"), 8*1024))
+				os.Stderr.Write([]byte("\n"))
+			}
+			if mode == "chatty" || mode == "longline" {
 				// Far more than any pipe buffer (64 KiB on Linux, less on
 				// Windows). A plugin whose stderr nobody reads blocks here in
 				// write(2) and never gets to answer.
@@ -326,4 +336,53 @@ func TestAChattyPluginIsNotDeadlockedByItsOwnStderr(t *testing.T) {
 		t.Errorf("Describe() = %+v", desc)
 	}
 	t.Logf("answered after %v", time.Since(start))
+}
+
+// The per-line cap on the drain must bound what is logged, not what is read.
+// A single line over it used to end the drain — bufio.Scanner stops on a
+// token larger than its buffer — so the plugin blocked in write(2) on the
+// next thing it logged. Measured at the head that introduced the cap: 1.2 MiB
+// of short lines answered immediately, one 8 KiB line alone answered, and one
+// 8 KiB line followed by ordinary logging never answered at all.
+func TestALongStderrLineDoesNotStopTheDrain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	desc, err := Describe(ctx, testPluginDialer("longline"))
+	if err != nil {
+		t.Fatalf("Describe() on a plugin logging an 8 KiB line and then 1.2 MiB = %v, want it to answer", err)
+	}
+	if desc.Name != "e2e" {
+		t.Errorf("Describe() = %+v", desc)
+	}
+	t.Logf("answered after %v", time.Since(start))
+}
+
+// The bound itself still holds: what is over it is reported as dropped rather
+// than logged, so a plugin writing without newlines cannot use the log as its
+// buffer.
+func TestALongStderrLineIsLoggedUpToTheBound(t *testing.T) {
+	long := strings.Repeat("y", maxStderrLine+500)
+	reader := bufio.NewReader(strings.NewReader(long + "\nshort\n"))
+
+	line, err := readBoundedLine(reader)
+	if err != nil {
+		t.Fatalf("readBoundedLine() = %v, want nil", err)
+	}
+	if !strings.HasPrefix(line, strings.Repeat("y", maxStderrLine)) {
+		t.Errorf("the first %d bytes of the line were not kept", maxStderrLine)
+	}
+	if !strings.Contains(line, "500 more bytes") {
+		t.Errorf("readBoundedLine() = %q, want the dropped bytes reported", line[maxStderrLine:])
+	}
+
+	// And the reader is left on the next line, not abandoned.
+	line, err = readBoundedLine(reader)
+	if err != nil {
+		t.Fatalf("readBoundedLine() after a long line = %v, want nil", err)
+	}
+	if line != "short" {
+		t.Errorf("readBoundedLine() after a long line = %q, want short", line)
+	}
 }

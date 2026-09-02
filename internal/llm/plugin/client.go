@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -297,26 +298,68 @@ type stderrReader interface {
 	Stderr() io.Reader
 }
 
-// maxStderrLine bounds one logged line, so a plugin writing without newlines
-// cannot turn the log into its buffer.
+// maxStderrLine bounds how much of one line is logged, so a plugin writing
+// without newlines cannot turn the log into its buffer. It bounds the log, not
+// the reading: what is over the bound is discarded and the drain carries on.
 const maxStderrLine = 4096
 
 // drainStderr copies a plugin's stderr into the log until the pipe closes.
+//
+// It must never stop reading while the process lives. bufio.Scanner cannot be
+// used for that: it abandons the scan with ErrTooLong as soon as a token
+// exceeds its buffer, so one line over the cap ended the drain for good and
+// left the child blocked in write(2) on everything it logged afterwards — the
+// very deadlock the drain exists to prevent, reached through the cap added to
+// bound it. A stack trace, a dumped request body or an HTTP library's JSON
+// error object is all it takes.
 func drainStderr(name string, src io.Reader) {
 	if src == nil {
 		return
 	}
-	scanner := bufio.NewScanner(src)
-	scanner.Buffer(make([]byte, 0, 4096), maxStderrLine)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+	reader := bufio.NewReader(src)
+	for {
+		line, err := readBoundedLine(reader)
+		if line != "" {
+			logger.Info("Provider plugin %s: %s", name, line)
+		}
+		if err != nil {
+			// A read error here is the pipe closing with the process, which
+			// is ordinary, so it is not reported as a failure.
+			return
+		}
+	}
+}
+
+// readBoundedLine reads one line, keeping at most maxStderrLine bytes of it
+// and discarding the rest. A line longer than the reader's buffer arrives in
+// several pieces, so it reads until the newline instead of giving up on it.
+func readBoundedLine(r *bufio.Reader) (string, error) {
+	var kept []byte
+	dropped := 0
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if err == nil {
+			chunk = bytes.TrimRight(chunk, "\r\n")
+		}
+		if room := maxStderrLine - len(kept); room < len(chunk) {
+			if room > 0 {
+				kept = append(kept, chunk[:room]...)
+			}
+			dropped += len(chunk) - max(room, 0)
+		} else {
+			kept = append(kept, chunk...)
+		}
+		// ErrBufferFull means the line does not fit the reader's buffer, not
+		// that the pipe is done: keep going until the newline or a real error.
+		if err == bufio.ErrBufferFull {
 			continue
 		}
-		logger.Info("Provider plugin %s: %s", name, line)
+		line := string(kept)
+		if dropped > 0 {
+			line = fmt.Sprintf("%s… (%d more bytes on this line)", line, dropped)
+		}
+		return line, err
 	}
-	// A read error here is the pipe closing with the process, which is
-	// ordinary, so it is not reported as a failure.
 }
 
 // request puts one JSON-RPC request on conn.
