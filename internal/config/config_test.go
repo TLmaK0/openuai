@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -257,5 +258,57 @@ func TestRemoveProviderPluginDropsItsCredentials(t *testing.T) {
 	// Removing something that is not there is not an error.
 	if err := cfg.RemoveProviderPlugin("never-existed"); err != nil {
 		t.Errorf("RemoveProviderPlugin(unknown) = %v, want nil", err)
+	}
+}
+
+// Save() marshals ProviderPlugins, and a plugin can be added or removed while
+// an agent turn triggers a save — an OAuth refresh persists through the same
+// Config. Reads, writes and Save must therefore agree on one lock.
+func TestProviderPluginsAreSafeUnderConcurrentUse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := &Config{path: path}
+
+	const rounds = 100
+	var wg sync.WaitGroup
+
+	// A plugin being added and removed, as the settings screen does.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			cfg.SetProviderPlugin(ProviderPluginConfig{Name: "churn", Command: "churn"})
+			cfg.RemoveProviderPlugin("churn")
+		}
+	}()
+
+	// A credential being persisted, as an OAuth refresh does mid-turn: this
+	// goes through Save(), which marshals the whole struct.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			cfg.ProviderStore("openai").Set("tokens", "{}")
+		}
+	}()
+
+	// And the core reading the list to build its providers.
+	for r := 0; r < 2; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				for _, p := range cfg.ProviderPluginList() {
+					_ = p.Name
+				}
+				cfg.ProviderPlugin("churn")
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// The credential written all along survived the churn.
+	if got := cfg.ProviderStore("openai").Get("tokens"); got != "{}" {
+		t.Errorf("openai tokens = %q, want {}", got)
 	}
 }

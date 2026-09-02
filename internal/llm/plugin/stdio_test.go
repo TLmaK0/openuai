@@ -81,6 +81,19 @@ func runTestPlugin() {
 
 		switch req.Method {
 		case MethodDescribe:
+			if mode == "chatty" {
+				// Far more than any pipe buffer (64 KiB on Linux, less on
+				// Windows). A plugin whose stderr nobody reads blocks here in
+				// write(2) and never gets to answer.
+				noise := make([]byte, 1024)
+				for i := range noise {
+					noise[i] = 'x'
+				}
+				for written := 0; written < 1200*1024; written += len(noise) + 1 {
+					os.Stderr.Write(noise)
+					os.Stderr.Write([]byte("\n"))
+				}
+			}
 			if mode == "nonsense" {
 				// A plugin writing rubbish to stdout must not be trusted.
 				out.WriteString("this is not JSON-RPC\n")
@@ -175,7 +188,7 @@ func TestEndToEndOverARealProcess(t *testing.T) {
 
 	// The descriptor a plugin yields satisfies the same contract the agent
 	// loop uses, tool calls included.
-	descriptor := desc.Descriptor(func(llm.Store) llm.Provider { return client })
+	descriptor := desc.Descriptor(func(llm.Store) llm.Provider { return client.Provider() })
 	built := descriptor.New(nil)
 	if _, ok := built.(llm.ToolCallProvider); !ok {
 		t.Fatal("a plugin provider does not implement ToolCallProvider")
@@ -200,7 +213,11 @@ func TestEndToEndOverARealProcess(t *testing.T) {
 		t.Errorf("Chat() = %+v", resp)
 	}
 
-	resp, calls, err := client.ChatWithTools(ctx,
+	tools, ok := client.Provider().(llm.ToolCallProvider)
+	if !ok {
+		t.Fatal("the plugin declared tool support but is not a ToolCallProvider")
+	}
+	resp, calls, err := tools.ChatWithTools(ctx,
 		[]llm.Message{{Role: llm.RoleUser, Content: "use a tool"}},
 		"e2e-large",
 		[]llm.ToolDefinition{{Name: "bash", Description: "run a command"}})
@@ -290,4 +307,23 @@ func TestMissingExecutableIsReported(t *testing.T) {
 	if _, err := Describe(ctx, dial); err == nil {
 		t.Error("Describe() on a missing executable = nil, want an error")
 	}
+}
+
+// The transport opens the child's stderr pipe but never reads it, so a plugin
+// that logs blocks in write(2) as soon as the buffer fills and stops
+// answering. Measured before the drain: ~31 KiB was fine, ~1.2 MiB never
+// answered at all.
+func TestAChattyPluginIsNotDeadlockedByItsOwnStderr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	desc, err := Describe(ctx, testPluginDialer("chatty"))
+	if err != nil {
+		t.Fatalf("Describe() on a plugin that logs 1.2 MiB to stderr = %v, want it to answer", err)
+	}
+	if desc.Name != "e2e" {
+		t.Errorf("Describe() = %+v", desc)
+	}
+	t.Logf("answered after %v", time.Since(start))
 }

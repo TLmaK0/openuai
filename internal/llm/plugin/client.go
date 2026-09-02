@@ -1,9 +1,11 @@
 package plugin
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -153,6 +155,13 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		}
 		c.conn, c.stop = conn, stop
 		logger.Info("Provider plugin %s: started", c.desc.Name)
+		// The transport creates the child's stderr pipe but never reads it.
+		// Left alone, the child blocks in write(2) as soon as the pipe buffer
+		// fills — 64 KiB on Linux, less on Windows — and stops answering. It
+		// also means the plugin's own diagnostics never reach the log.
+		if src, ok := conn.(stderrReader); ok {
+			go drainStderr(c.desc.Name, src.Stderr())
+		}
 	}
 	conn := c.conn
 	c.nextID++
@@ -166,8 +175,16 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		Params:  params,
 	})
 	if err != nil {
-		// The plugin is gone or unusable: drop it so the next call retries
-		// with a fresh process instead of talking to a dead pipe.
+		// A deadline or a cancellation belongs to this caller and says nothing
+		// about the plugin. The connection is shared — one client serves every
+		// concurrent turn and sub-agent — so closing it here would abort every
+		// other call in flight, which is how a readiness probe timing out used
+		// to kill a chat.
+		if ctx.Err() != nil {
+			return fmt.Errorf("provider plugin %q: %s: %w", c.desc.Name, method, err)
+		}
+		// Anything else means the plugin is gone or unusable: drop it so the
+		// next call retries with a fresh process instead of a dead pipe.
 		c.mu.Lock()
 		if c.conn == conn {
 			c.closeLocked()
@@ -188,6 +205,34 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		return fmt.Errorf("provider plugin %q: %s: unreadable result: %w", c.desc.Name, method, err)
 	}
 	return nil
+}
+
+// stderrReader is implemented by a connection that exposes the child's
+// stderr. The stdio transport does; a test double need not.
+type stderrReader interface {
+	Stderr() io.Reader
+}
+
+// maxStderrLine bounds one logged line, so a plugin writing without newlines
+// cannot turn the log into its buffer.
+const maxStderrLine = 4096
+
+// drainStderr copies a plugin's stderr into the log until the pipe closes.
+func drainStderr(name string, src io.Reader) {
+	if src == nil {
+		return
+	}
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 0, 4096), maxStderrLine)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		logger.Info("Provider plugin %s: %s", name, line)
+	}
+	// A read error here is the pipe closing with the process, which is
+	// ordinary, so it is not reported as a failure.
 }
 
 // Describe asks a plugin who it is. It is the only call made before the
@@ -218,10 +263,26 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, model string)
 	return result.Response, nil
 }
 
-func (c *Client) ChatWithTools(ctx context.Context, messages []llm.Message, model string, toolDefs []llm.ToolDefinition) (*llm.Response, []llm.ToolCall, error) {
-	if !c.desc.SupportsTools {
-		return nil, nil, fmt.Errorf("provider plugin %q does not support native tool calls", c.desc.Name)
+// Provider returns the client in the shape the core should hold it.
+//
+// The agent loop decides whether to use native tool calls with a type
+// assertion, `provider.(llm.ToolCallProvider)`, not by asking. A client that
+// implemented ChatWithTools unconditionally would therefore satisfy that
+// probe even for a plugin that declared no tool support, take the native path
+// and fail every turn on its first iteration. So the method lives on a type
+// that only exists when the plugin said it has tools.
+func (c *Client) Provider() llm.Provider {
+	if c.desc.SupportsTools {
+		return toolCallClient{c}
 	}
+	return c
+}
+
+// toolCallClient is a plugin that declared native tool support.
+type toolCallClient struct{ *Client }
+
+func (t toolCallClient) ChatWithTools(ctx context.Context, messages []llm.Message, model string, toolDefs []llm.ToolDefinition) (*llm.Response, []llm.ToolCall, error) {
+	c := t.Client
 
 	var result ChatResult
 	err := c.call(ctx, MethodChatWithTools, ChatRequest{Messages: messages, Model: model, Tools: toolDefs}, &result)
@@ -289,10 +350,11 @@ func (c *Client) FetchModels(ctx context.Context) ([]string, error) {
 }
 
 // Compile-time proof that a plugin satisfies the contract the agent loop
-// depends on.
+// depends on. Note that ToolCallProvider is satisfied by toolCallClient and
+// deliberately NOT by Client: see Provider.
 var (
 	_ llm.Provider          = (*Client)(nil)
-	_ llm.ToolCallProvider  = (*Client)(nil)
+	_ llm.ToolCallProvider  = toolCallClient{}
 	_ llm.ReadinessReporter = (*Client)(nil)
 	_ llm.SecretSetter      = (*Client)(nil)
 	_ llm.LoginStarter      = (*Client)(nil)

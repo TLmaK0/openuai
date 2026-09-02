@@ -455,7 +455,7 @@ func (a *App) updateTrayTooltip() {
 // is started here: a description is cached precisely so that listing the
 // providers costs nothing.
 func (a *App) loadProviderPlugins() {
-	for _, cfgPlugin := range a.cfg.ProviderPlugins {
+	for _, cfgPlugin := range a.cfg.ProviderPluginList() {
 		if len(cfgPlugin.Description) == 0 {
 			logger.Error("Provider plugin %s has no cached description, skipping", cfgPlugin.Name)
 			continue
@@ -480,7 +480,8 @@ func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc
 	descriptor := desc.Descriptor(func(llm.Store) llm.Provider {
 		// A plugin keeps its own credentials: it is a separate program, which
 		// is what lets an interactive login run behind the boundary.
-		return plugin.NewClient(desc, dial)
+		// Provider() decides which capabilities the returned value exposes.
+		return plugin.NewClient(desc, dial).Provider()
 	})
 
 	if err := llm.RegisterDynamic(descriptor); err != nil {
@@ -493,10 +494,17 @@ func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc
 	return nil
 }
 
+// closableProvider is a provider that owns something to shut down — in
+// practice a plugin's child process. Providers compiled into the binary do
+// not implement it, which is what tells the two apart without naming a type.
+type closableProvider interface {
+	Close() error
+}
+
 // stopProviderPlugin stops p if it runs as a child process. A provider
 // compiled into the binary has nothing to stop.
 func stopProviderPlugin(name string, p llm.Provider) {
-	client, ok := p.(*plugin.Client)
+	client, ok := p.(closableProvider)
 	if !ok {
 		return
 	}
@@ -525,7 +533,7 @@ func (a *App) takeProviderPlugins() map[string]llm.Provider {
 
 	taken := map[string]llm.Provider{}
 	for name, p := range a.providers {
-		if _, isPlugin := p.(*plugin.Client); isPlugin {
+		if _, isPlugin := p.(closableProvider); isPlugin {
 			taken[name] = p
 			delete(a.providers, name)
 		}
@@ -559,8 +567,9 @@ type ProviderPluginInfo struct {
 
 // GetProviderPlugins lists the configured provider plugins.
 func (a *App) GetProviderPlugins() []ProviderPluginInfo {
-	infos := make([]ProviderPluginInfo, 0, len(a.cfg.ProviderPlugins))
-	for _, p := range a.cfg.ProviderPlugins {
+	plugins := a.cfg.ProviderPluginList()
+	infos := make([]ProviderPluginInfo, 0, len(plugins))
+	for _, p := range plugins {
 		infos = append(infos, ProviderPluginInfo{Name: p.Name, Command: p.Command, Args: p.Args})
 	}
 	return infos

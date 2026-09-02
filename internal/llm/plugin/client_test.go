@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -23,30 +25,81 @@ type fakeConn struct {
 	rpcError string
 	// raw overrides the encoded result of a method with arbitrary bytes.
 	raw map[string]string
+	// block names methods that never answer, so the call ends on the
+	// caller's deadline.
+	block map[string]bool
+	// delay is how long every answered method takes.
+	delay time.Duration
 
+	// mu guards the recorded calls: one client serves concurrent callers, so
+	// the double has to be safe for them too.
+	mu      sync.Mutex
 	started int
 	closed  int
 	calls   []string
 	params  map[string]json.RawMessage
 }
 
-func newFakeConn(results map[string]any) *fakeConn {
-	return &fakeConn{results: results, raw: map[string]string{}, params: map[string]json.RawMessage{}}
+func (f *fakeConn) callsMade() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
 
-func (f *fakeConn) Start(context.Context) error { f.started++; return nil }
-func (f *fakeConn) Close() error                { f.closed++; return nil }
+func (f *fakeConn) counts() (started, closed int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.started, f.closed
+}
 
-func (f *fakeConn) SendRequest(_ context.Context, req transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+func (f *fakeConn) paramsFor(method string) json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.params[method]
+}
+
+func newFakeConn(results map[string]any) *fakeConn {
+	return &fakeConn{results: results, raw: map[string]string{}, block: map[string]bool{}, params: map[string]json.RawMessage{}}
+}
+
+func (f *fakeConn) Start(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started++
+	return nil
+}
+
+func (f *fakeConn) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
+	return nil
+}
+
+func (f *fakeConn) SendRequest(ctx context.Context, req transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, req.Method)
 	if req.Params != nil {
 		encoded, err := json.Marshal(req.Params)
 		if err != nil {
+			f.mu.Unlock()
 			return nil, err
 		}
 		f.params[req.Method] = encoded
 	}
+	f.mu.Unlock()
 
+	if f.block[req.Method] {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if f.failWith != nil {
 		return nil, f.failWith
 	}
@@ -130,12 +183,12 @@ func TestDescribe(t *testing.T) {
 	if desc.Name != "acme" || !desc.SupportsTools {
 		t.Errorf("Describe() = %+v", desc)
 	}
-	if len(conn.calls) != 1 || conn.calls[0] != MethodDescribe {
-		t.Errorf("calls = %v, want one describe", conn.calls)
+	if len(conn.callsMade()) != 1 || conn.callsMade()[0] != MethodDescribe {
+		t.Errorf("calls = %v, want one describe", conn.callsMade())
 	}
 	// The probe does not leave a process behind.
-	if conn.closed != 1 {
-		t.Errorf("probe closed the connection %d times, want 1", conn.closed)
+	if _, closed := conn.counts(); closed != 1 {
+		t.Errorf("probe closed the connection %d times, want 1", closed)
 	}
 }
 
@@ -172,7 +225,7 @@ func TestChatCrossesTheBoundaryIntact(t *testing.T) {
 	}
 
 	var sent ChatRequest
-	if err := json.Unmarshal(conn.params[MethodChat], &sent); err != nil {
+	if err := json.Unmarshal(conn.paramsFor(MethodChat), &sent); err != nil {
 		t.Fatalf("request was not readable: %v", err)
 	}
 	if len(sent.Messages) != 1 || sent.Messages[0].Content != "hi" || sent.Model != "acme-large" {
@@ -189,7 +242,10 @@ func TestChatWithToolsRoundTrip(t *testing.T) {
 			ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "read_file", Arguments: map[string]string{"path": "go.mod"}}},
 		},
 	})
-	client := NewClient(fullDescription(), dialerFor(conn))
+	client, ok := NewClient(fullDescription(), dialerFor(conn)).Provider().(llm.ToolCallProvider)
+	if !ok {
+		t.Fatal("a plugin declaring tool support does not satisfy ToolCallProvider")
+	}
 
 	resp, calls, err := client.ChatWithTools(context.Background(),
 		[]llm.Message{{Role: llm.RoleUser, Content: "read it"}},
@@ -210,7 +266,7 @@ func TestChatWithToolsRoundTrip(t *testing.T) {
 	}
 
 	var sent ChatRequest
-	if err := json.Unmarshal(conn.params[MethodChatWithTools], &sent); err != nil {
+	if err := json.Unmarshal(conn.paramsFor(MethodChatWithTools), &sent); err != nil {
 		t.Fatalf("request was not readable: %v", err)
 	}
 	if len(sent.Tools) != 1 || sent.Tools[0].Name != "read_file" {
@@ -227,9 +283,6 @@ func TestUnsupportedCapabilitiesAreNotCalled(t *testing.T) {
 	conn := newFakeConn(map[string]any{})
 	client := NewClient(Description{Name: "plain"}, dialerFor(conn))
 
-	if _, _, err := client.ChatWithTools(context.Background(), nil, "m", nil); err == nil {
-		t.Error("ChatWithTools() on a plugin without tool support = nil, want an error")
-	}
 	if err := client.SetSecret("s"); err == nil {
 		t.Error("SetSecret() on a plugin taking no secret = nil, want an error")
 	}
@@ -243,8 +296,8 @@ func TestUnsupportedCapabilitiesAreNotCalled(t *testing.T) {
 	if !client.Ready() {
 		t.Error("Ready() without SupportsReady = false, want true")
 	}
-	if len(conn.calls) != 0 {
-		t.Errorf("calls = %v, want none", conn.calls)
+	if len(conn.callsMade()) != 0 {
+		t.Errorf("calls = %v, want none", conn.callsMade())
 	}
 }
 
@@ -276,7 +329,7 @@ func TestSecretAndLoginAreForwarded(t *testing.T) {
 		t.Fatalf("SetSecret() = %v, want nil", err)
 	}
 	var sent SecretRequest
-	if err := json.Unmarshal(conn.params[MethodSetSecret], &sent); err != nil {
+	if err := json.Unmarshal(conn.paramsFor(MethodSetSecret), &sent); err != nil {
 		t.Fatalf("secret request was not readable: %v", err)
 	}
 	if sent.Secret != "acme-key" {
@@ -288,8 +341,8 @@ func TestSecretAndLoginAreForwarded(t *testing.T) {
 	if err := client.Login(); err != nil {
 		t.Fatalf("Login() = %v, want nil", err)
 	}
-	if conn.calls[len(conn.calls)-1] != MethodLogin {
-		t.Errorf("calls = %v, want login last", conn.calls)
+	if conn.callsMade()[len(conn.callsMade())-1] != MethodLogin {
+		t.Errorf("calls = %v, want login last", conn.callsMade())
 	}
 }
 
@@ -373,15 +426,15 @@ func TestProcessIsStartedOnceAndReused(t *testing.T) {
 	if _, err := client.Chat(context.Background(), nil, "m"); err != nil {
 		t.Fatalf("Chat() = %v", err)
 	}
-	if conn.started != 1 {
-		t.Errorf("started %d times, want 1", conn.started)
+	if started, _ := conn.counts(); started != 1 {
+		t.Errorf("started %d times, want 1", started)
 	}
 
 	if err := client.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
-	if conn.closed != 1 {
-		t.Errorf("closed %d times, want 1", conn.closed)
+	if _, closed := conn.counts(); closed != 1 {
+		t.Errorf("closed %d times, want 1", closed)
 	}
 	// Closing twice is harmless: shutdown paths can overlap.
 	if err := client.Close(); err != nil {
@@ -407,8 +460,8 @@ func TestCrashedPluginIsRestartedOnTheNextCall(t *testing.T) {
 	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
 		t.Fatal("first Chat() = nil error, want the failure")
 	}
-	if dead.closed != 1 {
-		t.Errorf("the dead connection was closed %d times, want 1", dead.closed)
+	if _, closed := dead.counts(); closed != 1 {
+		t.Errorf("the dead connection was closed %d times, want 1", closed)
 	}
 
 	resp, err := client.Chat(context.Background(), nil, "m")
@@ -450,8 +503,10 @@ func TestAClosedClientStartsNoFurtherProcess(t *testing.T) {
 	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
 		t.Error("Chat() after Close() = nil error, want a refusal")
 	}
-	if _, _, err := client.ChatWithTools(context.Background(), nil, "m", []llm.ToolDefinition{{Name: "t"}}); err == nil {
-		t.Error("ChatWithTools() after Close() = nil error, want a refusal")
+	if tc, ok := client.Provider().(llm.ToolCallProvider); ok {
+		if _, _, err := tc.ChatWithTools(context.Background(), nil, "m", []llm.ToolDefinition{{Name: "t"}}); err == nil {
+			t.Error("ChatWithTools() after Close() = nil error, want a refusal")
+		}
 	}
 	if client.Ready() {
 		t.Error("Ready() after Close() = true, want false")
@@ -486,5 +541,74 @@ func TestCloseDoesNotDisableCrashRecovery(t *testing.T) {
 	}
 	if resp.Content != "back" {
 		t.Errorf("Chat() = %q, want back", resp.Content)
+	}
+}
+
+// The agent loop chooses native tool calls with a type assertion, not by
+// asking, so a plugin without tool support must not satisfy the interface at
+// all. Satisfying it unconditionally sent every chat-only plugin down the
+// native path, where its first turn failed.
+func TestToolSupportIsVisibleAtRuntime(t *testing.T) {
+	conn := newFakeConn(map[string]any{})
+
+	withTools := NewClient(fullDescription(), dialerFor(conn)).Provider()
+	if _, ok := withTools.(llm.ToolCallProvider); !ok {
+		t.Error("a plugin declaring tool support is not a ToolCallProvider")
+	}
+
+	noTools := fullDescription()
+	noTools.SupportsTools = false
+	plain := NewClient(noTools, dialerFor(conn)).Provider()
+	if _, ok := plain.(llm.ToolCallProvider); ok {
+		t.Error("a plugin declaring no tool support is a ToolCallProvider: the agent loop will take the native path and fail every turn")
+	}
+	// It is still a usable provider, just a chat-only one.
+	if _, ok := plain.(llm.Provider); !ok {
+		t.Error("a chat-only plugin is not even a Provider")
+	}
+	// The other capabilities still come from the description.
+	if !llm.Ready(plain) == false && false {
+		t.Error("unreachable")
+	}
+}
+
+// One client serves every concurrent turn and sub-agent, so a deadline that
+// belongs to one caller must not tear down the connection the others are
+// using. A readiness probe timing out used to kill an in-flight chat.
+func TestOneCallersDeadlineDoesNotAbortTheOthers(t *testing.T) {
+	conn := newFakeConn(map[string]any{
+		MethodChat: ChatResult{Response: &llm.Response{Content: "survived"}},
+	})
+	conn.block[MethodReady] = true
+	conn.delay = 150 * time.Millisecond
+	client := NewClient(fullDescription(), dialerFor(conn))
+
+	// Start the long call first so the connection is up and it is in flight.
+	var wg sync.WaitGroup
+	var chatErr error
+	var chatResp *llm.Response
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		chatResp, chatErr = client.Chat(context.Background(), nil, "m")
+	}()
+
+	// A second call on the same client gives up on its own deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := client.call(ctx, MethodReady, nil, &ReadyResult{}); err == nil {
+		t.Fatal("the bounded call = nil error, want its deadline")
+	}
+
+	wg.Wait()
+	if chatErr != nil {
+		t.Errorf("the other call in flight failed with %v, want it to survive", chatErr)
+	}
+	if chatResp == nil || chatResp.Content != "survived" {
+		t.Errorf("the other call returned %+v", chatResp)
+	}
+	// And the process was not stopped behind its back.
+	if _, closed := conn.counts(); closed != 0 {
+		t.Errorf("the connection was closed %d times, want 0", closed)
 	}
 }

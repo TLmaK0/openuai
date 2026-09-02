@@ -171,8 +171,11 @@ func (c *Config) setProviderValue(provider, key, value string) {
 	c.Providers[provider][key] = value
 }
 
-// ProviderPlugin returns the configuration of the named plugin.
+// ProviderPlugin returns the configuration of the named plugin. It is read
+// under the same lock Save() holds, because Save marshals the slice.
 func (c *Config) ProviderPlugin(name string) (ProviderPluginConfig, bool) {
+	c.providersMu.Lock()
+	defer c.providersMu.Unlock()
 	for _, p := range c.ProviderPlugins {
 		if p.Name == name {
 			return p, true
@@ -181,21 +184,40 @@ func (c *Config) ProviderPlugin(name string) (ProviderPluginConfig, bool) {
 	return ProviderPluginConfig{}, false
 }
 
+// ProviderPluginList returns a copy of the configured plugins, so a caller
+// cannot iterate the slice while another goroutine replaces it.
+func (c *Config) ProviderPluginList() []ProviderPluginConfig {
+	c.providersMu.Lock()
+	defer c.providersMu.Unlock()
+	out := make([]ProviderPluginConfig, len(c.ProviderPlugins))
+	copy(out, c.ProviderPlugins)
+	return out
+}
+
 // SetProviderPlugin adds or replaces a plugin's configuration and persists it.
 func (c *Config) SetProviderPlugin(plugin ProviderPluginConfig) error {
+	c.providersMu.Lock()
+	replaced := false
 	for i, p := range c.ProviderPlugins {
 		if p.Name == plugin.Name {
 			c.ProviderPlugins[i] = plugin
-			return c.Save()
+			replaced = true
+			break
 		}
 	}
-	c.ProviderPlugins = append(c.ProviderPlugins, plugin)
+	if !replaced {
+		c.ProviderPlugins = append(c.ProviderPlugins, plugin)
+	}
+	c.providersMu.Unlock()
+
+	// Save takes the same lock, so it is called after releasing it.
 	return c.Save()
 }
 
 // RemoveProviderPlugin drops a plugin's configuration, along with any
 // credentials the core was holding for it, and persists the result.
 func (c *Config) RemoveProviderPlugin(name string) error {
+	c.providersMu.Lock()
 	kept := make([]ProviderPluginConfig, 0, len(c.ProviderPlugins))
 	for _, p := range c.ProviderPlugins {
 		if p.Name != name {
@@ -203,8 +225,6 @@ func (c *Config) RemoveProviderPlugin(name string) error {
 		}
 	}
 	c.ProviderPlugins = kept
-
-	c.providersMu.Lock()
 	delete(c.Providers, name)
 	c.providersMu.Unlock()
 
