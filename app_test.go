@@ -264,3 +264,31 @@ func TestGetProvidersStartsNoPluginProcess(t *testing.T) {
 		t.Errorf("GetActiveProvider() for an unknown name = %+v, want empty", got)
 	}
 }
+
+// The fix for plugin processes outliving the app lives in shutdown(), so the
+// test has to call shutdown() — covering only the helpers left the call site
+// free to be deleted, which is exactly what mutation testing found: removing
+// the loop from shutdown() left the whole suite green.
+func TestShutdownStopsProviderPlugins(t *testing.T) {
+	client, closed := startedPluginClient(t, "plugin")
+	app := appWith(map[string]llm.Provider{
+		"plugin":  client,
+		"in-tree": inTreeProvider{name: "in-tree"},
+	})
+
+	// shutdown() also stops the wake listener, the API server and the tray.
+	// The first two are nil here and skipped; tray.Stop() is a no-op until
+	// the tray has been started.
+	app.shutdown(context.Background())
+
+	if closed.get() != 1 {
+		t.Errorf("the plugin was closed %d times after shutdown, want 1", closed.get())
+	}
+	if app.provider("plugin") != nil {
+		t.Error("the plugin is still in the provider map after shutdown")
+	}
+	// A provider compiled into the binary has no process and is left alone.
+	if app.provider("in-tree") == nil {
+		t.Error("shutdown dropped a compiled-in provider")
+	}
+}
