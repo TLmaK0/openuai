@@ -413,6 +413,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.apiServer != nil {
 		a.apiServer.Shutdown(ctx)
 	}
+	// Providers that run as child processes have to be stopped explicitly, or
+	// they outlive the app that started them.
+	stopProviderPlugins(a.providers)
 	tray.Stop()
 }
 
@@ -484,6 +487,27 @@ func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc
 	return nil
 }
 
+// stopProviderPlugin stops the named provider if it runs as a child process,
+// and drops it from providers either way.
+func stopProviderPlugin(providers map[string]llm.Provider, name string) {
+	if client, ok := providers[name].(*plugin.Client); ok {
+		if err := client.Close(); err != nil {
+			logger.Error("Stopping provider plugin %s: %s", name, err.Error())
+		}
+	}
+	delete(providers, name)
+}
+
+// stopProviderPlugins stops every provider that runs as a child process.
+// Providers compiled into the binary need nothing.
+func stopProviderPlugins(providers map[string]llm.Provider) {
+	for name := range providers {
+		if _, isPlugin := providers[name].(*plugin.Client); isPlugin {
+			stopProviderPlugin(providers, name)
+		}
+	}
+}
+
 // --- Provider plugins ---
 
 // ProviderPluginInfo is the UI-facing view of a configured plugin: what it is
@@ -529,10 +553,10 @@ func (a *App) AddProviderPlugin(command string, args []string, env map[string]st
 	}
 
 	// Replacing an existing plugin of the same name means its old
-	// registration has to go first.
+	// registration, and the process it may have running, have to go first.
 	if _, exists := a.cfg.ProviderPlugin(desc.Name); exists {
 		llm.Unregister(desc.Name)
-		delete(a.providers, desc.Name)
+		stopProviderPlugin(a.providers, desc.Name)
 	}
 	if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
 		return err.Error()
@@ -552,19 +576,24 @@ func (a *App) RemoveProviderPlugin(name string) string {
 		return fmt.Sprintf("no provider plugin named %s", name)
 	}
 
-	if client, ok := a.providers[name].(*plugin.Client); ok {
-		client.Close()
-	}
 	llm.Unregister(name)
-	delete(a.providers, name)
+	stopProviderPlugin(a.providers, name)
 
 	if err := a.cfg.RemoveProviderPlugin(name); err != nil {
 		return err.Error()
 	}
 
-	// The active provider may have just been removed: settle on a valid one.
+	// The active provider may have just been removed: settle on a valid one,
+	// and persist that, so the choice does not silently differ from what is
+	// on disk.
+	wasActive := a.cfg.Provider == name
 	a.buildProviders()
 	a.currentAgent = nil
+	if wasActive {
+		if err := a.cfg.Save(); err != nil {
+			logger.Error("Saving the provider fallback: %s", err.Error())
+		}
+	}
 	logger.Info("Provider plugin %s removed", name)
 	return ""
 }
