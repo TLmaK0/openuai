@@ -80,6 +80,11 @@ type Client struct {
 	// process lives — it must belong to the Client, never to a single call, or
 	// the first call to finish would kill the plugin for the next one.
 	stop context.CancelFunc
+	// secret is the credential this session handed over, kept so a process
+	// that had to be restarted can be given it again. The core persists
+	// nothing for a plugin — a plugin owns its own storage — so without this
+	// a crash silently produced an unauthenticated provider.
+	secret string
 	// stopped records that the owner closed this client for good. A call that
 	// merely failed leaves the connection dropped, and the next one starts a
 	// fresh process on purpose; a client that was closed must not do that, or
@@ -168,6 +173,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 			return fmt.Errorf("starting %s: %w", c.label(), err)
 		}
 		c.conn, c.stop = conn, stop
+		restored := c.secret
 		logger.Info("Provider plugin %s: started", c.desc.Name)
 		// The transport creates the child's stderr pipe but never reads it.
 		// Left alone, the child blocks in write(2) as soon as the pipe buffer
@@ -176,18 +182,28 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		if src, ok := conn.(stderrReader); ok {
 			go drainStderr(c.desc.Name, src.Stderr())
 		}
+
+		// A restarted process is a fresh program: it has never been given the
+		// credential this session already supplied, and would come back
+		// unauthenticated without a word. Hand it over before the call that
+		// caused the restart, on this connection, so it is not a re-entrant
+		// call through this same path.
+		if restored != "" {
+			c.mu.Unlock()
+			if err := c.send(ctx, conn, MethodSetSecret, SecretRequest{Secret: restored}, nil); err != nil {
+				logger.Error("Provider plugin %s: restoring the credential after a restart: %s", c.desc.Name, err.Error())
+			} else {
+				logger.Info("Provider plugin %s: credential restored after a restart", c.desc.Name)
+			}
+			c.mu.Lock()
+		}
 	}
 	conn := c.conn
 	c.nextID++
 	id := c.nextID
 	c.mu.Unlock()
 
-	resp, err := conn.SendRequest(ctx, transport.JSONRPCRequest{
-		JSONRPC: "2.0",
-		ID:      mcp.NewRequestId(id),
-		Method:  method,
-		Params:  params,
-	})
+	resp, err := c.request(ctx, conn, id, method, params)
 	if err != nil {
 		// A deadline or a cancellation belongs to this caller and says nothing
 		// about the plugin. The connection is shared — one client serves every
@@ -247,6 +263,38 @@ func drainStderr(name string, src io.Reader) {
 	}
 	// A read error here is the pipe closing with the process, which is
 	// ordinary, so it is not reported as a failure.
+}
+
+// request puts one JSON-RPC request on conn.
+func (c *Client) request(ctx context.Context, conn Conn, id int64, method string, params any) (*transport.JSONRPCResponse, error) {
+	return conn.SendRequest(ctx, transport.JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      mcp.NewRequestId(id),
+		Method:  method,
+		Params:  params,
+	})
+}
+
+// send makes one call on a connection the caller already holds, without
+// touching the client's connection state. It exists so a restart can restore
+// a credential without re-entering call.
+func (c *Client) send(ctx context.Context, conn Conn, method string, params any, out any) error {
+	c.mu.Lock()
+	c.nextID++
+	id := c.nextID
+	c.mu.Unlock()
+
+	resp, err := c.request(ctx, conn, id, method, params)
+	if err != nil {
+		return fmt.Errorf("%s: %s: %w", c.label(), method, err)
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("%s: %s: %s", c.label(), method, resp.Error.Message)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(resp.Result, out)
 }
 
 // Describe asks a plugin who it is. It is the only call made before the
@@ -335,7 +383,16 @@ func (c *Client) SetSecret(secret string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), secretTimeout)
 	defer cancel()
-	return c.call(ctx, MethodSetSecret, SecretRequest{Secret: secret}, nil)
+	if err := c.call(ctx, MethodSetSecret, SecretRequest{Secret: secret}, nil); err != nil {
+		return err
+	}
+
+	// Remembered for this session only, so a restarted process can be given
+	// it again. It is not written anywhere: a plugin owns its own storage.
+	c.mu.Lock()
+	c.secret = secret
+	c.mu.Unlock()
+	return nil
 }
 
 // Login runs the plugin's interactive login. The flow happens in the child

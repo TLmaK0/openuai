@@ -651,3 +651,64 @@ func TestLoginIsBounded(t *testing.T) {
 		t.Errorf("loginTimeout = %v, too short for a browser flow", loginTimeout)
 	}
 }
+
+// A plugin that crashed is restarted on the next call, but the new process is
+// a fresh program: it has never been given the credential this session already
+// supplied. Without handing it over again, crash recovery silently produced an
+// unauthenticated provider.
+func TestACredentialSurvivesARestart(t *testing.T) {
+	first := newFakeConn(map[string]any{
+		MethodChat:  ChatResult{Response: &llm.Response{Content: "before"}},
+		MethodReady: ReadyResult{Ready: true},
+	})
+	second := newFakeConn(map[string]any{
+		MethodChat:  ChatResult{Response: &llm.Response{Content: "after"}},
+		MethodReady: ReadyResult{Ready: true},
+	})
+
+	conns := []Conn{first, second}
+	var dialed int
+	client := NewClient(fullDescription(), func() Conn {
+		conn := conns[dialed]
+		dialed++
+		return conn
+	})
+
+	if err := client.SetSecret("acme-key"); err != nil {
+		t.Fatalf("SetSecret() = %v", err)
+	}
+
+	// The process dies: make the next call on the first connection fail, which
+	// drops it, then let the call after that reach a fresh process.
+	first.mu.Lock()
+	first.failWith = errors.New("broken pipe")
+	first.mu.Unlock()
+	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
+		t.Fatal("Chat() = nil error, want the crash")
+	}
+
+	resp, err := client.Chat(context.Background(), nil, "m")
+	if err != nil {
+		t.Fatalf("Chat() after the restart = %v", err)
+	}
+	if resp.Content != "after" {
+		t.Fatalf("Chat() = %q, want the restarted process", resp.Content)
+	}
+
+	// The restarted process was given the credential, before the call that
+	// caused the restart.
+	calls := second.callsMade()
+	if len(calls) == 0 || calls[0] != MethodSetSecret {
+		t.Fatalf("the restarted process was called with %v, want setSecret first", calls)
+	}
+	var sent SecretRequest
+	if err := json.Unmarshal(second.paramsFor(MethodSetSecret), &sent); err != nil {
+		t.Fatalf("restored secret was not readable: %v", err)
+	}
+	if sent.Secret != "acme-key" {
+		t.Errorf("restored secret = %q, want acme-key", sent.Secret)
+	}
+	if !llm.Ready(client) {
+		t.Error("the restarted plugin reports not ready")
+	}
+}
