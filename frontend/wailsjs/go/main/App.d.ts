@@ -9,9 +9,9 @@ import {agent} from '../models';
 
 export function AbortAgent():Promise<void>;
 
-export function AddProviderPlugin(arg1:string,arg2:Array<string>,arg3:Record<string, string>):Promise<string>;
-
 export function AddMCPServer(arg1:string,arg2:string,arg3:Array<string>,arg4:Record<string, string>,arg5:boolean,arg6:Array<string>,arg7:string):Promise<string>;
+
+export function AddProviderPlugin(arg1:string,arg2:Array<string>,arg3:Record<string, string>):Promise<string>;
 
 export function ApplyUpdate(arg1:string):Promise<string>;
 
@@ -30,6 +30,8 @@ export function DeleteSession(arg1:string):Promise<string>;
 export function DownloadLipReadingModel():Promise<string>;
 
 export function EditMessage(arg1:number,arg2:string):Promise<main.ChatResponse>;
+
+export function GetActiveProvider():Promise<llm.ProviderInfo>;
 
 export function GetAudioDevice():Promise<string>;
 
@@ -66,8 +68,6 @@ export function GetModels():Promise<Array<string>>;
 export function GetNotificationsEnabled():Promise<boolean>;
 
 export function GetProvider():Promise<string>;
-
-export function GetActiveProvider():Promise<llm.ProviderInfo>;
 
 export function GetProviderPlugins():Promise<Array<main.ProviderPluginInfo>>;
 
@@ -107,9 +107,9 @@ export function ProviderReady():Promise<boolean>;
 
 export function ReauthMCPServer(arg1:string):Promise<string>;
 
-export function RemoveProviderPlugin(arg1:string):Promise<string>;
-
 export function RemoveMCPServer(arg1:string):Promise<string>;
+
+export function RemoveProviderPlugin(arg1:string):Promise<string>;
 
 export function RequestRestart():Promise<Record<string, any>>;
 

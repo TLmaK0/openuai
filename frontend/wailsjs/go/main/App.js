@@ -6,12 +6,12 @@ export function AbortAgent() {
   return window['go']['main']['App']['AbortAgent']();
 }
 
-export function AddProviderPlugin(arg1, arg2, arg3) {
-  return window['go']['main']['App']['AddProviderPlugin'](arg1, arg2, arg3);
-}
-
 export function AddMCPServer(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['AddMCPServer'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function AddProviderPlugin(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AddProviderPlugin'](arg1, arg2, arg3);
 }
 
 export function ApplyUpdate(arg1) {
@@ -48,6 +48,10 @@ export function DownloadLipReadingModel() {
 
 export function EditMessage(arg1, arg2) {
   return window['go']['main']['App']['EditMessage'](arg1, arg2);
+}
+
+export function GetActiveProvider() {
+  return window['go']['main']['App']['GetActiveProvider']();
 }
 
 export function GetAudioDevice() {
@@ -120,10 +124,6 @@ export function GetNotificationsEnabled() {
 
 export function GetProvider() {
   return window['go']['main']['App']['GetProvider']();
-}
-
-export function GetActiveProvider() {
-  return window['go']['main']['App']['GetActiveProvider']();
 }
 
 export function GetProviderPlugins() {
@@ -202,12 +202,12 @@ export function ReauthMCPServer(arg1) {
   return window['go']['main']['App']['ReauthMCPServer'](arg1);
 }
 
-export function RemoveProviderPlugin(arg1) {
-  return window['go']['main']['App']['RemoveProviderPlugin'](arg1);
-}
-
 export function RemoveMCPServer(arg1) {
   return window['go']['main']['App']['RemoveMCPServer'](arg1);
+}
+
+export function RemoveProviderPlugin(arg1) {
+  return window['go']['main']['App']['RemoveProviderPlugin'](arg1);
 }
 
 export function RequestRestart() {

@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, GetProviderPlugins, AddProviderPlugin, RemoveProviderPlugin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -368,6 +368,12 @@
 
   // MCP servers
   let mcpServers = [];
+  // Provider plugins: providers that run as separate executables, so one can
+  // be added without rebuilding the app.
+  let providerPlugins = [];
+  let pluginNewCommand = '';
+  let pluginNewArgs = '';
+  let pluginAdding = false;
 
   // Sessions
   let showSessions = false;
@@ -483,6 +489,7 @@
     providers = await GetProviders();
     provider = await GetProvider();
     activeProvider = await GetActiveProvider();
+    providerPlugins = (await GetProviderPlugins()) || [];
     models = await GetModels();
     selectedModel = await GetDefaultModel();
     voiceEnabled = await GetVoiceEnabled();
@@ -888,6 +895,40 @@
   async function deleteSession(id) {
     await DeleteSession(id);
     sessions = await GetSessions();
+  }
+
+  async function refreshProviderPlugins() {
+    providerPlugins = (await GetProviderPlugins()) || [];
+    // A plugin arriving or leaving changes which providers exist, and can
+    // change which one is active.
+    providers = await GetProviders();
+    provider = await GetProvider();
+    activeProvider = await GetActiveProvider();
+    models = await GetModels();
+    selectedModel = await GetDefaultModel();
+  }
+
+  async function addProviderPlugin() {
+    if (!pluginNewCommand) return;
+    const args = pluginNewArgs ? pluginNewArgs.split(' ').filter(Boolean) : [];
+    pluginAdding = true;
+    // The executable is run once to ask what it is, so this can fail on a
+    // command that is missing or does not speak the protocol.
+    const err = await AddProviderPlugin(pluginNewCommand, args, {});
+    pluginAdding = false;
+    if (err) {
+      alert('Failed to add provider plugin: ' + err);
+      return;
+    }
+    pluginNewCommand = '';
+    pluginNewArgs = '';
+    await refreshProviderPlugins();
+  }
+
+  async function removeProviderPlugin(name) {
+    const err = await RemoveProviderPlugin(name);
+    if (err) alert('Failed to remove provider plugin: ' + err);
+    await refreshProviderPlugins();
   }
 
   async function refreshMCPServers() {
@@ -1364,6 +1405,29 @@
             {/each}
           </select>
         </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Provider Plugins</div>
+        {#each providerPlugins as p}
+          <div class="setting-row">
+            <label>{p.name}</label>
+            <span class="plugin-command">{p.command}{p.args && p.args.length ? ' ' + p.args.join(' ') : ''}</span>
+            <button on:click={() => removeProviderPlugin(p.name)}>Remove</button>
+          </div>
+        {/each}
+        <div class="setting-row">
+          <label>Executable</label>
+          <input bind:value={pluginNewCommand} placeholder="openuai-provider-example" />
+          <input bind:value={pluginNewArgs} placeholder="arguments (optional)" />
+          <button on:click={addProviderPlugin} disabled={pluginAdding || !pluginNewCommand}>
+            {pluginAdding ? 'Asking...' : 'Add'}
+          </button>
+        </div>
+        {#if providerPlugins.length === 0}
+          <div class="setting-hint">A provider plugin is a separate executable. Adding one makes its
+          models available without rebuilding the app.</div>
+        {/if}
       </div>
 
       <div class="settings-group">
@@ -1923,6 +1987,20 @@
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+  }
+  .plugin-command {
+    flex: 1;
+    font-family: monospace;
+    font-size: 0.85em;
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .setting-hint {
+    font-size: 0.85em;
+    opacity: 0.6;
+    padding: 4px 0;
   }
   .settings-group-title {
     font-size: 0.75rem;
