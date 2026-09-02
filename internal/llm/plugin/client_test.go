@@ -422,3 +422,69 @@ func TestCrashedPluginIsRestartedOnTheNextCall(t *testing.T) {
 		t.Errorf("dialed %d times, want 2", dialed)
 	}
 }
+
+// A client is closed when its plugin is removed, or when the app is shutting
+// down. Anything still holding it — an agent turn makes several calls per
+// turn — must not be able to start the process again, or removal and
+// shutdown would leave a process nothing is tracking.
+func TestAClosedClientStartsNoFurtherProcess(t *testing.T) {
+	conn := newFakeConn(map[string]any{
+		MethodChat:  ChatResult{Response: &llm.Response{Content: "ok"}},
+		MethodReady: ReadyResult{Ready: true},
+	})
+	var dialed int
+	client := NewClient(fullDescription(), func() Conn {
+		dialed++
+		return conn
+	})
+
+	if _, err := client.Chat(context.Background(), nil, "m"); err != nil {
+		t.Fatalf("Chat() = %v, want nil", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+
+	// Whatever still holds the client is refused rather than served by a
+	// fresh process.
+	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
+		t.Error("Chat() after Close() = nil error, want a refusal")
+	}
+	if _, _, err := client.ChatWithTools(context.Background(), nil, "m", []llm.ToolDefinition{{Name: "t"}}); err == nil {
+		t.Error("ChatWithTools() after Close() = nil error, want a refusal")
+	}
+	if client.Ready() {
+		t.Error("Ready() after Close() = true, want false")
+	}
+	if dialed != 1 {
+		t.Errorf("dialed %d times, want 1: a closed client started another process", dialed)
+	}
+}
+
+// Closing for good must not break the recovery path: a call that merely
+// failed still gets a fresh process on the next attempt.
+func TestCloseDoesNotDisableCrashRecovery(t *testing.T) {
+	dead := newFakeConn(nil)
+	dead.failWith = errors.New("broken pipe")
+	alive := newFakeConn(map[string]any{MethodChat: ChatResult{Response: &llm.Response{Content: "back"}}})
+
+	conns := []Conn{dead, alive}
+	var dialed int
+	client := NewClient(fullDescription(), func() Conn {
+		conn := conns[dialed]
+		dialed++
+		return conn
+	})
+
+	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
+		t.Fatal("first Chat() = nil error, want the failure")
+	}
+	// The failure dropped the connection but did not close the client.
+	resp, err := client.Chat(context.Background(), nil, "m")
+	if err != nil {
+		t.Fatalf("Chat() after a failure = %v, want a restart", err)
+	}
+	if resp.Content != "back" {
+		t.Errorf("Chat() = %q, want back", resp.Content)
+	}
+}

@@ -73,6 +73,12 @@ type Client struct {
 	// process lives — it must belong to the Client, never to a single call, or
 	// the first call to finish would kill the plugin for the next one.
 	stop context.CancelFunc
+	// stopped records that the owner closed this client for good. A call that
+	// merely failed leaves the connection dropped, and the next one starts a
+	// fresh process on purpose; a client that was closed must not do that, or
+	// a plugin removed — or an app shutting down — while a turn is still in
+	// flight would restart a process nothing is tracking any more.
+	stopped bool
 }
 
 // NewClient builds a provider backed by the plugin that desc describes.
@@ -87,10 +93,12 @@ func (c *Client) Name() string { return c.desc.Name }
 
 func (c *Client) Models() []string { return c.desc.Models }
 
-// Close stops the plugin process if it is running.
+// Close stops the plugin process if it is running, for good: a closed client
+// serves no further calls and starts no further processes.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.stopped = true
 	return c.closeLocked()
 }
 
@@ -131,6 +139,10 @@ func (c *Client) closeLocked() error {
 // decodes the result into out. out may be nil for a method with no result.
 func (c *Client) call(ctx context.Context, method string, params any, out any) error {
 	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return fmt.Errorf("provider plugin %q has been stopped", c.desc.Name)
+	}
 	if c.conn == nil {
 		conn := c.dial()
 		procCtx, stop := context.WithCancel(context.Background())
