@@ -375,6 +375,11 @@
   let pluginNewCommand = '';
   let pluginNewArgs = '';
   let pluginAdding = false;
+  let pluginRemoving = '';
+  let pluginRefreshing = false;
+  // Add and Remove both reach the same configuration, and the refresh after
+  // either can take seconds, so neither is offered while the other is running.
+  $: pluginBusy = pluginAdding || pluginRemoving !== '' || pluginRefreshing;
 
   // Sessions
   let showSessions = false;
@@ -898,20 +903,37 @@
     sessions = await GetSessions();
   }
 
+  // Arguments are entered one per line, not separated by spaces: an argument
+  // containing a space is ordinary — --model-dir "C:\\Program Files\\..." — and
+  // splitting on spaces made it unexpressible. A line is one argument, which
+  // is exactly how exec.Command receives it, so no quoting is involved.
+  function pluginArgLines(text) {
+    return text.split('\n').map((line) => line.trim()).filter(Boolean);
+  }
+
   async function refreshProviderPlugins() {
-    providerPlugins = (await GetProviderPlugins()) || [];
-    // A plugin arriving or leaving changes which providers exist, and can
-    // change which one is active.
-    providers = await GetProviders();
-    provider = await GetProvider();
-    activeProvider = await GetActiveProvider();
-    models = await GetModels();
-    selectedModel = await GetDefaultModel();
+    // Of the calls below, GetActiveProvider probes readiness and GetModels can
+    // fetch the live model list, both against the active provider. Against one
+    // busy serving a turn that is seconds of waiting, so the screen says it is
+    // working rather than appearing to have ignored the click.
+    pluginRefreshing = true;
+    try {
+      providerPlugins = (await GetProviderPlugins()) || [];
+      // A plugin arriving or leaving changes which providers exist, and can
+      // change which one is active.
+      providers = await GetProviders();
+      provider = await GetProvider();
+      activeProvider = await GetActiveProvider();
+      models = await GetModels();
+      selectedModel = await GetDefaultModel();
+    } finally {
+      pluginRefreshing = false;
+    }
   }
 
   async function addProviderPlugin() {
-    if (!pluginNewCommand) return;
-    const args = pluginNewArgs ? pluginNewArgs.split(' ').filter(Boolean) : [];
+    if (!pluginNewCommand || pluginBusy) return;
+    const args = pluginArgLines(pluginNewArgs);
     pluginAdding = true;
     // The executable is run once to ask what it is, so this can fail on a
     // command that is missing or does not speak the protocol.
@@ -927,7 +949,15 @@
   }
 
   async function removeProviderPlugin(name) {
+    if (pluginBusy) return;
+    // One click drops the configuration entry and, with it, the provider's
+    // settings slot and whatever credentials it held. There is no undo.
+    if (!confirm(`Remove the provider plugin "${name}"?\n\nIts configuration entry and its stored settings are dropped.`)) return;
+    // Without the guard a second click called this again for a plugin the
+    // first one had already removed, and alerted that it does not exist.
+    pluginRemoving = name;
     const err = await RemoveProviderPlugin(name);
+    pluginRemoving = '';
     if (err) alert('Failed to remove provider plugin: ' + err);
     await refreshProviderPlugins();
   }
@@ -1417,19 +1447,25 @@
       </div>
 
       <div class="settings-group">
-        <div class="settings-group-title">Provider Plugins</div>
+        <div class="settings-group-title">
+          Provider Plugins
+          {#if pluginRefreshing}<span class="group-title-note">refreshing...</span>{/if}
+        </div>
         {#each providerPlugins as p}
           <div class="setting-row">
             <label>{p.name}</label>
             <span class="plugin-command">{p.command}{p.args && p.args.length ? ' ' + p.args.join(' ') : ''}</span>
-            <button on:click={() => removeProviderPlugin(p.name)}>Remove</button>
+            <button on:click={() => removeProviderPlugin(p.name)} disabled={pluginBusy}>
+              {pluginRemoving === p.name ? 'Removing...' : 'Remove'}
+            </button>
           </div>
         {/each}
         <div class="setting-row">
           <label>Executable</label>
           <input bind:value={pluginNewCommand} placeholder="openuai-provider-example" />
-          <input bind:value={pluginNewArgs} placeholder="arguments (optional)" />
-          <button on:click={addProviderPlugin} disabled={pluginAdding || !pluginNewCommand}>
+          <textarea class="plugin-args" rows="2" bind:value={pluginNewArgs}
+                    placeholder="arguments, one per line (optional)"></textarea>
+          <button on:click={addProviderPlugin} disabled={pluginBusy || !pluginNewCommand}>
             {pluginAdding ? 'Asking...' : 'Add'}
           </button>
         </div>
@@ -1997,6 +2033,12 @@
     flex-direction: column;
     gap: 0.4rem;
   }
+  .plugin-args {
+    flex: 1;
+    resize: vertical;
+    font-family: inherit;
+  }
+
   .plugin-command {
     flex: 1;
     font-family: monospace;
@@ -2005,6 +2047,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .group-title-note {
+    font-weight: normal;
+    opacity: 0.7;
+    margin-left: 0.4rem;
   }
   .setting-hint {
     font-size: 0.85em;
@@ -2024,7 +2071,7 @@
 
   .setting-row label { min-width: 90px; font-size: 0.85rem; text-align: left; }
 
-  .setting-row input, .setting-row select {
+  .setting-row input, .setting-row select, .setting-row textarea {
     flex: 1;
     padding: 0.4rem;
     background: #070b12;
