@@ -1454,7 +1454,11 @@
         {#each providerPlugins as p}
           <div class="setting-row">
             <label>{p.name}</label>
-            <span class="plugin-command">{p.command}{p.args && p.args.length ? ' ' + p.args.join(' ') : ''}</span>
+            <!-- Joined with spaces, an argument containing one read as two,
+                 which is exactly what the one-per-line field was introduced to
+                 stop. A visible separator keeps the row and what was typed in
+                 agreement. -->
+            <span class="plugin-command">{[p.command, ...(p.args || [])].join(' · ')}</span>
             <button on:click={() => removeProviderPlugin(p.name)} disabled={pluginBusy}>
               {pluginRemoving === p.name ? 'Removing...' : 'Remove'}
             </button>
