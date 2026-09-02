@@ -73,6 +73,12 @@ type Client struct {
 	dial   Dialer
 	nextID int64
 
+	// startMu serializes starting the process, so a connection is built once
+	// and prepared before anyone can use it. It is held across the pipe, which
+	// mu deliberately is not: Close takes mu alone and stays responsive while
+	// a process is starting.
+	startMu sync.Mutex
+
 	mu   sync.Mutex
 	conn Conn
 	// stop ends the process. The transport spawns the child with
@@ -120,6 +126,13 @@ func (c *Client) closeLocked() error {
 	}
 	conn, stop := c.conn, c.stop
 	c.conn, c.stop = nil, nil
+	return c.shutdown(conn, stop)
+}
+
+// shutdown stops one connection and the process behind it. It takes them as
+// arguments rather than reading the client, so it also serves a connection
+// that was started but never published.
+func (c *Client) shutdown(conn Conn, stop context.CancelFunc) error {
 	if stop == nil {
 		stop = func() {}
 	}
@@ -156,49 +169,90 @@ func (c *Client) label() string {
 	return fmt.Sprintf("provider plugin %q", c.desc.Name)
 }
 
-// call sends one request, starting the plugin if it is not running yet, and
-// decodes the result into out. out may be nil for a method with no result.
-func (c *Client) call(ctx context.Context, method string, params any, out any) error {
+// connect returns a live connection, starting the plugin if it is not running
+// yet.
+//
+// A connection is published on the client only once it is ready to be used:
+// the credential a restarted process never received is handed over first, on
+// a connection nothing else can reach yet. Publishing first and restoring
+// afterwards needed the lock dropped in between, which meant a caller could
+// read a connection that a concurrent failure or a Close had already nilled —
+// a nil dereference in request — and meant another call could reach the
+// process ahead of its credential.
+func (c *Client) connect(ctx context.Context) (Conn, error) {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+
 	c.mu.Lock()
 	if c.stopped {
 		c.mu.Unlock()
-		return fmt.Errorf("%s has been stopped", c.label())
+		return nil, fmt.Errorf("%s has been stopped", c.label())
 	}
-	if c.conn == nil {
-		conn := c.dial()
-		procCtx, stop := context.WithCancel(context.Background())
-		if err := conn.Start(procCtx); err != nil {
-			stop()
-			c.mu.Unlock()
-			return fmt.Errorf("starting %s: %w", c.label(), err)
-		}
-		c.conn, c.stop = conn, stop
-		restored := c.secret
-		logger.Info("Provider plugin %s: started", c.desc.Name)
-		// The transport creates the child's stderr pipe but never reads it.
-		// Left alone, the child blocks in write(2) as soon as the pipe buffer
-		// fills — 64 KiB on Linux, less on Windows — and stops answering. It
-		// also means the plugin's own diagnostics never reach the log.
-		if src, ok := conn.(stderrReader); ok {
-			go drainStderr(c.desc.Name, src.Stderr())
-		}
+	if c.conn != nil {
+		conn := c.conn
+		c.mu.Unlock()
+		return conn, nil
+	}
+	restored := c.secret
+	c.mu.Unlock()
 
-		// A restarted process is a fresh program: it has never been given the
-		// credential this session already supplied, and would come back
-		// unauthenticated without a word. Hand it over before the call that
-		// caused the restart, on this connection, so it is not a re-entrant
-		// call through this same path.
-		if restored != "" {
-			c.mu.Unlock()
-			if err := c.send(ctx, conn, MethodSetSecret, SecretRequest{Secret: restored}, nil); err != nil {
-				logger.Error("Provider plugin %s: restoring the credential after a restart: %s", c.desc.Name, err.Error())
-			} else {
-				logger.Info("Provider plugin %s: credential restored after a restart", c.desc.Name)
-			}
-			c.mu.Lock()
-		}
+	conn := c.dial()
+	procCtx, stop := context.WithCancel(context.Background())
+	if err := conn.Start(procCtx); err != nil {
+		stop()
+		return nil, fmt.Errorf("starting %s: %w", c.label(), err)
 	}
-	conn := c.conn
+	logger.Info("Provider plugin %s: started", c.desc.Name)
+
+	// The transport creates the child's stderr pipe but never reads it. Left
+	// alone, the child blocks in write(2) as soon as the pipe buffer fills —
+	// 64 KiB on Linux, less on Windows — and stops answering. It also means
+	// the plugin's own diagnostics never reach the log.
+	if src, ok := conn.(stderrReader); ok {
+		go drainStderr(c.desc.Name, src.Stderr())
+	}
+
+	// A restarted process is a fresh program: it has never been given the
+	// credential this session already supplied, and would come back
+	// unauthenticated without a word.
+	if restored != "" {
+		secretCtx, cancel := context.WithTimeout(ctx, secretTimeout)
+		err := c.send(secretCtx, conn, MethodSetSecret, SecretRequest{Secret: restored}, nil)
+		cancel()
+		if err != nil {
+			// Nothing else has reached this process, so it is still ours to
+			// discard. Reporting the failure beats publishing a provider that
+			// would reject every turn for a reason nobody can see.
+			c.shutdown(conn, stop)
+			return nil, fmt.Errorf("restoring the credential of %s after a restart: %w", c.label(), err)
+		}
+		logger.Info("Provider plugin %s: credential restored after a restart", c.desc.Name)
+	}
+
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		// Closed for good while this process was starting. Close found no
+		// connection to stop, because it had not been published, so stopping
+		// it belongs here — otherwise removing a plugin, or quitting, would
+		// leave the process behind.
+		c.shutdown(conn, stop)
+		return nil, fmt.Errorf("%s has been stopped", c.label())
+	}
+	c.conn, c.stop = conn, stop
+	c.mu.Unlock()
+	return conn, nil
+}
+
+// call sends one request, starting the plugin if it is not running yet, and
+// decodes the result into out. out may be nil for a method with no result.
+func (c *Client) call(ctx context.Context, method string, params any, out any) error {
+	conn, err := c.connect(ctx)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
 	c.nextID++
 	id := c.nextID
 	c.mu.Unlock()

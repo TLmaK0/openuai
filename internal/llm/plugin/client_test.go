@@ -21,8 +21,14 @@ type fakeConn struct {
 	// failWith, when set, makes every SendRequest fail, standing in for a
 	// plugin that died.
 	failWith error
+	// failMethods makes one named method fail, standing in for a plugin that
+	// dies part way through a conversation rather than on its first call.
+	failMethods map[string]error
 	// rpcError, when set, is returned as a JSON-RPC error for every call.
 	rpcError string
+	// onCall, when set, runs before a method is answered. A test uses it to
+	// act while a call is in flight.
+	onCall func(method string)
 	// raw overrides the encoded result of a method with arbitrary bytes.
 	raw map[string]string
 	// block names methods that never answer, so the call ends on the
@@ -89,6 +95,9 @@ func (f *fakeConn) SendRequest(ctx context.Context, req transport.JSONRPCRequest
 	}
 	f.mu.Unlock()
 
+	if f.onCall != nil {
+		f.onCall(req.Method)
+	}
 	if f.block[req.Method] {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -102,6 +111,9 @@ func (f *fakeConn) SendRequest(ctx context.Context, req transport.JSONRPCRequest
 	}
 	if f.failWith != nil {
 		return nil, f.failWith
+	}
+	if err, ok := f.failMethods[req.Method]; ok {
+		return nil, err
 	}
 	if f.rpcError != "" {
 		return &transport.JSONRPCResponse{
@@ -710,5 +722,159 @@ func TestACredentialSurvivesARestart(t *testing.T) {
 	}
 	if !llm.Ready(client) {
 		t.Error("the restarted plugin reports not ready")
+	}
+}
+
+// restartedWithASecret returns a client whose plugin has been given a
+// credential and whose process has just died, so the next call restarts it and
+// restores the credential. next is the connection that restart dials.
+func restartedWithASecret(t *testing.T, next Conn) *Client {
+	t.Helper()
+
+	first := newFakeConn(map[string]any{MethodChat: ChatResult{Response: &llm.Response{Content: "before"}}})
+	// The first process is dialed once; every restart after that reaches next,
+	// since a call that fails drops the connection and the one after it dials
+	// again.
+	var dialed int
+	client := NewClient(fullDescription(), func() Conn {
+		dialed++
+		if dialed == 1 {
+			return first
+		}
+		return next
+	})
+
+	if err := client.SetSecret("acme-key"); err != nil {
+		t.Fatalf("SetSecret() = %v", err)
+	}
+	first.mu.Lock()
+	first.failWith = errors.New("broken pipe")
+	first.mu.Unlock()
+	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
+		t.Fatal("Chat() = nil error, want the crash that ends the first process")
+	}
+	return client
+}
+
+// Closing a client while a restarted process is being handed its credential
+// used to take the app down: the restore released the lock, Close nilled the
+// connection, and the call read it back as nil and dereferenced it. Quitting,
+// or removing a plugin, while a turn is in flight is exactly the case the
+// terminal Close was written for.
+func TestClosingDuringACredentialRestoreIsNotAPanic(t *testing.T) {
+	restoring := make(chan struct{})
+	resume := make(chan struct{})
+
+	restarted := newFakeConn(map[string]any{MethodChat: ChatResult{Response: &llm.Response{Content: "after"}}})
+	restarted.onCall = func(method string) {
+		if method != MethodSetSecret {
+			return
+		}
+		close(restoring)
+		<-resume
+	}
+
+	client := restartedWithASecret(t, restarted)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Chat(context.Background(), nil, "m")
+		done <- err
+	}()
+
+	<-restoring
+	if err := client.Close(); err != nil {
+		t.Errorf("Close() during the restore = %v, want nil", err)
+	}
+	close(resume)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Chat() through a client closed mid-restore = nil error, want a refusal")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Chat() never returned after the client was closed mid-restore")
+	}
+
+	// The process started for the restore was never published, so Close could
+	// not have stopped it: whoever started it has to.
+	if _, closed := restarted.counts(); closed != 1 {
+		t.Errorf("the restarted connection was closed %d times, want 1: the process leaked", closed)
+	}
+}
+
+// The same window with no owner action at all: one client serves every turn
+// and every sub-agent, so two turns can meet on a plugin that has just
+// restarted. The second one's request fails, the recovery path nils the
+// connection, and the first used to relock onto nothing.
+func TestConcurrentTurnsOnARestartedPluginAreNotAPanic(t *testing.T) {
+	// How long the restore waits for the second turn. It either finishes
+	// inside the window — which is what it did when the connection was
+	// published before the credential was sent — or it is waiting for this
+	// restore to finish, which is the fix.
+	const window = 250 * time.Millisecond
+
+	restarted := newFakeConn(map[string]any{MethodChat: ChatResult{Response: &llm.Response{Content: "after"}}})
+	restarted.failMethods = map[string]error{MethodChat: errors.New("broken pipe")}
+
+	var client *Client
+	second := make(chan error, 1)
+	restarted.onCall = func(method string) {
+		if method != MethodSetSecret {
+			return
+		}
+		go func() {
+			_, err := client.Chat(context.Background(), nil, "m")
+			second <- err
+		}()
+		select {
+		case err := <-second:
+			second <- err
+		case <-time.After(window):
+		}
+	}
+
+	client = restartedWithASecret(t, restarted)
+	defer client.Close()
+
+	if _, err := client.Chat(context.Background(), nil, "m"); err == nil {
+		t.Error("the restarted plugin answered a chat it was told to fail")
+	}
+	select {
+	case err := <-second:
+		if err == nil {
+			t.Error("the concurrent turn answered a chat the plugin was told to fail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the concurrent turn never returned")
+	}
+
+	// Nothing reached the process before its credential did.
+	calls := restarted.callsMade()
+	if len(calls) == 0 || calls[0] != MethodSetSecret {
+		t.Errorf("the restarted process was called with %v, want setSecret first", calls)
+	}
+}
+
+// A restore that fails leaves a process that will reject every turn, for a
+// reason the user cannot see. It is discarded and reported instead, which the
+// next call retries from a fresh process.
+func TestAFailedCredentialRestoreIsReported(t *testing.T) {
+	restarted := newFakeConn(map[string]any{MethodChat: ChatResult{Response: &llm.Response{Content: "after"}}})
+	restarted.failMethods = map[string]error{MethodSetSecret: errors.New("broken pipe")}
+
+	client := restartedWithASecret(t, restarted)
+	defer client.Close()
+
+	_, err := client.Chat(context.Background(), nil, "m")
+	if err == nil {
+		t.Fatal("Chat() = nil error, want the failed restore")
+	}
+	if !strings.Contains(err.Error(), "restoring the credential") {
+		t.Errorf("Chat() = %v, want the failed restore named", err)
+	}
+	if _, closed := restarted.counts(); closed != 1 {
+		t.Errorf("the unauthenticated connection was closed %d times, want 1", closed)
 	}
 }
