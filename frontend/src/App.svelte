@@ -351,9 +351,10 @@
   let chatEl;
   let textareaEl;
   let provider = '';
-  // providers holds a descriptor per registered provider: name, display_name,
-  // credential, secret_placeholder, login_label and ready. The UI renders from
-  // these, so it never has to know a provider by name.
+  // providers holds one summary per registered provider: name and
+  // display_name, and nothing else. The credential kind and readiness belong
+  // to the provider in use and come from activeProvider, because asking a
+  // provider whether it is ready can cost a process to start.
   let providers = [];
 
   // Permission dialog

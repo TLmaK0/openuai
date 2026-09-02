@@ -25,6 +25,11 @@ const (
 	readyTimeout = 5 * time.Second
 	// secretTimeout bounds handing over a credential.
 	secretTimeout = 15 * time.Second
+	// loginTimeout bounds an interactive login. The flow is a person in a
+	// browser, so it is generous, but unbounded means a plugin that never
+	// answers holds the call for the life of the app — the in-tree OAuth flow
+	// caps its own wait for the same reason.
+	loginTimeout = 5 * time.Minute
 	// closeGrace is how long a plugin is given to exit on its own once its
 	// stdin is closed. The transport waits on the process with no deadline of
 	// its own, so a plugin that ignores the close would hang shutdown for
@@ -133,8 +138,17 @@ func (c *Client) closeLocked() error {
 	case err := <-closed:
 		return err
 	case <-time.After(closeGrace):
-		return fmt.Errorf("provider plugin %q did not stop", c.desc.Name)
+		return fmt.Errorf("%s did not stop", c.label())
 	}
+}
+
+// label names this plugin for a message. A candidate being probed has not
+// said its name yet, so it is described rather than quoted as empty.
+func (c *Client) label() string {
+	if c.desc.Name == "" {
+		return "provider plugin candidate"
+	}
+	return fmt.Sprintf("provider plugin %q", c.desc.Name)
 }
 
 // call sends one request, starting the plugin if it is not running yet, and
@@ -143,7 +157,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	c.mu.Lock()
 	if c.stopped {
 		c.mu.Unlock()
-		return fmt.Errorf("provider plugin %q has been stopped", c.desc.Name)
+		return fmt.Errorf("%s has been stopped", c.label())
 	}
 	if c.conn == nil {
 		conn := c.dial()
@@ -151,7 +165,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		if err := conn.Start(procCtx); err != nil {
 			stop()
 			c.mu.Unlock()
-			return fmt.Errorf("starting provider plugin %q: %w", c.desc.Name, err)
+			return fmt.Errorf("starting %s: %w", c.label(), err)
 		}
 		c.conn, c.stop = conn, stop
 		logger.Info("Provider plugin %s: started", c.desc.Name)
@@ -181,7 +195,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		// other call in flight, which is how a readiness probe timing out used
 		// to kill a chat.
 		if ctx.Err() != nil {
-			return fmt.Errorf("provider plugin %q: %s: %w", c.desc.Name, method, err)
+			return fmt.Errorf("%s: %s: %w", c.label(), method, err)
 		}
 		// Anything else means the plugin is gone or unusable: drop it so the
 		// next call retries with a fresh process instead of a dead pipe.
@@ -190,19 +204,19 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 			c.closeLocked()
 		}
 		c.mu.Unlock()
-		return fmt.Errorf("provider plugin %q: %s: %w", c.desc.Name, method, err)
+		return fmt.Errorf("%s: %s: %w", c.label(), method, err)
 	}
 	if resp.Error != nil {
-		return fmt.Errorf("provider plugin %q: %s: %s", c.desc.Name, method, resp.Error.Message)
+		return fmt.Errorf("%s: %s: %s", c.label(), method, resp.Error.Message)
 	}
 	if out == nil {
 		return nil
 	}
 	if len(resp.Result) == 0 {
-		return fmt.Errorf("provider plugin %q: %s: empty result", c.desc.Name, method)
+		return fmt.Errorf("%s: %s: empty result", c.label(), method)
 	}
 	if err := json.Unmarshal(resp.Result, out); err != nil {
-		return fmt.Errorf("provider plugin %q: %s: unreadable result: %w", c.desc.Name, method, err)
+		return fmt.Errorf("%s: %s: unreadable result: %w", c.label(), method, err)
 	}
 	return nil
 }
@@ -258,7 +272,7 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, model string)
 		return nil, err
 	}
 	if result.Response == nil {
-		return nil, fmt.Errorf("provider plugin %q returned no response", c.desc.Name)
+		return nil, fmt.Errorf("%s returned no response", c.label())
 	}
 	return result.Response, nil
 }
@@ -290,7 +304,7 @@ func (t toolCallClient) ChatWithTools(ctx context.Context, messages []llm.Messag
 		return nil, nil, err
 	}
 	if result.Response == nil {
-		return nil, nil, fmt.Errorf("provider plugin %q returned no response", c.desc.Name)
+		return nil, nil, fmt.Errorf("%s returned no response", c.label())
 	}
 	return result.Response, result.ToolCalls, nil
 }
@@ -316,7 +330,7 @@ func (c *Client) Ready() bool {
 
 func (c *Client) SetSecret(secret string) error {
 	if !c.desc.SupportsSecret {
-		return fmt.Errorf("provider plugin %q takes no secret", c.desc.Name)
+		return fmt.Errorf("%s takes no secret", c.label())
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), secretTimeout)
@@ -328,18 +342,21 @@ func (c *Client) SetSecret(secret string) error {
 // process, which can open a loopback listener and a browser like any other
 // process — the reason this mechanism was chosen over a sandboxed one.
 //
-// It carries no deadline of its own: the user is in the browser, and how long
-// that takes is not the core's business.
+// The wait is generous, because a person is in the browser, but it is bounded:
+// a plugin that never answers must not hold the call forever.
 func (c *Client) Login() error {
 	if !c.desc.SupportsLogin {
-		return fmt.Errorf("provider plugin %q has no interactive login", c.desc.Name)
+		return fmt.Errorf("%s has no interactive login", c.label())
 	}
-	return c.call(context.Background(), MethodLogin, nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
+	defer cancel()
+	return c.call(ctx, MethodLogin, nil, nil)
 }
 
 func (c *Client) FetchModels(ctx context.Context) ([]string, error) {
 	if !c.desc.SupportsFetchModels {
-		return nil, fmt.Errorf("provider plugin %q cannot fetch models", c.desc.Name)
+		return nil, fmt.Errorf("%s cannot fetch models", c.label())
 	}
 
 	var result ModelsResult

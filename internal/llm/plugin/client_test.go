@@ -612,3 +612,42 @@ func TestOneCallersDeadlineDoesNotAbortTheOthers(t *testing.T) {
 		t.Errorf("the connection was closed %d times, want 0", closed)
 	}
 }
+
+// A candidate being probed has not said its name yet, so its failures must
+// describe it rather than quote an empty one.
+func TestErrorsNameTheCandidateBeforeItIsKnown(t *testing.T) {
+	conn := newFakeConn(map[string]any{})
+	conn.rpcError = "no such method"
+
+	_, err := Describe(context.Background(), dialerFor(conn))
+	if err == nil {
+		t.Fatal("Describe() = nil error, want the plugin's refusal")
+	}
+	if strings.Contains(err.Error(), `""`) {
+		t.Errorf("Describe() error quotes an empty name: %v", err)
+	}
+	if !strings.Contains(err.Error(), "candidate") {
+		t.Errorf("Describe() error does not describe the candidate: %v", err)
+	}
+
+	// A named plugin still names itself.
+	named := newFakeConn(map[string]any{})
+	named.rpcError = "nope"
+	if err := NewClient(fullDescription(), dialerFor(named)).SetSecret("s"); err != nil {
+		if !strings.Contains(err.Error(), `"acme"`) {
+			t.Errorf("a named plugin's error does not quote its name: %v", err)
+		}
+	}
+}
+
+// Login is generous, because a person is in the browser, but it is bounded:
+// unbounded meant a plugin that never answers held the call for the life of
+// the app.
+func TestLoginIsBounded(t *testing.T) {
+	if loginTimeout == 0 {
+		t.Fatal("Login carries no deadline")
+	}
+	if loginTimeout < time.Minute {
+		t.Errorf("loginTimeout = %v, too short for a browser flow", loginTimeout)
+	}
+}
