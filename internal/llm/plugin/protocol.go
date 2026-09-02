@@ -7,7 +7,11 @@
 // crosses the boundary without losing anything the agent loop relies on.
 package plugin
 
-import "openuai/internal/llm"
+import (
+	"fmt"
+
+	"openuai/internal/llm"
+)
 
 // The methods a plugin answers. Describe is mandatory; the rest are optional
 // and a plugin that does not implement one reports the corresponding
@@ -27,8 +31,11 @@ const (
 // turns it into an llm.Descriptor without knowing anything else about the
 // plugin.
 type Description struct {
-	Name         string `json:"name"`
-	DisplayName  string `json:"display_name"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// Credential is "secret", "login" or "none". It has to agree with the
+	// capabilities below, and is checked against them when the plugin is
+	// added; left out, it is derived from them.
 	Credential   string `json:"credential"`
 	DefaultModel string `json:"default_model"`
 	// SecretPlaceholder and LoginLabel drive the credential widget, the way a
@@ -78,15 +85,58 @@ type ModelsResult struct {
 	Models []string `json:"models"`
 }
 
+// validate reports a description that contradicts itself, so that it is
+// refused when the plugin is added — the one moment there is someone standing
+// there to read the message — rather than accepted and worked around later.
+//
+// Coercing was worse than refusing: a plugin that needs no credential
+// declares neither a kind nor setSecret support, and the old default turned
+// that into a secret field on the settings screen which rejected whatever was
+// typed into it.
+func (d Description) validate() error {
+	switch llm.CredentialKind(d.Credential) {
+	case llm.CredentialSecret:
+		if !d.SupportsSecret {
+			return fmt.Errorf("provider plugin %q asks for a secret but does not implement %s", d.Name, MethodSetSecret)
+		}
+	case llm.CredentialLogin:
+		if !d.SupportsLogin {
+			return fmt.Errorf("provider plugin %q asks for an interactive login but does not implement %s", d.Name, MethodLogin)
+		}
+	case llm.CredentialNone, "":
+		// Nothing is asked for, so there is nothing to contradict: an unstated
+		// kind is derived from the capabilities instead.
+	default:
+		return fmt.Errorf("provider plugin %q declares credential %q, want %q, %q or %q",
+			d.Name, d.Credential, llm.CredentialSecret, llm.CredentialLogin, llm.CredentialNone)
+	}
+	return nil
+}
+
+// credentialKind is the kind of credential the settings screen should ask
+// for. A description that named one has been checked against the capability
+// backing it by validate; one that named none, or named something this core
+// does not know, is answered from what the plugin says it can do — never with
+// a widget whose input the plugin will refuse.
+func (d Description) credentialKind() llm.CredentialKind {
+	switch kind := llm.CredentialKind(d.Credential); kind {
+	case llm.CredentialSecret, llm.CredentialLogin, llm.CredentialNone:
+		return kind
+	}
+	switch {
+	case d.SupportsSecret:
+		return llm.CredentialSecret
+	case d.SupportsLogin:
+		return llm.CredentialLogin
+	default:
+		return llm.CredentialNone
+	}
+}
+
 // Descriptor converts a plugin's description into the registry's descriptor.
 // New is left to the caller, which owns the plugin's lifecycle.
 func (d Description) Descriptor(new func(llm.Store) llm.Provider) llm.Descriptor {
-	credential := llm.CredentialKind(d.Credential)
-	if credential != llm.CredentialSecret && credential != llm.CredentialLogin {
-		// An unrecognised kind would leave the settings screen with no
-		// credential widget at all; a secret field is the safe default.
-		credential = llm.CredentialSecret
-	}
+	credential := d.credentialKind()
 
 	display := d.DisplayName
 	if display == "" {

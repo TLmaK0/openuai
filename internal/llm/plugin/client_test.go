@@ -179,9 +179,84 @@ func TestDescriptorFallsBackOnIncompleteDescription(t *testing.T) {
 	if d.DisplayName != "bare" {
 		t.Errorf("DisplayName = %q, want the name", d.DisplayName)
 	}
-	// An unrecognised credential kind must still draw a widget.
-	if d.Credential != llm.CredentialSecret {
-		t.Errorf("Credential = %q, want secret as the fallback", d.Credential)
+	// A plugin that names no credential and supports no way of taking one
+	// needs none. Defaulting to a secret drew an API key field that rejected
+	// whatever was typed into it.
+	if d.Credential != llm.CredentialNone {
+		t.Errorf("Credential = %q, want none for a plugin that takes no credential", d.Credential)
+	}
+}
+
+// A credential kind the plugin did not state, or that this core does not
+// know, is answered from what the plugin says it can actually do.
+func TestCredentialKindIsDerivedFromTheCapabilities(t *testing.T) {
+	cases := []struct {
+		name string
+		desc Description
+		want llm.CredentialKind
+	}{
+		{"stated and backed", Description{Credential: "secret", SupportsSecret: true}, llm.CredentialSecret},
+		{"stated as none", Description{Credential: "none", SupportsSecret: true}, llm.CredentialNone},
+		{"unstated, takes a secret", Description{SupportsSecret: true}, llm.CredentialSecret},
+		{"unstated, logs in", Description{SupportsLogin: true}, llm.CredentialLogin},
+		{"unstated, takes neither", Description{}, llm.CredentialNone},
+		{"unknown kind, takes a secret", Description{Credential: "smartcard", SupportsSecret: true}, llm.CredentialSecret},
+		{"unknown kind, takes neither", Description{Credential: "smartcard"}, llm.CredentialNone},
+	}
+	for _, c := range cases {
+		if got := c.desc.credentialKind(); got != c.want {
+			t.Errorf("%s: credentialKind() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A description that asks for a credential it cannot accept is refused when
+// the plugin is added, which is the moment someone is there to read why.
+// Coerced instead, the most ordinary plugin — one needing no credential at
+// all — was offered a key field that rejected whatever was typed into it.
+func TestASelfContradictoryDescriptionIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		desc Description
+		want string
+	}{
+		{
+			"asks for a secret it cannot take",
+			Description{Name: "acme", Credential: "secret"},
+			MethodSetSecret,
+		},
+		{
+			"asks for a login it cannot run",
+			Description{Name: "acme", Credential: "login"},
+			MethodLogin,
+		},
+		{
+			"names a kind the core does not know",
+			Description{Name: "acme", Credential: "smartcard"},
+			"smartcard",
+		},
+	}
+	for _, c := range cases {
+		conn := newFakeConn(map[string]any{MethodDescribe: c.desc})
+		_, err := Describe(context.Background(), dialerFor(conn))
+		if err == nil {
+			t.Errorf("%s: Describe() = nil, want a refusal", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: Describe() = %v, want %q named", c.name, err, c.want)
+		}
+	}
+
+	// A plugin that takes no credential and asks for none is not
+	// contradictory, and is the case the coercion broke.
+	conn := newFakeConn(map[string]any{MethodDescribe: Description{Name: "local"}})
+	desc, err := Describe(context.Background(), dialerFor(conn))
+	if err != nil {
+		t.Fatalf("Describe() on a plugin needing no credential = %v, want nil", err)
+	}
+	if got := desc.Descriptor(nil).Credential; got != llm.CredentialNone {
+		t.Errorf("Credential = %q, want none: the settings screen draws no field", got)
 	}
 }
 

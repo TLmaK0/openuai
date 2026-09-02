@@ -1397,6 +1397,14 @@
                    placeholder={activeProvider.ready ? 'Key saved' : activeProvider.secret_placeholder || ''} />
             <button on:click={saveSecret}>Save</button>
           </div>
+        {:else if activeProvider && activeProvider.credential === 'none'}
+          <!-- Some providers are authenticated by whatever they talk to and
+               ask nothing of the user. Saying so beats an empty gap where the
+               credential widget is for every other provider. -->
+          <div class="setting-row">
+            <label>Credentials</label>
+            <span class="setting-hint">Managed by the provider itself</span>
+          </div>
         {/if}
         <div class="setting-row">
           <label>Model</label>

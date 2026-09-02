@@ -17,6 +17,10 @@ const (
 	CredentialSecret CredentialKind = "secret"
 	// CredentialLogin: the user authenticates interactively, in a browser.
 	CredentialLogin CredentialKind = "login"
+	// CredentialNone: the provider needs no credential from the user, because
+	// it is already authenticated by whatever it talks to — a bridge to a
+	// local runtime, say. There is nothing for the screen to ask for.
+	CredentialNone CredentialKind = "none"
 )
 
 // Store is the settings slot a provider is given for its own credentials and
