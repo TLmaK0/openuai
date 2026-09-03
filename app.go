@@ -673,6 +673,20 @@ func (a *App) buildProviders() {
 	// default model. Gathering it here is what lets the settle below be a pure
 	// map lookup: it needs nothing from the llm registry, so no other lock and
 	// no I/O is held while the configuration's lock is.
+	//
+	// Known divergence from master, left open deliberately. This map is filled
+	// from one snapshot of the registry, so a provider unregistered and re-added
+	// under the same name with a different DefaultModel while this rebuild runs
+	// settles with its old default; master re-read the live registry with
+	// llm.Lookup() at that point and picked up the new one. For a plugin the
+	// trigger is a description that changed between its removal and its re-add.
+	// What is settled is a model that was valid for that same provider, not the
+	// empty model the fallback below could once produce.
+	//
+	// Closing it means one read of the registry serving both this map and the
+	// fallback, which needs the "marked Default, else first by name" rule to
+	// move behind an llm entry point instead of being repeated here — a change
+	// to internal/llm, tracked separately rather than made under this fix.
 	defaultModels := make(map[string]string)
 	for _, d := range llm.Descriptors() {
 		defaultModels[d.Name] = d.DefaultModel
