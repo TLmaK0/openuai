@@ -268,3 +268,35 @@ func TestDescriptionRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("round-tripped description = %+v", back)
 	}
 }
+
+// The core ships no prices of its own, so a provider that declares none has
+// every turn costed at zero — silently, because nothing errors. Every model
+// offered must be priced, and so must the id each alias resolves to, since it
+// is the resolved id that a run reports and therefore the one that gets
+// priced.
+func TestEveryOfferedModelIsPriced(t *testing.T) {
+	d := describe()
+	if len(d.Pricing) == 0 {
+		t.Fatal("no pricing declared: every turn through this provider would be costed at zero")
+	}
+	for _, m := range d.Models {
+		price, ok := d.Pricing[m]
+		if !ok {
+			t.Errorf("model %q is offered but has no price, so its turns cost zero", m)
+			continue
+		}
+		if price[0] <= 0 || price[1] <= 0 {
+			t.Errorf("model %q is priced %v, want both figures above zero", m, price)
+		}
+	}
+	if _, ok := d.Pricing[d.DefaultModel]; !ok {
+		t.Errorf("the default model %q has no price", d.DefaultModel)
+	}
+	// The alias is what is asked for; the resolved id is what comes back and
+	// what the core looks up.
+	for _, resolved := range []string{"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"} {
+		if _, ok := d.Pricing[resolved]; !ok {
+			t.Errorf("resolved id %q has no price, so a run reporting it costs zero", resolved)
+		}
+	}
+}

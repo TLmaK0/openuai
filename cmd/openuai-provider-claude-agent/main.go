@@ -38,6 +38,28 @@ import (
 // costed against a real model name.
 var models = []string{"opus", "sonnet", "haiku"}
 
+// pricing is per million input and output tokens. The core ships no prices of
+// its own — each provider declares what its models cost — so a provider that
+// declares none has every turn costed at zero.
+//
+// Both the alias and the id it currently resolves to are declared. A run
+// reports the resolved id, which is what gets priced; the alias is the safety
+// net for a run that reported no id to resolve.
+//
+// These are published rates, so they go stale when the rates change or a tier
+// moves to a new model. That is the same exposure the in-tree providers carry,
+// and it is why the run's own total_cost_usd would be better — but that figure
+// cannot cross this boundary, since llm.Response carries tokens and a model
+// name and no cost. Noted on the pull request rather than worked around here.
+var pricing = map[string][2]float64{
+	"opus":             {5.00, 25.00},
+	"claude-opus-5":    {5.00, 25.00},
+	"sonnet":           {2.00, 10.00},
+	"claude-sonnet-5":  {2.00, 10.00},
+	"haiku":            {1.00, 5.00},
+	"claude-haiku-4-5": {1.00, 5.00},
+}
+
 // systemPrompt replaces the headless agent's own. Its default prompt is for a
 // coding agent driving its own tools; here it has none, and the instructions
 // for the turn arrive from openuai's agent loop in the messages.
@@ -159,6 +181,7 @@ func describe() plugin.Description {
 		SecretPlaceholder:   "optional — leave empty to use the session already signed in on this machine",
 		DefaultModel:        "opus",
 		Models:              models,
+		Pricing:             pricing,
 		SupportsTools:       true,
 		SupportsReady:       true,
 		SupportsSecret:      true,
