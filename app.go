@@ -113,12 +113,12 @@ func (a *App) startup(ctx context.Context) {
 	// slot in the configuration. Nothing here names a provider.
 	a.loadProviderPlugins()
 	a.buildProviders()
-	logger.Info("Provider: %s, Model: %s", cfg.Provider, cfg.DefaultModel)
+	logger.Info("Provider: %s, Model: %s", cfg.Provider(), cfg.DefaultModel())
 
 	// Check for updates in background (delay to let frontend mount and register event listeners)
 	go func() {
 		time.Sleep(3 * time.Second)
-		info := updater.CheckForUpdate(a.version, cfg.SkippedVersion)
+		info := updater.CheckForUpdate(a.version, cfg.SkippedVersion())
 		if info != nil {
 			logger.Info("Emitting update_available event to frontend")
 			wailsRuntime.EventsEmit(a.ctx, "update_available", info)
@@ -127,7 +127,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Auto-download whisper-cli + model in background
 	go func() {
-		sttModel := cfg.STTModel
+		sttModel := cfg.STTModel()
 		if sttModel == "" {
 			sttModel = "small"
 		}
@@ -138,20 +138,20 @@ func (a *App) startup(ctx context.Context) {
 
 	// Voice recorder (native mic capture via miniaudio + whisper + Piper TTS)
 	a.recorder = voice.NewRecorder()
-	a.recorder.Device = cfg.AudioDevice
+	a.recorder.Device = cfg.AudioDevice()
 	a.recorder.OnLevel = func(level int) {
 		wailsRuntime.EventsEmit(a.ctx, "voice_level", level)
 	}
 
 	// Wake-word listener: hands-free "say the name, then your message".
 	a.wake = &voice.WakeListener{
-		WakeWord: func() string { return a.cfg.WakeWord },
-		Device:   func() string { return a.cfg.AudioDevice },
+		WakeWord: func() string { return a.cfg.WakeWord() },
+		Device:   func() string { return a.cfg.AudioDevice() },
 		Transcribe: func(wav []byte) (string, error) {
 			// Use the fast model: medium is far too slow on CPU (~16s/utterance),
 			// which breaks interactivity. Full-phrase context lets small recognise
 			// the wake word fine. Bias toward the wake word with --prompt.
-			res := voice.TranscribeWAV(wav, a.cfg.STTModel, a.cfg.STTLanguage, a.cfg.WakeWord, a.cfg.ConfigDir())
+			res := voice.TranscribeWAV(wav, a.cfg.STTModel(), a.cfg.STTLanguage(), a.cfg.WakeWord(), a.cfg.ConfigDir())
 			if res.Error != "" {
 				return "", fmt.Errorf("%s", res.Error)
 			}
@@ -206,12 +206,9 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
 	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
 	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents})
-	if cfg.ComputerUseEnabled {
-		disp := cfg.ComputerUseDisplay
-		if disp == "" {
-			disp = ":0"
-		}
-		computeruse.RegisterTools(a.registry, computeruse.New(disp, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+	if cfg.ComputerUseEnabled() {
+		disp := a.GetComputerUseDisplay()
+		computeruse.RegisterTools(a.registry, computeruse.New(disp, cfg.ComputerUseMonitor(), cfg.ComputerUseProfile()))
 		logger.Info("Computer-use tools registered (display %s)", disp)
 	}
 	logger.Info("Registered %d tools", len(a.registry.Definitions()))
@@ -308,16 +305,13 @@ func (a *App) startup(ctx context.Context) {
 	logger.Info("EventBus started")
 
 	// MCP manager (if servers configured)
-	if len(cfg.MCPServers) > 0 {
-		a.mcpManager = mcpclient.NewManager(cfg.MCPServers)
+	mcpServers := cfg.MCPServers()
+	if len(mcpServers) > 0 {
+		a.mcpManager = mcpclient.NewManager(mcpServers)
 		a.mcpManager.OnTokensSaved(func(name string, tokens *config.MCPOAuthTokens) {
-			for i, s := range a.cfg.MCPServers {
-				if s.Name == name {
-					a.cfg.MCPServers[i].OAuthTokens = tokens
-					a.cfg.Save()
-					logger.Info("MCP OAuth tokens saved for %s", name)
-					break
-				}
+			if _, ok := a.cfg.SetMCPServerTokens(name, tokens); ok {
+				a.cfg.Save()
+				logger.Info("MCP OAuth tokens saved for %s", name)
 			}
 		})
 		a.mcpManager.OnReady(func() {
@@ -329,24 +323,21 @@ func (a *App) startup(ctx context.Context) {
 		if err := a.eventBus.RegisterSource(a.mcpManager); err != nil {
 			logger.Error("Failed to register MCP manager: %s", err.Error())
 		} else {
-			logger.Info("MCP manager registered with %d servers", len(cfg.MCPServers))
+			logger.Info("MCP manager registered with %d servers", len(mcpServers))
 		}
 	}
 
 	// Restore watched chats from config
-	for _, jid := range cfg.WatchedChats {
+	watched := cfg.WatchedChats()
+	for _, jid := range watched {
 		a.watchedChats[jid] = struct{}{}
 	}
-	if len(cfg.WatchedChats) > 0 {
-		logger.Info("Restored %d watched chats: %v", len(cfg.WatchedChats), cfg.WatchedChats)
+	if len(watched) > 0 {
+		logger.Info("Restored %d watched chats: %v", len(watched), watched)
 	}
 
 	// System tray
-	notifyEnabled := true
-	if a.cfg.NotificationsEnabled != nil {
-		notifyEnabled = *a.cfg.NotificationsEnabled
-	}
-	tray.SetEnabled(notifyEnabled)
+	tray.SetEnabled(cfg.NotificationsEnabled())
 	tray.SetIconBytes(appIcon)
 	tray.Start(tray.Config{
 		Icon: appIcon,
@@ -360,8 +351,8 @@ func (a *App) startup(ctx context.Context) {
 	a.updateTrayTooltip()
 
 	// API server (optional, disabled by default)
-	if cfg.APIEnabled {
-		port := cfg.APIPort
+	if cfg.APIEnabled() {
+		port := cfg.APIPort()
 		if port == 0 {
 			port = 9120
 		}
@@ -429,7 +420,7 @@ func (a *App) shutdown(ctx context.Context) {
 func (a *App) ToggleNotifications(enabled bool) {
 	tray.SetEnabled(enabled)
 	tray.SyncNotifyCheckbox()
-	a.cfg.NotificationsEnabled = &enabled
+	a.cfg.SetNotificationsEnabled(enabled)
 	a.cfg.Save()
 	logger.Info("Notifications enabled: %v", enabled)
 }
@@ -660,7 +651,7 @@ func (a *App) RemoveProviderPlugin(name string) string {
 	// The active provider may have just been removed: settle on a valid one,
 	// and persist that, so the choice does not silently differ from what is
 	// on disk.
-	wasActive := a.cfg.Provider == name
+	wasActive := a.cfg.Provider() == name
 	a.buildProviders()
 	a.currentAgent = nil
 	if wasActive {
@@ -688,7 +679,8 @@ func (a *App) buildProviders() {
 		rebuilt[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
 	}
 	a.providers = rebuilt
-	_, known := rebuilt[a.cfg.Provider]
+	provider, model := a.cfg.ProviderAndModel()
+	_, known := rebuilt[provider]
 	a.providersMu.Unlock()
 
 	if !known {
@@ -697,17 +689,17 @@ func (a *App) buildProviders() {
 			logger.Error("No model provider is registered")
 			return
 		}
-		if a.cfg.Provider != "" {
-			logger.Info("Configured provider %q is not registered, falling back to %q", a.cfg.Provider, d.Name)
+		if provider != "" {
+			logger.Info("Configured provider %q is not registered, falling back to %q", provider, d.Name)
 		}
-		a.cfg.Provider = d.Name
-		a.cfg.DefaultModel = ""
+		provider, model = d.Name, ""
 	}
-	if a.cfg.DefaultModel == "" {
-		if d, ok := llm.Lookup(a.cfg.Provider); ok {
-			a.cfg.DefaultModel = d.DefaultModel
+	if model == "" {
+		if d, ok := llm.Lookup(provider); ok {
+			model = d.DefaultModel
 		}
 	}
+	a.cfg.SetProviderAndModel(provider, model)
 }
 
 // newProvider builds one registered provider.
@@ -720,13 +712,13 @@ func (a *App) newProvider(name string) llm.Provider {
 }
 
 func (a *App) activeProvider() llm.Provider {
-	return a.provider(a.cfg.Provider)
+	return a.provider(a.cfg.Provider())
 }
 
 // --- Provider management ---
 
 func (a *App) GetProvider() string {
-	return a.cfg.Provider
+	return a.cfg.Provider()
 }
 
 func (a *App) SetProvider(provider string) error {
@@ -735,8 +727,7 @@ func (a *App) SetProvider(provider string) error {
 		return fmt.Errorf("unknown provider: %s", provider)
 	}
 	logger.Info("Provider changed to: %s", provider)
-	a.cfg.Provider = provider
-	a.cfg.DefaultModel = d.DefaultModel
+	a.cfg.SetProviderAndModel(provider, d.DefaultModel)
 	a.currentAgent = nil // reset agent for new provider
 	return a.cfg.Save()
 }
@@ -761,7 +752,7 @@ func (a *App) GetProviders() []llm.ProviderSummary {
 // and whether it already has it. This is the only place a provider is asked,
 // so at most one plugin process is involved.
 func (a *App) GetActiveProvider() llm.ProviderInfo {
-	d, ok := llm.Lookup(a.cfg.Provider)
+	d, ok := llm.Lookup(a.cfg.Provider())
 	if !ok {
 		return llm.ProviderInfo{}
 	}
@@ -773,7 +764,7 @@ func (a *App) GetActiveProvider() llm.ProviderInfo {
 // ProviderLogin runs the active provider's interactive login. It returns the
 // error text, or an empty string on success.
 func (a *App) ProviderLogin() string {
-	logger.Info("Starting login for provider: %s", a.cfg.Provider)
+	logger.Info("Starting login for provider: %s", a.cfg.Provider())
 	if err := llm.Login(a.activeProvider()); err != nil {
 		logger.Error("Login failed: %s", err.Error())
 		return err.Error()
@@ -785,7 +776,7 @@ func (a *App) ProviderLogin() string {
 // SetProviderSecret hands a secret (an API key) to the active provider, which
 // persists it in its own store.
 func (a *App) SetProviderSecret(secret string) error {
-	logger.Info("Credentials updated for provider: %s", a.cfg.Provider)
+	logger.Info("Credentials updated for provider: %s", a.cfg.Provider())
 	return llm.SetSecret(a.activeProvider(), secret)
 }
 
@@ -806,12 +797,12 @@ func (a *App) GetModels() []string {
 }
 
 func (a *App) GetDefaultModel() string {
-	return a.cfg.DefaultModel
+	return a.cfg.DefaultModel()
 }
 
 func (a *App) SetDefaultModel(model string) error {
 	logger.Info("Model changed to: %s", model)
-	a.cfg.DefaultModel = model
+	a.cfg.SetDefaultModel(model)
 	a.currentAgent = nil // reset agent for new model
 	return a.cfg.Save()
 }
@@ -846,7 +837,7 @@ func (a *App) ensureAgent() *agent.Agent {
 	if a.currentAgent == nil {
 		a.currentAgent = agent.New(agent.Config{
 			Provider:    a.activeProvider(),
-			Model:       a.cfg.DefaultModel,
+			Model:       a.cfg.DefaultModel(),
 			Registry:    a.registry,
 			Permissions: a.permissions,
 			CostTracker: a.costTracker,
@@ -967,7 +958,7 @@ func (a *App) triggerAgentWithNotification(notification string) {
 
 // spawnSubAgents is the bridge between the spawn_agents tool and the agent package.
 func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools.SubTaskResult {
-	maxConcurrent := a.cfg.MaxConcurrentAgents
+	maxConcurrent := a.cfg.MaxConcurrentAgents()
 	if maxConcurrent <= 0 {
 		maxConcurrent = 5
 	}
@@ -983,7 +974,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
 		Provider:      a.activeProvider(),
-		Model:         a.cfg.DefaultModel,
+		Model:         a.cfg.DefaultModel(),
 		Registry:      filteredRegistry,
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
@@ -1005,7 +996,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	for _, r := range results {
 		if r.InputTokens > 0 || r.OutputTokens > 0 {
 			a.costTracker.Track(&llm.Response{
-				Model:        a.cfg.DefaultModel,
+				Model:        a.cfg.DefaultModel(),
 				InputTokens:  r.InputTokens,
 				OutputTokens: r.OutputTokens,
 			})
@@ -1071,7 +1062,7 @@ func (a *App) persistWatchedChats() {
 		jids = append(jids, jid)
 	}
 	a.watchedChatsMu.RUnlock()
-	a.cfg.WatchedChats = jids
+	a.cfg.SetWatchedChats(jids)
 	a.cfg.Save()
 }
 
@@ -1160,7 +1151,7 @@ Transcript:
 
 	resp, err := provider.Chat(ctx, []llm.Message{
 		{Role: llm.RoleUser, Content: extractPrompt},
-	}, a.cfg.DefaultModel)
+	}, a.cfg.DefaultModel())
 	if err != nil {
 		logger.Error("Memory extraction failed: %s", err.Error())
 		return
@@ -1216,7 +1207,7 @@ func (a *App) GetMarketplace() []marketplace.CatalogEntry {
 
 func (a *App) GetInstalledNames() []string {
 	var names []string
-	for _, s := range a.cfg.MCPServers {
+	for _, s := range a.cfg.MCPServers() {
 		names = append(names, s.Name)
 	}
 	return names
@@ -1233,7 +1224,7 @@ func (a *App) InstallMarketplace(name, secret string) string {
 	}
 
 	// Check if already installed
-	for _, s := range a.cfg.MCPServers {
+	for _, s := range a.cfg.MCPServers() {
 		if s.Name == entry.Name {
 			return "already installed: " + entry.Name
 		}
@@ -1281,8 +1272,9 @@ type MCPServerStatus struct {
 
 // GetMCPServers returns configured MCP servers and their status.
 func (a *App) GetMCPServers() []MCPServerStatus {
-	servers := make([]MCPServerStatus, 0, len(a.cfg.MCPServers))
-	for _, cfg := range a.cfg.MCPServers {
+	configured := a.cfg.MCPServers()
+	servers := make([]MCPServerStatus, 0, len(configured))
+	for _, cfg := range configured {
 		status := MCPServerStatus{
 			Name:      cfg.Name,
 			Command:   cfg.Command,
@@ -1314,12 +1306,7 @@ func (a *App) GetMCPServers() []MCPServerStatus {
 
 // AddMCPServer adds a new MCP server configuration.
 func (a *App) AddMCPServer(name, command string, args []string, env map[string]string, autoStart bool, subscribe []string, url string) string {
-	for _, s := range a.cfg.MCPServers {
-		if s.Name == name {
-			return "server with that name already exists"
-		}
-	}
-	a.cfg.MCPServers = append(a.cfg.MCPServers, config.MCPServerConfig{
+	server := config.MCPServerConfig{
 		Name:      name,
 		Command:   command,
 		Args:      args,
@@ -1327,14 +1314,19 @@ func (a *App) AddMCPServer(name, command string, args []string, env map[string]s
 		AutoStart: autoStart,
 		Subscribe: subscribe,
 		URL:       url,
-	})
+	}
+	if !a.cfg.AddMCPServer(server) {
+		return "server with that name already exists"
+	}
 	if err := a.cfg.Save(); err != nil {
 		return err.Error()
 	}
 	logger.Info("MCP server %q added", name)
 
-	// Try to start the new server immediately
-	cfg := a.cfg.MCPServers[len(a.cfg.MCPServers)-1]
+	// Try to start the new server immediately, from the value just added
+	// rather than by reading it back: a concurrent removal would have
+	// invalidated the index.
+	cfg := server
 	if a.mcpManager != nil {
 		go func() {
 			if err := a.mcpManager.Reconnect(cfg); err != nil {
@@ -1447,7 +1439,7 @@ func (a *App) StopRecording() map[string]interface{} {
 
 // TranscribeAudio transcribes base64-encoded audio using local Whisper.
 func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
-	result := voice.Transcribe(audioBase64, a.cfg.STTModel, a.cfg.STTLanguage, "", a.cfg.ConfigDir())
+	result := voice.Transcribe(audioBase64, a.cfg.STTModel(), a.cfg.STTLanguage(), "", a.cfg.ConfigDir())
 	return map[string]interface{}{
 		"text":  result.Text,
 		"error": result.Error,
@@ -1456,7 +1448,7 @@ func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
 
 // SpeakText converts text to speech using local espeak-ng.
 func (a *App) SpeakText(text string) map[string]interface{} {
-	result := voice.Speak(text, normalizeVoice(a.cfg.TTSVoice), a.cfg.ConfigDir())
+	result := voice.Speak(text, normalizeVoice(a.cfg.TTSVoice()), a.cfg.ConfigDir())
 	return map[string]interface{}{
 		"audio_base64": result.AudioBase64,
 		"format":       result.Format,
@@ -1525,7 +1517,7 @@ func normalizeVoice(v string) string {
 
 // GetTTSVoice returns the configured TTS voice code.
 func (a *App) GetTTSVoice() string {
-	return normalizeVoice(a.cfg.TTSVoice)
+	return normalizeVoice(a.cfg.TTSVoice())
 }
 
 // GetTTSVoices returns the online Piper voice catalog with per-voice install state.
@@ -1557,7 +1549,7 @@ func (a *App) PiperSupported() bool { return piper.Supported() }
 // Returns an error string ("" on success) the UI can surface.
 func (a *App) SetTTSVoice(v string) string {
 	v = normalizeVoice(v)
-	a.cfg.TTSVoice = v
+	a.cfg.SetTTSVoice(v)
 	if err := a.cfg.Save(); err != nil {
 		return err.Error()
 	}
@@ -1577,24 +1569,24 @@ func (a *App) SetTTSVoice(v string) string {
 
 // GetSTTLanguage returns the configured STT language (empty or "auto" = auto-detect).
 func (a *App) GetSTTLanguage() string {
-	if a.cfg.STTLanguage == "" {
-		return "auto"
+	if lang := a.cfg.STTLanguage(); lang != "" {
+		return lang
 	}
-	return a.cfg.STTLanguage
+	return "auto"
 }
 
 // SetSTTLanguage sets the STT language and persists.
 func (a *App) SetSTTLanguage(lang string) error {
-	a.cfg.STTLanguage = lang
+	a.cfg.SetSTTLanguage(lang)
 	return a.cfg.Save()
 }
 
 // GetWakeWord returns the configured wake word (name that triggers listening).
-func (a *App) GetWakeWord() string { return a.cfg.WakeWord }
+func (a *App) GetWakeWord() string { return a.cfg.WakeWord() }
 
 // SetWakeWord persists the wake word.
 func (a *App) SetWakeWord(word string) error {
-	a.cfg.WakeWord = strings.TrimSpace(word)
+	a.cfg.SetWakeWord(strings.TrimSpace(word))
 	return a.cfg.Save()
 }
 
@@ -1613,7 +1605,7 @@ func (a *App) SetWakeListening(on bool) string {
 		a.wake.Stop()
 		return ""
 	}
-	if strings.TrimSpace(a.cfg.WakeWord) == "" {
+	if strings.TrimSpace(a.cfg.WakeWord()) == "" {
 		return "Set a wake word in Settings first"
 	}
 	a.wake.Start()
@@ -1630,10 +1622,8 @@ func (a *App) SetWakePaused(paused bool) {
 
 // GetVoiceEnabled returns whether voice features are enabled.
 func (a *App) GetVoiceEnabled() bool {
-	if a.cfg.VoiceEnabled == nil {
-		return true // enabled by default when OpenAI is logged in
-	}
-	return *a.cfg.VoiceEnabled
+	// Enabled by default; the configuration is what says otherwise.
+	return a.cfg.VoiceEnabled()
 }
 
 // GetAudioDevices returns available microphone devices.
@@ -1643,19 +1633,19 @@ func (a *App) GetAudioDevices() []voice.AudioDevice {
 
 // GetAudioDevice returns the configured audio device ID.
 func (a *App) GetAudioDevice() string {
-	return a.cfg.AudioDevice
+	return a.cfg.AudioDevice()
 }
 
 // SetAudioDevice sets the audio input device and persists.
 func (a *App) SetAudioDevice(deviceID string) error {
-	a.cfg.AudioDevice = deviceID
+	a.cfg.SetAudioDevice(deviceID)
 	a.recorder.Device = deviceID
 	return a.cfg.Save()
 }
 
 // SetVoiceEnabled toggles voice features.
 func (a *App) SetVoiceEnabled(enabled bool) error {
-	a.cfg.VoiceEnabled = &enabled
+	a.cfg.SetVoiceEnabled(enabled)
 	return a.cfg.Save()
 }
 
@@ -1681,7 +1671,7 @@ func (a *App) ApplyUpdate(downloadURL string) string {
 
 // SkipVersion saves the given version as skipped so it won't prompt again.
 func (a *App) SkipVersion(version string) {
-	a.cfg.SkippedVersion = version
+	a.cfg.SetSkippedVersion(version)
 	a.cfg.Save()
 	logger.Info("Skipped update version: %s", version)
 }
@@ -1690,12 +1680,12 @@ func (a *App) SkipVersion(version string) {
 
 // GetBetaLipReading returns whether the lip reading beta is enabled.
 func (a *App) GetBetaLipReading() bool {
-	return a.cfg.BetaLipReading
+	return a.cfg.BetaLipReading()
 }
 
 // SetBetaLipReading enables or disables the lip reading beta.
 func (a *App) SetBetaLipReading(enabled bool) error {
-	a.cfg.BetaLipReading = enabled
+	a.cfg.SetBetaLipReading(enabled)
 	logger.Info("Beta lip reading: %v", enabled)
 	return a.cfg.Save()
 }
@@ -1703,24 +1693,16 @@ func (a *App) SetBetaLipReading(enabled bool) error {
 // --- Computer Use ---
 
 // GetComputerUseEnabled reports whether computer-use (screen control) is on.
-func (a *App) GetComputerUseEnabled() bool { return a.cfg.ComputerUseEnabled }
-
-// computerUseMonitor returns the configured monitor index (default 0 = primary).
-func (a *App) computerUseMonitor() int {
-	if a.cfg.ComputerUseMonitor == nil {
-		return 0
-	}
-	return *a.cfg.ComputerUseMonitor
-}
+func (a *App) GetComputerUseEnabled() bool { return a.cfg.ComputerUseEnabled() }
 
 // GetComputerUseMonitor returns the configured monitor index.
-func (a *App) GetComputerUseMonitor() int { return a.computerUseMonitor() }
+func (a *App) GetComputerUseMonitor() int { return a.cfg.ComputerUseMonitor() }
 
 // SetComputerUseMonitor sets which monitor the agent controls and re-registers tools.
 func (a *App) SetComputerUseMonitor(monitor int) error {
-	a.cfg.ComputerUseMonitor = &monitor
-	if a.cfg.ComputerUseEnabled {
-		computeruse.RegisterTools(a.registry, computeruse.New(a.GetComputerUseDisplay(), monitor, a.cfg.ComputerUseProfile))
+	a.cfg.SetComputerUseMonitor(monitor)
+	if a.cfg.ComputerUseEnabled() {
+		computeruse.RegisterTools(a.registry, computeruse.New(a.GetComputerUseDisplay(), monitor, a.cfg.ComputerUseProfile()))
 	}
 	a.currentAgent = nil
 	logger.Info("Computer-use monitor set to %d", monitor)
@@ -1729,19 +1711,19 @@ func (a *App) SetComputerUseMonitor(monitor int) error {
 
 // GetComputerUseDisplay returns the configured X display (default ":0").
 func (a *App) GetComputerUseDisplay() string {
-	if a.cfg.ComputerUseDisplay == "" {
-		return ":0"
+	if display := a.cfg.ComputerUseDisplay(); display != "" {
+		return display
 	}
-	return a.cfg.ComputerUseDisplay
+	return ":0"
 }
 
 // SetComputerUseDisplay sets the X display the agent controls (e.g. ":0" or ":99").
 func (a *App) SetComputerUseDisplay(display string) error {
-	a.cfg.ComputerUseDisplay = display
-	if a.cfg.ComputerUseEnabled {
+	a.cfg.SetComputerUseDisplay(display)
+	if a.cfg.ComputerUseEnabled() {
 		// Re-register the computer_* tools bound to the new display (Register
 		// overwrites by name), so the change takes effect without a restart.
-		computeruse.RegisterTools(a.registry, computeruse.New(display, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+		computeruse.RegisterTools(a.registry, computeruse.New(display, a.cfg.ComputerUseMonitor(), a.cfg.ComputerUseProfile()))
 	}
 	a.currentAgent = nil // rebuild with new display
 	logger.Info("Computer-use display set to %s", display)
@@ -1751,10 +1733,10 @@ func (a *App) SetComputerUseDisplay(display string) error {
 // SetComputerUseEnabled toggles computer-use. Enabling registers the screen-control
 // tools immediately; disabling takes effect for new agent runs.
 func (a *App) SetComputerUseEnabled(enabled bool) error {
-	a.cfg.ComputerUseEnabled = enabled
+	a.cfg.SetComputerUseEnabled(enabled)
 	if enabled {
 		disp := a.GetComputerUseDisplay()
-		computeruse.RegisterTools(a.registry, computeruse.New(disp, a.computerUseMonitor(), a.cfg.ComputerUseProfile))
+		computeruse.RegisterTools(a.registry, computeruse.New(disp, a.cfg.ComputerUseMonitor(), a.cfg.ComputerUseProfile()))
 		logger.Info("Computer-use enabled (display %s)", disp)
 	} else {
 		logger.Info("Computer-use disabled (effective next restart)")
@@ -1849,20 +1831,11 @@ func (a *App) AuthMCPServer(name string) string {
 
 // ReauthMCPServer clears saved tokens and reconnects an HTTP MCP server, triggering OAuth.
 func (a *App) ReauthMCPServer(name string) string {
-	var cfg config.MCPServerConfig
-	found := false
-	for i, s := range a.cfg.MCPServers {
-		if s.Name == name {
-			a.cfg.MCPServers[i].OAuthTokens = nil
-			a.cfg.Save()
-			cfg = a.cfg.MCPServers[i]
-			found = true
-			break
-		}
-	}
+	cfg, found := a.cfg.SetMCPServerTokens(name, nil)
 	if !found {
 		return "server not found"
 	}
+	a.cfg.Save()
 
 	if a.mcpManager == nil {
 		return "MCP manager not running"
@@ -1885,17 +1858,9 @@ func (a *App) ReauthMCPServer(name string) string {
 
 // RemoveMCPServer removes an MCP server configuration by name.
 func (a *App) RemoveMCPServer(name string) string {
-	idx := -1
-	for i, s := range a.cfg.MCPServers {
-		if s.Name == name {
-			idx = i
-			break
-		}
-	}
-	if idx == -1 {
+	if !a.cfg.RemoveMCPServer(name) {
 		return "server not found"
 	}
-	a.cfg.MCPServers = append(a.cfg.MCPServers[:idx], a.cfg.MCPServers[idx+1:]...)
 	if err := a.cfg.Save(); err != nil {
 		return err.Error()
 	}

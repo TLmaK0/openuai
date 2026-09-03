@@ -210,7 +210,7 @@ func TestStopProviderPluginToleratesNonPlugins(t *testing.T) {
 // than merely returning something stale.
 func TestProviderMapIsSafeUnderConcurrentUse(t *testing.T) {
 	app := appWith(map[string]llm.Provider{"in-tree": inTreeProvider{name: "in-tree"}})
-	app.cfg.Provider = "in-tree"
+	app.cfg.SetProviderAndModel("in-tree", "")
 
 	const rounds = 200
 	var wg sync.WaitGroup
@@ -307,7 +307,7 @@ func TestGetProvidersStartsNoPluginProcess(t *testing.T) {
 
 	// Asking about the provider in use does start it, which is the one place
 	// that is worth paying for.
-	app.cfg.Provider = "listed-plugin"
+	app.cfg.SetProviderAndModel("listed-plugin", "")
 	info := app.GetActiveProvider()
 	if info.Name != "listed-plugin" || info.Credential != "secret" {
 		t.Errorf("GetActiveProvider() = %+v", info)
@@ -318,7 +318,7 @@ func TestGetProvidersStartsNoPluginProcess(t *testing.T) {
 
 	// An unknown active provider is reported as empty rather than crashing
 	// the settings screen.
-	app.cfg.Provider = "never-registered"
+	app.cfg.SetProviderAndModel("never-registered", "")
 	if got := app.GetActiveProvider(); got.Name != "" {
 		t.Errorf("GetActiveProvider() for an unknown name = %+v, want empty", got)
 	}
@@ -383,7 +383,7 @@ func TestRemovingAPluginWithdrawsItsPrices(t *testing.T) {
 
 	app := appWith(map[string]llm.Provider{})
 	app.cfg = cfg
-	app.cfg.Provider = "something-else"
+	app.cfg.SetProviderAndModel("something-else", "")
 
 	if errText := app.RemoveProviderPlugin("priced"); errText != "" {
 		t.Fatalf("RemoveProviderPlugin() = %q, want no error", errText)

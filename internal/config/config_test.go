@@ -65,16 +65,16 @@ func TestMigratesPreRegistryCredentials(t *testing.T) {
 
 	// The legacy fields are cleared, so the next Save writes only the
 	// current shape.
-	if cfg.ClaudeAPIKey != "" || cfg.OpenAITokens != nil {
-		t.Errorf("legacy fields still set: key=%q tokens=%v", cfg.ClaudeAPIKey, cfg.OpenAITokens)
+	if cfg.data.ClaudeAPIKey != "" || cfg.data.OpenAITokens != nil {
+		t.Errorf("legacy fields still set: key=%q tokens=%v", cfg.data.ClaudeAPIKey, cfg.data.OpenAITokens)
 	}
 	if !containsProviders(t, cfg) {
 		t.Error("saved config does not carry the providers section")
 	}
 
 	// Everything else survives untouched.
-	if cfg.Provider != "openai" || cfg.DefaultModel != "gpt-5.1-codex" {
-		t.Errorf("provider/model = %q/%q, want openai/gpt-5.1-codex", cfg.Provider, cfg.DefaultModel)
+	if provider, model := cfg.ProviderAndModel(); provider != "openai" || model != "gpt-5.1-codex" {
+		t.Errorf("provider/model = %q/%q, want openai/gpt-5.1-codex", provider, model)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if got := cfg.ProviderStore("claude").Get("api_key"); got != "sk-ant" {
 		t.Errorf("claude api_key = %q, want sk-ant", got)
 	}
-	if cfg.ClaudeAPIKey != "" || cfg.OpenAITokens != nil {
+	if cfg.data.ClaudeAPIKey != "" || cfg.data.OpenAITokens != nil {
 		t.Error("migration reintroduced the legacy fields")
 	}
 }
@@ -108,8 +108,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 // registry's business, not this package's.
 func TestFreshConfigNamesNoProvider(t *testing.T) {
 	cfg := loadFrom(t, `{}`)
-	if cfg.Provider != "" || cfg.DefaultModel != "" {
-		t.Errorf("fresh config = provider %q, model %q; want both empty", cfg.Provider, cfg.DefaultModel)
+	if provider, model := cfg.ProviderAndModel(); provider != "" || model != "" {
+		t.Errorf("fresh config = provider %q, model %q; want both empty", provider, model)
 	}
 }
 
@@ -197,11 +197,10 @@ func TestProviderPluginRoundTrip(t *testing.T) {
 	if err := cfg.SetProviderPlugin(plugin); err != nil {
 		t.Fatalf("SetProviderPlugin() on replace = %v, want nil", err)
 	}
-	if len(cfg.ProviderPlugins) != 1 {
-		t.Fatalf("plugins = %d, want 1 after replacing", len(cfg.ProviderPlugins))
-	}
-	if cfg.ProviderPlugins[0].Command != "openuai-provider-acme-v2" {
-		t.Errorf("plugin was not replaced: %+v", cfg.ProviderPlugins[0])
+	if plugins := cfg.ProviderPluginList(); len(plugins) != 1 {
+		t.Fatalf("plugins = %d, want 1 after replacing", len(plugins))
+	} else if plugins[0].Command != "openuai-provider-acme-v2" {
+		t.Errorf("plugin was not replaced: %+v", plugins[0])
 	}
 
 	// It survives a reload: the plugin is available again at next start
@@ -310,5 +309,252 @@ func TestProviderPluginsAreSafeUnderConcurrentUse(t *testing.T) {
 	// The credential written all along survived the churn.
 	if got := cfg.ProviderStore("openai").Get("tokens"); got != "{}" {
 		t.Errorf("openai tokens = %q, want {}", got)
+	}
+}
+
+// The settings screen writes on the goroutine Wails gave it, and an agent
+// turn reads on its own, so every value in the struct is written and read at
+// once. The measured example is Provider and DefaultModel, which are strings:
+// unguarded, a reader can pair one write's pointer with another's length and
+// come back with a provider that was never configured.
+func TestSettingsAreSafeUnderConcurrentUse(t *testing.T) {
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+
+	// The pairs the settings screen chooses between. A reader must observe
+	// one of these, never a mixture.
+	pairs := [][2]string{
+		{"claude", "claude-opus-4-6"},
+		{"openai", "gpt-5.1-codex"},
+		{"a-plugin-with-a-much-longer-name", "a-model-with-a-much-longer-name"},
+	}
+	want := map[string]string{}
+	for _, p := range pairs {
+		want[p[0]] = p[1]
+	}
+
+	const rounds = 500
+	var wg sync.WaitGroup
+
+	// The settings screen, changing everything a user can change.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			p := pairs[i%len(pairs)]
+			cfg.SetProviderAndModel(p[0], p[1])
+			cfg.SetWakeWord("Pepito")
+			cfg.SetWatchedChats([]string{"one@s.whatsapp.net", "two@s.whatsapp.net"})
+			cfg.SetVoiceEnabled(i%2 == 0)
+			cfg.SetComputerUseMonitor(i % 3)
+			cfg.SetTTSVoice("alloy")
+			cfg.SetAudioDevice("default")
+			cfg.SetSTTLanguage("es")
+		}
+	}()
+
+	// An agent turn, reading what it needs to run.
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				provider, model := cfg.ProviderAndModel()
+				if provider != "" && want[provider] != model {
+					t.Errorf("read provider %q with model %q, a pair never configured", provider, model)
+					return
+				}
+				_ = cfg.Provider()
+				_ = cfg.DefaultModel()
+				_ = cfg.WakeWord()
+				_ = cfg.VoiceEnabled()
+				_ = cfg.ComputerUseMonitor()
+				_ = cfg.TTSVoice()
+				_ = cfg.AudioDevice()
+				_ = cfg.STTLanguage()
+				for _, jid := range cfg.WatchedChats() {
+					_ = jid
+				}
+			}
+		}()
+	}
+
+	// And a save landing mid-change, as an OAuth refresh does: Save marshals
+	// the whole struct, so it reads every value the settings screen writes.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			if err := cfg.Save(); err != nil {
+				t.Errorf("Save() = %v, want nil", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+// Save marshals the entire struct, so it is a reader of every value. What it
+// writes must be a state that existed: a document naming one write's provider
+// beside another's model would be a configuration nobody chose, and it would
+// survive the restart that reads it back.
+func TestSaveNeverMarshalsAHalfUpdatedConfig(t *testing.T) {
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+
+	pairs := [][2]string{
+		{"claude", "claude-opus-4-6"},
+		{"openai", "gpt-5.1-codex"},
+	}
+
+	const rounds = 500
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			p := pairs[i%len(pairs)]
+			cfg.SetProviderAndModel(p[0], p[1])
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			// MarshalJSON is what Save writes out; going through it directly
+			// keeps the test on the marshalling rather than on the file.
+			data, err := cfg.MarshalJSON()
+			if err != nil {
+				t.Errorf("MarshalJSON() = %v, want nil", err)
+				return
+			}
+			var saved struct {
+				Provider     string `json:"provider"`
+				DefaultModel string `json:"default_model"`
+			}
+			if err := json.Unmarshal(data, &saved); err != nil {
+				t.Errorf("the saved config does not parse: %v", err)
+				return
+			}
+			for _, p := range pairs {
+				if saved.Provider == p[0] {
+					if saved.DefaultModel != p[1] {
+						t.Errorf("saved provider %q with model %q, want %q", saved.Provider, saved.DefaultModel, p[1])
+						return
+					}
+					break
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+// Moving the values behind accessors moved their json tags with them, and a
+// tag lost in the move would drop a setting silently — the field would simply
+// stop being written, and read back as its zero value. So every accessor is
+// checked against the key it is stored under, in both directions.
+func TestEverySettingRoundTrips(t *testing.T) {
+	cfg := loadFrom(t, `{
+		"provider": "openai",
+		"default_model": "gpt-5.1-codex",
+		"mcp_servers": [{"name": "wa", "command": "mcp-whatsapp", "auto_start": true}],
+		"watched_chats": ["one@s.whatsapp.net"],
+		"max_concurrent_agents": 7,
+		"notifications_enabled": false,
+		"api_enabled": true,
+		"api_port": 9120,
+		"voice_enabled": false,
+		"tts_voice": "alloy",
+		"stt_model": "small",
+		"stt_language": "es",
+		"wake_word": "Pepito",
+		"audio_device": "default",
+		"skipped_version": "v0.4.9",
+		"beta_lip_reading": true,
+		"computer_use_enabled": true,
+		"computer_use_display": ":99",
+		"computer_use_monitor": 2,
+		"computer_use_profile": "/tmp/chrome-profile"
+	}`)
+
+	check := func(name string, got, want any) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+
+	// Read what was on disk.
+	assertAll := func(cfg *Config) {
+		t.Helper()
+		provider, model := cfg.ProviderAndModel()
+		check("Provider()", provider, "openai")
+		check("DefaultModel()", model, "gpt-5.1-codex")
+		check("MaxConcurrentAgents()", cfg.MaxConcurrentAgents(), 7)
+		check("NotificationsEnabled()", cfg.NotificationsEnabled(), false)
+		check("APIEnabled()", cfg.APIEnabled(), true)
+		check("APIPort()", cfg.APIPort(), 9120)
+		check("VoiceEnabled()", cfg.VoiceEnabled(), false)
+		check("TTSVoice()", cfg.TTSVoice(), "alloy")
+		check("STTModel()", cfg.STTModel(), "small")
+		check("STTLanguage()", cfg.STTLanguage(), "es")
+		check("WakeWord()", cfg.WakeWord(), "Pepito")
+		check("AudioDevice()", cfg.AudioDevice(), "default")
+		check("SkippedVersion()", cfg.SkippedVersion(), "v0.4.9")
+		check("BetaLipReading()", cfg.BetaLipReading(), true)
+		check("ComputerUseEnabled()", cfg.ComputerUseEnabled(), true)
+		check("ComputerUseDisplay()", cfg.ComputerUseDisplay(), ":99")
+		check("ComputerUseMonitor()", cfg.ComputerUseMonitor(), 2)
+		check("ComputerUseProfile()", cfg.ComputerUseProfile(), "/tmp/chrome-profile")
+
+		chats := cfg.WatchedChats()
+		if len(chats) != 1 || chats[0] != "one@s.whatsapp.net" {
+			t.Errorf("WatchedChats() = %v, want one JID", chats)
+		}
+		servers := cfg.MCPServers()
+		if len(servers) != 1 || servers[0].Name != "wa" || !servers[0].AutoStart {
+			t.Errorf("MCPServers() = %+v, want the one auto-starting server", servers)
+		}
+	}
+	assertAll(cfg)
+
+	// Save it and read it back: nothing may be lost on the way through disk.
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() = %v, want nil", err)
+	}
+	data, err := os.ReadFile(cfg.Path())
+	if err != nil {
+		t.Fatalf("reading the saved config: %v", err)
+	}
+	reloaded := &Config{}
+	if err := json.Unmarshal(data, reloaded); err != nil {
+		t.Fatalf("parsing the saved config: %v", err)
+	}
+	assertAll(reloaded)
+}
+
+// The default for a setting stored as a pointer lives in its accessor, so
+// that no caller has to know the value is optional — and so that no accessor
+// hands out the pointer itself, which would be a way to write past the lock.
+func TestPointerSettingsDefaultWhenUnset(t *testing.T) {
+	cfg := loadFrom(t, `{}`)
+
+	if !cfg.NotificationsEnabled() {
+		t.Error("NotificationsEnabled() = false on a fresh config, want true")
+	}
+	if !cfg.VoiceEnabled() {
+		t.Error("VoiceEnabled() = false on a fresh config, want true")
+	}
+	if got := cfg.ComputerUseMonitor(); got != 0 {
+		t.Errorf("ComputerUseMonitor() = %d on a fresh config, want 0 (primary)", got)
+	}
+
+	// Turning one off is not the same as leaving it unset.
+	cfg.SetNotificationsEnabled(false)
+	if cfg.NotificationsEnabled() {
+		t.Error("NotificationsEnabled() = true after being turned off")
 	}
 }
