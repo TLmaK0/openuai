@@ -107,17 +107,6 @@ func SetModelPricing(model string, inputPerMillion, outputPerMillion float64) {
 	modelPricing[model] = [2]float64{inputPerMillion, outputPerMillion}
 }
 
-// UnsetModelPricing withdraws a model's price. It is for a provider that goes
-// away while the app runs: leaving its prices behind would price a model
-// nothing can serve any more, and would let a later provider inherit them.
-func UnsetModelPricing(models ...string) {
-	pricingMu.Lock()
-	defer pricingMu.Unlock()
-	for _, model := range models {
-		delete(modelPricing, model)
-	}
-}
-
 // ModelPricing reports the declared price of a model, per million input and
 // output tokens.
 func ModelPricing(model string) ([2]float64, bool) {

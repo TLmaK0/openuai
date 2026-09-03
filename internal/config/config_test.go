@@ -28,6 +28,9 @@ func loadFrom(t *testing.T, body string) *Config {
 		t.Fatalf("parsing config: %v", err)
 	}
 	cfg.migrateProviderCredentials()
+	// Load does this too; the helper has to stay in step with it or a test
+	// exercises a configuration no real start-up produces.
+	cfg.dropProviderPlugins()
 	return cfg
 }
 
@@ -160,158 +163,6 @@ func containsProviders(t *testing.T, cfg *Config) bool {
 	}
 	_, ok := out["providers"]
 	return ok
-}
-
-// A provider plugin is configuration, not code: adding one is a write to the
-// configuration file, which is what lets a provider arrive without a rebuild.
-func TestProviderPluginRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	cfg := &Config{path: path}
-
-	if _, ok := cfg.ProviderPlugin("acme"); ok {
-		t.Error("ProviderPlugin on an empty config = found, want not found")
-	}
-
-	plugin := ProviderPluginConfig{
-		Name:        "acme",
-		Command:     "openuai-provider-acme",
-		Args:        []string{"--serve"},
-		Env:         map[string]string{"ACME_REGION": "eu"},
-		Description: json.RawMessage(`{"name":"acme"}`),
-	}
-	if err := cfg.SetProviderPlugin(plugin); err != nil {
-		t.Fatalf("SetProviderPlugin() = %v, want nil", err)
-	}
-
-	got, ok := cfg.ProviderPlugin("acme")
-	if !ok {
-		t.Fatal("ProviderPlugin(acme) = not found after adding it")
-	}
-	if got.Command != "openuai-provider-acme" || len(got.Args) != 1 || got.Env["ACME_REGION"] != "eu" {
-		t.Errorf("stored plugin = %+v", got)
-	}
-	if string(got.Description) != `{"name":"acme"}` {
-		t.Errorf("cached description = %s", got.Description)
-	}
-
-	// Adding the same name again replaces it rather than duplicating it.
-	plugin.Command = "openuai-provider-acme-v2"
-	if err := cfg.SetProviderPlugin(plugin); err != nil {
-		t.Fatalf("SetProviderPlugin() on replace = %v, want nil", err)
-	}
-	if plugins := cfg.ProviderPluginList(); len(plugins) != 1 {
-		t.Fatalf("plugins = %d, want 1 after replacing", len(plugins))
-	} else if plugins[0].Command != "openuai-provider-acme-v2" {
-		t.Errorf("plugin was not replaced: %+v", plugins[0])
-	}
-
-	// It survives a reload: the plugin is available again at next start
-	// without being probed.
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("SetProviderPlugin() did not write the config: %v", err)
-	}
-	reloaded := &Config{path: path}
-	if err := json.Unmarshal(data, reloaded); err != nil {
-		t.Fatalf("saved config is not valid JSON: %v", err)
-	}
-	if _, ok := reloaded.ProviderPlugin("acme"); !ok {
-		t.Error("reloaded config lost the plugin")
-	}
-}
-
-// Removing a plugin must also drop whatever the core was holding for it, so a
-// later plugin of the same name does not inherit stale credentials.
-func TestRemoveProviderPluginDropsItsCredentials(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	cfg := &Config{path: path}
-
-	if err := cfg.SetProviderPlugin(ProviderPluginConfig{Name: "acme", Command: "acme"}); err != nil {
-		t.Fatalf("SetProviderPlugin() = %v", err)
-	}
-	if err := cfg.ProviderStore("acme").Set("api_key", "acme-key"); err != nil {
-		t.Fatalf("Set() = %v", err)
-	}
-	if err := cfg.SetProviderPlugin(ProviderPluginConfig{Name: "other", Command: "other"}); err != nil {
-		t.Fatalf("SetProviderPlugin() = %v", err)
-	}
-	if err := cfg.ProviderStore("other").Set("api_key", "other-key"); err != nil {
-		t.Fatalf("Set() = %v", err)
-	}
-
-	if err := cfg.RemoveProviderPlugin("acme"); err != nil {
-		t.Fatalf("RemoveProviderPlugin() = %v, want nil", err)
-	}
-	if _, ok := cfg.ProviderPlugin("acme"); ok {
-		t.Error("the plugin is still configured after removal")
-	}
-	if got := cfg.ProviderStore("acme").Get("api_key"); got != "" {
-		t.Errorf("credentials survived removal: %q", got)
-	}
-	// The other plugin is untouched.
-	if got := cfg.ProviderStore("other").Get("api_key"); got != "other-key" {
-		t.Errorf("removal disturbed another plugin: %q", got)
-	}
-	if _, ok := cfg.ProviderPlugin("other"); !ok {
-		t.Error("removal dropped the wrong plugin")
-	}
-
-	// Removing something that is not there is not an error.
-	if err := cfg.RemoveProviderPlugin("never-existed"); err != nil {
-		t.Errorf("RemoveProviderPlugin(unknown) = %v, want nil", err)
-	}
-}
-
-// Save() marshals ProviderPlugins, and a plugin can be added or removed while
-// an agent turn triggers a save — an OAuth refresh persists through the same
-// Config. Reads, writes and Save must therefore agree on one lock.
-func TestProviderPluginsAreSafeUnderConcurrentUse(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	cfg := &Config{path: path}
-
-	const rounds = 100
-	var wg sync.WaitGroup
-
-	// A plugin being added and removed, as the settings screen does.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < rounds; i++ {
-			cfg.SetProviderPlugin(ProviderPluginConfig{Name: "churn", Command: "churn"})
-			cfg.RemoveProviderPlugin("churn")
-		}
-	}()
-
-	// A credential being persisted, as an OAuth refresh does mid-turn: this
-	// goes through Save(), which marshals the whole struct.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < rounds; i++ {
-			cfg.ProviderStore("openai").Set("tokens", "{}")
-		}
-	}()
-
-	// And the core reading the list to build its providers.
-	for r := 0; r < 2; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < rounds; i++ {
-				for _, p := range cfg.ProviderPluginList() {
-					_ = p.Name
-				}
-				cfg.ProviderPlugin("churn")
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// The credential written all along survived the churn.
-	if got := cfg.ProviderStore("openai").Get("tokens"); got != "{}" {
-		t.Errorf("openai tokens = %q, want {}", got)
-	}
 }
 
 // The settings screen writes on the goroutine Wails gave it, and an agent
@@ -766,5 +617,54 @@ func TestPointerSettingsKeepThreeStatesThroughDisk(t *testing.T) {
 	}
 	if got := reloaded.ComputerUseMonitor(); got != -1 {
 		t.Errorf("monitor set to -1 came back %d, want the whole desktop preserved", got)
+	}
+}
+
+// A provider plugin left in an existing configuration cannot be honoured, and
+// erasing it without a word would delete something a user configured with no
+// mention anywhere. So it is reported once and then dropped: the load has to
+// survive it, the name has to be reportable, and the next save must not carry
+// it forward.
+func TestALeftOverProviderPluginIsReportedThenDropped(t *testing.T) {
+	cfg := loadFrom(t, `{
+		"provider": "claude",
+		"provider_plugins": [{"name": "acme", "command": "/opt/acme"}, {"command": "/opt/unnamed"}]
+	}`)
+
+	// Loading does not fail on it, and the rest of the configuration survives.
+	if got := cfg.Provider(); got != "claude" {
+		t.Errorf("Provider() = %q, want claude: the rest of the config must survive", got)
+	}
+
+	ignored := cfg.IgnoredProviderPlugins()
+	if len(ignored) != 2 {
+		t.Fatalf("IgnoredProviderPlugins() = %v, want both entries reported", ignored)
+	}
+	if ignored[0] != "acme" {
+		t.Errorf("first reported plugin = %q, want acme", ignored[0])
+	}
+	// An entry with no name still has to be reportable, or it disappears
+	// without anything to say about it.
+	if ignored[1] != "(unnamed)" {
+		t.Errorf("unnamed plugin reported as %q, want (unnamed)", ignored[1])
+	}
+
+	// And the next save drops it, so it is gone rather than carried forever.
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	data, err := os.ReadFile(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("provider_plugins")) {
+		t.Errorf("the saved config still carries provider_plugins: %s", data)
+	}
+}
+
+// A configuration that never had one reports nothing, so start-up says nothing.
+func TestNoLeftOverPluginsReportsNothing(t *testing.T) {
+	if got := loadFrom(t, `{}`).IgnoredProviderPlugins(); len(got) != 0 {
+		t.Errorf("IgnoredProviderPlugins() = %v on a fresh config, want none", got)
 	}
 }

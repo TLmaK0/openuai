@@ -48,18 +48,12 @@ type MCPOAuthTokens struct {
 	ClientSecret string `json:"client_secret,omitempty"`
 }
 
-// ProviderPluginConfig configures a model provider that runs as a separate
-// executable, spoken to over stdin/stdout. Adding one needs no rebuild of the
-// core.
-type ProviderPluginConfig struct {
-	Name    string            `json:"name"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	// Description caches what the plugin answered when it was added, so the
-	// provider list can be built at startup without running every plugin.
-	// Its shape belongs to the plugin protocol, not to this package.
-	Description json.RawMessage `json:"description,omitempty"`
+// legacyProviderPlugin is a provider plugin left behind in an existing
+// configuration. The mechanism that ran them is gone; this type exists only so
+// such an entry can be noticed once and then dropped, rather than silently
+// erased by the next save.
+type legacyProviderPlugin struct {
+	Name string `json:"name"`
 }
 
 // settings is what gets written to disk. Its fields are exported so that
@@ -72,8 +66,9 @@ type settings struct {
 	// provider name. The core declares no provider-specific fields: a
 	// provider reaches its slot through ProviderStore.
 	Providers map[string]map[string]string `json:"providers,omitempty"`
-	// ProviderPlugins are the providers that run as separate executables.
-	ProviderPlugins []ProviderPluginConfig `json:"provider_plugins,omitempty"`
+	// ProviderPlugins is read only so that it can be reported and dropped.
+	// See dropProviderPlugins.
+	ProviderPlugins []legacyProviderPlugin `json:"provider_plugins,omitempty"`
 	// ClaudeAPIKey and OpenAITokens are the pre-registry shape. They are
 	// still read, migrated into Providers by Load, and then dropped.
 	ClaudeAPIKey         string            `json:"claude_api_key,omitempty"`
@@ -123,6 +118,11 @@ type Config struct {
 	mu   sync.RWMutex
 	data settings
 	path string
+
+	// ignoredPlugins names the provider plugins an existing configuration
+	// still listed. They cannot be honoured, so they are recorded here for a
+	// caller to report once, and cleared from the configuration.
+	ignoredPlugins []string
 }
 
 func Load() (*Config, error) {
@@ -154,6 +154,7 @@ func Load() (*Config, error) {
 	// No SetPath here: cfg was built with the path, and UnmarshalJSON writes
 	// only c.data, so there is nothing to put back.
 	cfg.migrateProviderCredentials()
+	cfg.dropProviderPlugins()
 	return cfg, nil
 }
 
@@ -199,6 +200,34 @@ func (c *Config) migrateProviderCredentials() {
 	}
 }
 
+// dropProviderPlugins records any provider plugin an existing configuration
+// still lists, and clears it so the next Save writes only the current shape.
+// They cannot be honoured — the mechanism that ran them is gone — and clearing
+// them without a word would delete something a user configured without ever
+// mentioning it.
+func (c *Config) dropProviderPlugins() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, p := range c.data.ProviderPlugins {
+		name := p.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		c.ignoredPlugins = append(c.ignoredPlugins, name)
+	}
+	c.data.ProviderPlugins = nil
+}
+
+// IgnoredProviderPlugins names the provider plugins dropped from an existing
+// configuration when it was loaded, for a caller that can say so.
+func (c *Config) IgnoredProviderPlugins() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]string, len(c.ignoredPlugins))
+	copy(out, c.ignoredPlugins)
+	return out
+}
+
 func (c *Config) providerValue(provider, key string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -229,65 +258,6 @@ func (c *Config) SetPath(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.path = path
-}
-
-// ProviderPlugin returns the configuration of the named plugin.
-func (c *Config) ProviderPlugin(name string) (ProviderPluginConfig, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for _, p := range c.data.ProviderPlugins {
-		if p.Name == name {
-			return p, true
-		}
-	}
-	return ProviderPluginConfig{}, false
-}
-
-// ProviderPluginList returns a copy of the configured plugins, so a caller
-// cannot iterate the slice while another goroutine replaces it.
-func (c *Config) ProviderPluginList() []ProviderPluginConfig {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	out := make([]ProviderPluginConfig, len(c.data.ProviderPlugins))
-	copy(out, c.data.ProviderPlugins)
-	return out
-}
-
-// SetProviderPlugin adds or replaces a plugin's configuration and persists it.
-func (c *Config) SetProviderPlugin(plugin ProviderPluginConfig) error {
-	c.mu.Lock()
-	replaced := false
-	for i, p := range c.data.ProviderPlugins {
-		if p.Name == plugin.Name {
-			c.data.ProviderPlugins[i] = plugin
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		c.data.ProviderPlugins = append(c.data.ProviderPlugins, plugin)
-	}
-	c.mu.Unlock()
-
-	// Save takes the same lock, so it is called after releasing it.
-	return c.Save()
-}
-
-// RemoveProviderPlugin drops a plugin's configuration, along with any
-// credentials the core was holding for it, and persists the result.
-func (c *Config) RemoveProviderPlugin(name string) error {
-	c.mu.Lock()
-	kept := make([]ProviderPluginConfig, 0, len(c.data.ProviderPlugins))
-	for _, p := range c.data.ProviderPlugins {
-		if p.Name != name {
-			kept = append(kept, p)
-		}
-	}
-	c.data.ProviderPlugins = kept
-	delete(c.data.Providers, name)
-	c.mu.Unlock()
-
-	return c.Save()
 }
 
 // ProviderStore returns the settings slot belonging to one provider.

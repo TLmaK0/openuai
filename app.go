@@ -19,7 +19,6 @@ import (
 	"openuai/internal/eventbus"
 	"openuai/internal/lipreading"
 	"openuai/internal/llm"
-	"openuai/internal/llm/plugin"
 	// Registers the providers that ship in the binary. This blank import is
 	// the one place an in-tree provider has to be named.
 	_ "openuai/internal/llm/providers/all"
@@ -109,9 +108,17 @@ func (a *App) startup(ctx context.Context) {
 	logger.Info("OpenUAI %s starting up", a.version)
 	logger.Info("Config dir: %s", cfg.ConfigDir())
 
+	// A configuration written when providers could ship as separate
+	// executables may still list some. They cannot be honoured, so they are
+	// dropped on load — said once here rather than disappearing quietly.
+	if ignored := cfg.IgnoredProviderPlugins(); len(ignored) > 0 {
+		logger.Info("Ignoring %d provider plugin(s) left in the configuration: %v. "+
+			"Providers now ship with the app; nothing has to be registered by hand.",
+			len(ignored), ignored)
+	}
+
 	// Model providers: every one that registered itself, each handed its own
 	// slot in the configuration. Nothing here names a provider.
-	a.loadProviderPlugins()
 	a.buildProviders()
 	logger.Info("Provider: %s, Model: %s", cfg.Provider(), cfg.DefaultModel())
 
@@ -408,11 +415,6 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.apiServer != nil {
 		a.apiServer.Shutdown(ctx)
 	}
-	// Providers that run as child processes have to be stopped explicitly, or
-	// they outlive the app that started them.
-	for name, p := range a.takeProviderPlugins() {
-		stopProviderPlugin(name, p)
-	}
 	tray.Stop()
 }
 
@@ -441,105 +443,6 @@ func (a *App) updateTrayTooltip() {
 	}
 }
 
-// loadProviderPlugins registers the providers that run as separate
-// executables, from the description each one gave when it was added. No plugin
-// is started here: a description is cached precisely so that listing the
-// providers costs nothing.
-func (a *App) loadProviderPlugins() {
-	for _, cfgPlugin := range a.cfg.ProviderPluginList() {
-		if len(cfgPlugin.Description) == 0 {
-			logger.Error("Provider plugin %s has no cached description, skipping", cfgPlugin.Name)
-			continue
-		}
-
-		var desc plugin.Description
-		if err := json.Unmarshal(cfgPlugin.Description, &desc); err != nil {
-			logger.Error("Provider plugin %s has an unreadable description: %s", cfgPlugin.Name, err.Error())
-			continue
-		}
-		if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
-			logger.Error("Provider plugin %s: %s", cfgPlugin.Name, err.Error())
-		}
-	}
-}
-
-// registerProviderPlugin puts one plugin in the registry and declares the
-// prices of the models it serves, so its usage is costed like any other
-// provider's.
-func (a *App) registerProviderPlugin(cfgPlugin config.ProviderPluginConfig, desc plugin.Description) error {
-	// Describe checks this when a plugin is added, but a cached description
-	// comes back from a file a person can edit. An entry asking for a
-	// credential the plugin cannot accept would otherwise reach the settings
-	// screen as a field that rejects whatever is typed into it, which is the
-	// state the check exists to make impossible.
-	if err := desc.Validate(); err != nil {
-		return err
-	}
-
-	dial := plugin.StdioDialer(cfgPlugin.Command, cfgPlugin.Args, cfgPlugin.Env)
-	descriptor := desc.Descriptor(func(llm.Store) llm.Provider {
-		// A plugin keeps its own credentials: it is a separate program, which
-		// is what lets an interactive login run behind the boundary.
-		// Provider() decides which capabilities the returned value exposes.
-		return plugin.NewClient(desc, dial).Provider()
-	})
-
-	if err := llm.RegisterDynamic(descriptor); err != nil {
-		return err
-	}
-	for model, price := range desc.Pricing {
-		llm.SetModelPricing(model, price[0], price[1])
-	}
-	logger.Info("Provider plugin %s registered (%s)", desc.Name, cfgPlugin.Command)
-	return nil
-}
-
-// stopProviderPlugin stops p if it runs as a child process. A provider
-// compiled into the binary has nothing to stop.
-//
-// plugin.ProviderPlugin is what says "child process", rather than a bare
-// Close method: only the plugin package can implement it, so a compiled-in
-// provider that grows a Close is not mistaken for a plugin and dropped from
-// the provider map. Naming plugin.Client instead would not work — a
-// tools-capable plugin is wrapped, so the concrete type differs.
-func stopProviderPlugin(name string, p llm.Provider) {
-	client, ok := p.(plugin.ProviderPlugin)
-	if !ok {
-		return
-	}
-	if err := client.Close(); err != nil {
-		logger.Error("Stopping provider plugin %s: %s", name, err.Error())
-	}
-}
-
-// takeProvider removes name from the provider map and returns what was there,
-// so the caller can stop it without holding the lock: stopping a plugin waits
-// on a process, and an agent turn must not block behind that.
-func (a *App) takeProvider(name string) llm.Provider {
-	a.providersMu.Lock()
-	defer a.providersMu.Unlock()
-
-	p := a.providers[name]
-	delete(a.providers, name)
-	return p
-}
-
-// takeProviderPlugins removes every provider that runs as a child process and
-// returns them, leaving the compiled-in ones in place.
-func (a *App) takeProviderPlugins() map[string]llm.Provider {
-	a.providersMu.Lock()
-	defer a.providersMu.Unlock()
-
-	taken := map[string]llm.Provider{}
-	for name, p := range a.providers {
-		if _, isPlugin := p.(plugin.ProviderPlugin); isPlugin {
-			taken[name] = p
-			delete(a.providers, name)
-		}
-	}
-	return taken
-}
-
 // setProvider puts a built provider in the map.
 func (a *App) setProvider(name string, p llm.Provider) {
 	a.providersMu.Lock()
@@ -552,115 +455,6 @@ func (a *App) provider(name string) llm.Provider {
 	a.providersMu.RLock()
 	defer a.providersMu.RUnlock()
 	return a.providers[name]
-}
-
-// --- Provider plugins ---
-
-// ProviderPluginInfo is the UI-facing view of a configured plugin: what it is
-// and what runs it, without the cached description.
-type ProviderPluginInfo struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-}
-
-// GetProviderPlugins lists the configured provider plugins.
-func (a *App) GetProviderPlugins() []ProviderPluginInfo {
-	plugins := a.cfg.ProviderPluginList()
-	infos := make([]ProviderPluginInfo, 0, len(plugins))
-	for _, p := range plugins {
-		infos = append(infos, ProviderPluginInfo{Name: p.Name, Command: p.Command, Args: p.Args})
-	}
-	return infos
-}
-
-// AddProviderPlugin runs a candidate plugin once to ask what it is, registers
-// it, and remembers it. It returns the error text, or an empty string on
-// success. The plugin is available without restarting the core.
-func (a *App) AddProviderPlugin(command string, args []string, env map[string]string) string {
-	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
-	defer cancel()
-
-	desc, err := plugin.Describe(ctx, plugin.StdioDialer(command, args, env))
-	if err != nil {
-		logger.Error("Adding provider plugin: %s", err.Error())
-		return err.Error()
-	}
-
-	raw, err := json.Marshal(desc)
-	if err != nil {
-		return err.Error()
-	}
-	cfgPlugin := config.ProviderPluginConfig{
-		Name:        desc.Name,
-		Command:     command,
-		Args:        args,
-		Env:         env,
-		Description: raw,
-	}
-
-	// Replacing an existing plugin of the same name means its old
-	// registration, and the process it may have running, have to go first.
-	if _, exists := a.cfg.ProviderPlugin(desc.Name); exists {
-		llm.Unregister(desc.Name)
-		stopProviderPlugin(desc.Name, a.takeProvider(desc.Name))
-	}
-	if err := a.registerProviderPlugin(cfgPlugin, desc); err != nil {
-		return err.Error()
-	}
-	if err := a.cfg.SetProviderPlugin(cfgPlugin); err != nil {
-		// The plugin could not be remembered, so it must not stay registered
-		// either: a provider the next start cannot rebuild is worse than none.
-		llm.Unregister(desc.Name)
-		return err.Error()
-	}
-
-	a.setProvider(desc.Name, a.newProvider(desc.Name))
-	return ""
-}
-
-// RemoveProviderPlugin forgets a plugin, stopping it if it is running. It
-// returns the error text, or an empty string on success.
-func (a *App) RemoveProviderPlugin(name string) string {
-	cfgPlugin, exists := a.cfg.ProviderPlugin(name)
-	if !exists {
-		return fmt.Sprintf("no provider plugin named %s", name)
-	}
-
-	// The prices it declared go with it: left behind they would price models
-	// nothing can serve, and a later plugin reusing a model name would
-	// inherit them.
-	if len(cfgPlugin.Description) > 0 {
-		var desc plugin.Description
-		if err := json.Unmarshal(cfgPlugin.Description, &desc); err == nil {
-			models := make([]string, 0, len(desc.Pricing))
-			for model := range desc.Pricing {
-				models = append(models, model)
-			}
-			llm.UnsetModelPricing(models...)
-		}
-	}
-
-	llm.Unregister(name)
-	stopProviderPlugin(name, a.takeProvider(name))
-
-	if err := a.cfg.RemoveProviderPlugin(name); err != nil {
-		return err.Error()
-	}
-
-	// The active provider may have just been removed: settle on a valid one,
-	// and persist that, so the choice does not silently differ from what is
-	// on disk.
-	wasActive := a.cfg.Provider() == name
-	a.buildProviders()
-	a.currentAgent = nil
-	if wasActive {
-		if err := a.cfg.Save(); err != nil {
-			logger.Error("Saving the provider fallback: %s", err.Error())
-		}
-	}
-	logger.Info("Provider plugin %s removed", name)
-	return ""
 }
 
 // buildProviders instantiates every registered provider and settles which one
