@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -602,9 +603,13 @@ func TestSettleProviderAndModelIsOneCriticalSection(t *testing.T) {
 	}
 }
 
-// Settling on what is already configured must write nothing: on the common
-// path — the configured provider is registered and has a model — the pair is
-// left exactly as it was found.
+// Settling on what is already configured leaves the stored pair alone: the
+// common path, where the configured provider is registered and has a model.
+//
+// This pins the value, not the absence of a write. Under one hold of the write
+// lock the two are indistinguishable from outside, so this passes against a
+// split read-modify-write as well — it documents the common path, and nothing
+// here guards the conditional in SettleProviderAndModel.
 func TestSettleLeavesAnUnchangedPairAlone(t *testing.T) {
 	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
 	cfg.SetProviderAndModel("claude", "claude-opus-4-6")
@@ -686,4 +691,80 @@ func TestSettleIsSafeUnderConcurrentUse(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// The three settings stored as pointers carry three states, not two: never
+// set, set on, set off. Only the pointer keeps them apart — with a plain bool
+// and omitempty, "off" would be omitted and read back as the default "on", so
+// turning notifications off would survive until the next restart and then
+// undo itself.
+//
+// The accessors return a value with the default applied, which is what stops
+// a caller writing past the lock through the pointer. This pins that the
+// three states still make it through disk intact behind them.
+func TestPointerSettingsKeepThreeStatesThroughDisk(t *testing.T) {
+	saveAndReload := func(t *testing.T, cfg *Config) *Config {
+		t.Helper()
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("Save() = %v, want nil", err)
+		}
+		data, err := os.ReadFile(cfg.Path())
+		if err != nil {
+			t.Fatalf("reading the saved config: %v", err)
+		}
+		reloaded := &Config{}
+		if err := json.Unmarshal(data, reloaded); err != nil {
+			t.Fatalf("parsing the saved config: %v", err)
+		}
+		return reloaded
+	}
+
+	// Never set: the keys are absent, and the accessors answer the default.
+	fresh := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+	reloaded := saveAndReload(t, fresh)
+	for _, k := range []string{"notifications_enabled", "voice_enabled", "computer_use_monitor"} {
+		data, err := os.ReadFile(fresh.Path())
+		if err != nil {
+			t.Fatalf("reading the saved config: %v", err)
+		}
+		if bytes.Contains(data, []byte(k)) {
+			t.Errorf("a config that never set %s wrote the key anyway: %s", k, data)
+		}
+	}
+	if !reloaded.NotificationsEnabled() || !reloaded.VoiceEnabled() {
+		t.Error("unset notifications/voice came back off, want on by default")
+	}
+	if got := reloaded.ComputerUseMonitor(); got != 0 {
+		t.Errorf("unset monitor = %d, want 0", got)
+	}
+
+	// Set off: the keys are written, and "off" is not mistaken for unset on
+	// the way back — the regression a plain bool would introduce.
+	off := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+	off.SetNotificationsEnabled(false)
+	off.SetVoiceEnabled(false)
+	off.SetComputerUseMonitor(0)
+	reloaded = saveAndReload(t, off)
+	if reloaded.NotificationsEnabled() {
+		t.Error("notifications turned off came back on: off was written as unset")
+	}
+	if reloaded.VoiceEnabled() {
+		t.Error("voice turned off came back on: off was written as unset")
+	}
+	if got := reloaded.ComputerUseMonitor(); got != 0 {
+		t.Errorf("monitor set to 0 came back %d", got)
+	}
+
+	// Set on, and a monitor that is not the default: both round-trip.
+	on := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+	on.SetNotificationsEnabled(true)
+	on.SetVoiceEnabled(true)
+	on.SetComputerUseMonitor(-1) // the whole desktop
+	reloaded = saveAndReload(t, on)
+	if !reloaded.NotificationsEnabled() || !reloaded.VoiceEnabled() {
+		t.Error("notifications/voice turned on came back off")
+	}
+	if got := reloaded.ComputerUseMonitor(); got != -1 {
+		t.Errorf("monitor set to -1 came back %d, want the whole desktop preserved", got)
+	}
 }

@@ -361,8 +361,12 @@ func (c *Config) SetDefaultModel(model string) {
 // provider in the settings screen would see the change undone, and persisted
 // undone.
 //
-// The pair is only assigned when settle actually changes it, so settling on
-// what is already configured writes nothing.
+// The single critical section is what closes that: nothing can be read or
+// written between the settle's read and its write. The assignment being
+// conditional is hygiene rather than mechanism — under one hold of the write
+// lock, assigning the same values and not assigning them cannot be told apart
+// from outside — and is there so that settling on what is already configured
+// leaves the stored pair alone.
 //
 // settle runs while the lock is held, so it MUST be a pure function of its two
 // arguments: no call back into this Config, which would deadlock, and no I/O,

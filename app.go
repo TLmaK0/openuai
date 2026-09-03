@@ -687,9 +687,15 @@ func (a *App) buildProviders() {
 	a.providers = rebuilt
 	a.providersMu.Unlock()
 
+	// The fallback comes from a second read of the registry, which the loop
+	// above cannot have covered: a provider registering between the two reads
+	// can be chosen here while being absent from defaultModels. So its model
+	// is taken from the same read that chose it, leaving the settle's lookup
+	// covered whatever happened in between.
 	fallback := ""
 	if d, ok := llm.DefaultDescriptor(); ok {
 		fallback = d.Name
+		defaultModels[d.Name] = d.DefaultModel
 	}
 
 	// Which configured provider turned out not to be registered, recorded by

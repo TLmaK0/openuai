@@ -447,3 +447,56 @@ func TestACachedDescriptionIsCrossCheckedToo(t *testing.T) {
 		t.Error("a sound cached description was not registered")
 	}
 }
+
+// buildProviders reads the llm registry twice: once for the loop that builds
+// the providers, and again for the fallback name. Nothing holds the two reads
+// together, so a provider registering in between — an AddProviderPlugin on
+// another goroutine calls llm.RegisterDynamic — can become the fallback while
+// being absent from the map gathered by the first read. The settle then fills
+// the model from that map and finds nothing, settling a valid provider with an
+// empty model. RemoveProviderPlugin saves that to disk when the removed plugin
+// was the active one, and ensureAgent builds the turn with an empty model.
+//
+// The interleaving is made deterministic rather than left to the scheduler:
+// the late provider registers from inside another provider's constructor,
+// which buildProviders calls inside that first loop.
+func TestBuildProvidersSettlesOnAFallbackWithItsModel(t *testing.T) {
+	t.Cleanup(func() {
+		llm.Unregister("zzz-builds-late-one")
+		llm.Unregister("aaa-late")
+	})
+
+	if err := llm.RegisterDynamic(llm.Descriptor{
+		Name:         "zzz-builds-late-one",
+		DefaultModel: "zzz-model",
+		New: func(llm.Store) llm.Provider {
+			// Inside buildProviders' loop: after llm.Descriptors() was read,
+			// before llm.DefaultDescriptor() is called. "aaa-late" sorts
+			// first and marks itself default, so it wins the fallback either
+			// way DefaultDescriptor chooses.
+			llm.RegisterDynamic(llm.Descriptor{
+				Name:         "aaa-late",
+				DefaultModel: "aaa-model",
+				Default:      true,
+				New:          func(llm.Store) llm.Provider { return inTreeProvider{name: "aaa-late"} },
+			})
+			return inTreeProvider{name: "zzz-builds-late-one"}
+		},
+	}); err != nil {
+		t.Fatalf("RegisterDynamic() = %v", err)
+	}
+
+	app := appWith(map[string]llm.Provider{})
+	// An unregistered name, so settling has to fall back.
+	app.cfg.SetProviderAndModel("not-registered", "")
+
+	app.buildProviders()
+
+	provider, model := app.cfg.ProviderAndModel()
+	if provider != "aaa-late" {
+		t.Fatalf("settled on provider %q, want the fallback aaa-late", provider)
+	}
+	if model != "aaa-model" {
+		t.Errorf("settled on provider %q with model %q, want aaa-model: the fallback was chosen by a registry read the model map does not cover", provider, model)
+	}
+}
