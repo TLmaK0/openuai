@@ -10,9 +10,6 @@ export function AddMCPServer(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['AddMCPServer'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-export function AddProviderPlugin(arg1, arg2, arg3) {
-  return window['go']['main']['App']['AddProviderPlugin'](arg1, arg2, arg3);
-}
 
 export function ApplyUpdate(arg1) {
   return window['go']['main']['App']['ApplyUpdate'](arg1);
@@ -126,9 +123,6 @@ export function GetProvider() {
   return window['go']['main']['App']['GetProvider']();
 }
 
-export function GetProviderPlugins() {
-  return window['go']['main']['App']['GetProviderPlugins']();
-}
 
 export function GetProviders() {
   return window['go']['main']['App']['GetProviders']();
@@ -206,9 +200,6 @@ export function RemoveMCPServer(arg1) {
   return window['go']['main']['App']['RemoveMCPServer'](arg1);
 }
 
-export function RemoveProviderPlugin(arg1) {
-  return window['go']['main']['App']['RemoveProviderPlugin'](arg1);
-}
 
 export function RequestRestart() {
   return window['go']['main']['App']['RequestRestart']();
