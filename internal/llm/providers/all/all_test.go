@@ -20,8 +20,9 @@ func TestShippedProvidersRegister(t *testing.T) {
 		credential llm.CredentialKind
 		model      string
 	}{
-		"claude": {"Claude (API key)", llm.CredentialSecret, "claude-sonnet-4-20250514"},
-		"openai": {"OpenAI (ChatGPT subscription)", llm.CredentialLogin, "gpt-5.1-codex"},
+		"claude":          {"Claude (API key)", llm.CredentialSecret, "claude-sonnet-4-20250514"},
+		"claude-headless": {"Claude Agent (headless)", llm.CredentialSecret, "opus"},
+		"openai":          {"OpenAI (ChatGPT subscription)", llm.CredentialLogin, "gpt-5.1-codex"},
 	}
 
 	descriptors := llm.Descriptors()
@@ -105,13 +106,33 @@ func TestShippedProvidersSupportToolCalls(t *testing.T) {
 	}
 }
 
+// readinessIsNotAFunctionOfTheStore names the providers whose readiness cannot
+// be decided from their store, with the reason. Every assertion below that
+// reads readiness is about a provider that holds its own credential; for one
+// whose credential comes from outside, "empty store" says nothing about
+// whether a turn could run, in either direction.
+//
+// Keeping this as a named exemption rather than dropping the assertions keeps
+// them meaningful for the providers they were written for.
+var readinessIsNotAFunctionOfTheStore = map[string]string{
+	// Its credential is normally the session the user signed in to outside
+	// openuai, and its readiness also depends on an external binary being
+	// installed — so it reports ready with an empty store on a machine that is
+	// signed in, and not ready even with a secret on a machine where the
+	// binary is absent. Its readiness is covered in its own package, where
+	// that binary is faked.
+	"claude-headless": "credential and binary are both external",
+}
+
 // Credentials come from, and go back to, the provider's own store — which is
 // what lets the core stop declaring per-provider configuration fields.
 func TestProvidersReadAndWriteTheirStore(t *testing.T) {
 	for _, d := range llm.Descriptors() {
 		t.Run(d.Name, func(t *testing.T) {
+			external := readinessIsNotAFunctionOfTheStore[d.Name] != ""
+
 			// With an empty store, a provider needing credentials is not ready.
-			if llm.Ready(d.New(memStore{})) {
+			if !external && llm.Ready(d.New(memStore{})) {
 				t.Error("provider with an empty store reports ready")
 			}
 
@@ -122,14 +143,15 @@ func TestProvidersReadAndWriteTheirStore(t *testing.T) {
 				if err := llm.SetSecret(p, "sk-test-secret"); err != nil {
 					t.Fatalf("SetSecret() = %v, want nil", err)
 				}
-				if !llm.Ready(p) {
+				if !external && !llm.Ready(p) {
 					t.Error("provider is not ready after being given a secret")
 				}
-				// Persisted, so a restart finds it.
+				// Persisted, so a restart finds it. This holds for every
+				// provider that takes a secret, external readiness or not.
 				if !storeHasValue(store, "sk-test-secret") {
 					t.Errorf("secret was not persisted to the store: %v", store)
 				}
-				if llm.Ready(d.New(store)) != true {
+				if !external && llm.Ready(d.New(store)) != true {
 					t.Error("a provider rebuilt from the store is not ready")
 				}
 

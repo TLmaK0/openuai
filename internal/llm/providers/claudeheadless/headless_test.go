@@ -1,4 +1,4 @@
-package main
+package claudeheadless
 
 import (
 	"encoding/json"
@@ -6,19 +6,19 @@ import (
 	"testing"
 
 	"openuai/internal/llm"
-	"openuai/internal/llm/plugin"
 )
 
-// The description the core caches has to survive its own validation, which
-// refuses a description that contradicts itself. It is also the one place the
-// name and the optional-key wording are stated, so both are pinned here.
-func TestDescriptionIsValidAndCarriesTheChosenName(t *testing.T) {
-	d := describe()
-	if err := d.Validate(); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
+// Registering from init() is what makes the provider selectable without
+// anyone knowing an executable exists, so the registered descriptor is what
+// has to be pinned — the name a configuration persists, and the wording that
+// is the only place a user learns the key is optional.
+func TestRegisteredDescriptorCarriesTheChosenName(t *testing.T) {
+	d, ok := llm.Lookup(name)
+	if !ok {
+		t.Fatalf("provider %q is not registered, so it cannot appear in the provider list", name)
 	}
 	if d.Name != "claude-headless" {
-		t.Errorf("Name = %q, want claude-headless", d.Name)
+		t.Errorf("Name = %q, want claude-headless: a configuration that selected the plugin persists this", d.Name)
 	}
 	// Anthropic's branding guidance does not permit a third-party product to
 	// be called this, so a rename that reintroduces it should fail here.
@@ -29,9 +29,14 @@ func TestDescriptionIsValidAndCarriesTheChosenName(t *testing.T) {
 		t.Errorf("SecretPlaceholder = %q, want it to say the key is optional: the ordinary path is the "+
 			"session signed in outside openuai", d.SecretPlaceholder)
 	}
-	if !d.SupportsTools || !d.SupportsReady || !d.SupportsSecret {
-		t.Errorf("capabilities = tools:%v ready:%v secret:%v, want all three",
-			d.SupportsTools, d.SupportsReady, d.SupportsSecret)
+	if d.Credential != llm.CredentialSecret {
+		t.Errorf("Credential = %q, want %q", d.Credential, llm.CredentialSecret)
+	}
+	if d.DefaultModel != "opus" {
+		t.Errorf("DefaultModel = %q, want opus", d.DefaultModel)
+	}
+	if d.New == nil {
+		t.Error("the descriptor has no constructor, so the core cannot build it")
 	}
 }
 
@@ -253,34 +258,63 @@ func TestLongResultLineIsRead(t *testing.T) {
 	}
 }
 
-// The plugin speaks the same protocol types the core does, so a description
-// round-trips through the wire shape without losing a capability.
-func TestDescriptionRoundTripsThroughTheWire(t *testing.T) {
-	data, err := json.Marshal(describe())
-	if err != nil {
-		t.Fatal(err)
+// The provider is reached through the same interfaces as any other, and the
+// core probes the optional ones by type assertion — so what the core will
+// actually find is asserted here rather than assumed.
+func TestProviderSatisfiesTheInterfacesTheCoreProbes(t *testing.T) {
+	d, ok := llm.Lookup(name)
+	if !ok {
+		t.Fatalf("provider %q is not registered", name)
 	}
-	var back plugin.Description
-	if err := json.Unmarshal(data, &back); err != nil {
-		t.Fatal(err)
+	built := d.New(stubStore{})
+
+	if _, ok := built.(llm.ToolCallProvider); !ok {
+		t.Error("the built provider is not a ToolCallProvider, so a turn would run without tools")
 	}
-	if back.Name != describe().Name || !back.SupportsTools || back.DefaultModel != "opus" {
-		t.Errorf("round-tripped description = %+v", back)
+	if _, ok := built.(interface{ Ready() bool }); !ok {
+		t.Error("the built provider reports no readiness, so the settings screen cannot tell it is unusable")
+	}
+	if _, ok := built.(interface{ SetSecret(string) error }); !ok {
+		t.Error("the built provider takes no secret, so the optional API key path is unreachable")
+	}
+	if got := built.Name(); got != name {
+		t.Errorf("Name() = %q, want %q", got, name)
+	}
+	if len(built.Models()) == 0 {
+		t.Error("the provider offers no models")
+	}
+}
+
+// stubStore stands in for the per-provider settings slot the core hands every
+// provider. Credentials living there rather than in a file of the provider's
+// own is one of the things moving in-tree bought.
+type stubStore struct{ value string }
+
+func (s stubStore) Get(string) string     { return s.value }
+func (s stubStore) Set(_, _ string) error { return nil }
+
+// The optional API key now lives in the store the core supplies, so a key
+// already saved there has to reach the provider that is built from it.
+func TestTheOptionalKeyComesFromTheCoreStore(t *testing.T) {
+	p := New(stubStore{value: "sk-ant-from-store"})
+	if got := p.key(); got != "sk-ant-from-store" {
+		t.Errorf("key() = %q, want the value the core store held", got)
 	}
 }
 
 // The core ships no prices of its own, so a provider that declares none has
-// every turn costed at zero — silently, because nothing errors. Every model
-// offered must be priced, and so must the id each alias resolves to, since it
-// is the resolved id that a run reports and therefore the one that gets
-// priced.
+// every turn costed at zero — silently, because a missing price raises
+// nothing. init() declares them into the core's table, so that is where they
+// are checked: every model offered, and the id each alias resolves to, since
+// it is the resolved id a run reports and therefore the one that gets priced.
 func TestEveryOfferedModelIsPriced(t *testing.T) {
-	d := describe()
-	if len(d.Pricing) == 0 {
-		t.Fatal("no pricing declared: every turn through this provider would be costed at zero")
+	d, ok := llm.Lookup(name)
+	if !ok {
+		t.Fatalf("provider %q is not registered", name)
 	}
-	for _, m := range d.Models {
-		price, ok := d.Pricing[m]
+	// The offered list lives on the provider, not the descriptor.
+	for _, m := range append(append([]string{}, models...), d.DefaultModel) {
+		price, ok := llm.ModelPricing(m)
 		if !ok {
 			t.Errorf("model %q is offered but has no price, so its turns cost zero", m)
 			continue
@@ -289,13 +323,10 @@ func TestEveryOfferedModelIsPriced(t *testing.T) {
 			t.Errorf("model %q is priced %v, want both figures above zero", m, price)
 		}
 	}
-	if _, ok := d.Pricing[d.DefaultModel]; !ok {
-		t.Errorf("the default model %q has no price", d.DefaultModel)
-	}
 	// The alias is what is asked for; the resolved id is what comes back and
 	// what the core looks up.
 	for _, resolved := range []string{"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"} {
-		if _, ok := d.Pricing[resolved]; !ok {
+		if _, ok := llm.ModelPricing(resolved); !ok {
 			t.Errorf("resolved id %q has no price, so a run reporting it costs zero", resolved)
 		}
 	}

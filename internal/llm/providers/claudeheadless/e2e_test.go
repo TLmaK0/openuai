@@ -1,4 +1,4 @@
-package main
+package claudeheadless
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"openuai/internal/llm"
-	"openuai/internal/llm/plugin"
 )
 
 // The tests below run the real invocation against a real child process, so the
@@ -176,26 +175,26 @@ func TestRunReportsAMissingBinary(t *testing.T) {
 func TestChatWithToolsReturnsToolCallsThroughARealProcess(t *testing.T) {
 	withFake(t, "tools")
 
-	result, err := chatWithTools(context.Background(), "sk-ant-test", plugin.ChatRequest{
-		Model:    "opus",
-		Messages: []llm.Message{{Role: llm.RoleUser, Content: "list the files"}},
-		Tools: []llm.ToolDefinition{{
+	p := New(stubStore{value: "sk-ant-test"})
+	resp, calls, err := p.ChatWithTools(context.Background(),
+		[]llm.Message{{Role: llm.RoleUser, Content: "list the files"}},
+		"opus",
+		[]llm.ToolDefinition{{
 			Name:        "bash",
 			Description: "run a command",
 			Parameters:  []llm.ToolParam{{Name: "command", Type: "string", Description: "the command", Required: true}},
-		}},
-	})
+		}})
 	if err != nil {
-		t.Fatalf("chatWithTools() = %v", err)
+		t.Fatalf("ChatWithTools() = %v", err)
 	}
-	if len(result.ToolCalls) != 1 {
-		t.Fatalf("tool calls = %d, want 1", len(result.ToolCalls))
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(calls))
 	}
-	if result.ToolCalls[0].Name != "bash" || result.ToolCalls[0].Arguments["command"] != "ls" {
-		t.Errorf("tool call = %+v", result.ToolCalls[0])
+	if calls[0].Name != "bash" || calls[0].Arguments["command"] != "ls" {
+		t.Errorf("tool call = %+v", calls[0])
 	}
-	if result.Response == nil || result.Response.Model != "claude-opus-5" {
-		t.Errorf("response = %+v, want the resolved model", result.Response)
+	if resp == nil || resp.Model != "claude-opus-5" {
+		t.Errorf("response = %+v, want the resolved model", resp)
 	}
 }
 

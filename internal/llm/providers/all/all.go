@@ -5,5 +5,6 @@ package all
 
 import (
 	_ "openuai/internal/llm/providers/claude"
+	_ "openuai/internal/llm/providers/claudeheadless"
 	_ "openuai/internal/llm/providers/openai"
 )
