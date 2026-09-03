@@ -669,7 +669,13 @@ func (a *App) RemoveProviderPlugin(name string) string {
 func (a *App) buildProviders() {
 	a.providersMu.Lock()
 	rebuilt := make(map[string]llm.Provider)
+	// defaultModels serves as both the set of registered names and each one's
+	// default model. Gathering it here is what lets the settle below be a pure
+	// map lookup: it needs nothing from the llm registry, so no other lock and
+	// no I/O is held while the configuration's lock is.
+	defaultModels := make(map[string]string)
 	for _, d := range llm.Descriptors() {
+		defaultModels[d.Name] = d.DefaultModel
 		// Keep providers already built, so a running plugin is not restarted
 		// and an in-memory credential is not lost.
 		if existing, ok := a.providers[d.Name]; ok {
@@ -679,27 +685,42 @@ func (a *App) buildProviders() {
 		rebuilt[d.Name] = d.New(a.cfg.ProviderStore(d.Name))
 	}
 	a.providers = rebuilt
-	provider, model := a.cfg.ProviderAndModel()
-	_, known := rebuilt[provider]
 	a.providersMu.Unlock()
 
-	if !known {
-		d, ok := llm.DefaultDescriptor()
-		if !ok {
-			logger.Error("No model provider is registered")
-			return
-		}
-		if provider != "" {
-			logger.Info("Configured provider %q is not registered, falling back to %q", provider, d.Name)
-		}
-		provider, model = d.Name, ""
+	fallback := ""
+	if d, ok := llm.DefaultDescriptor(); ok {
+		fallback = d.Name
 	}
-	if model == "" {
-		if d, ok := llm.Lookup(provider); ok {
-			model = d.DefaultModel
+
+	// Which configured provider turned out not to be registered, recorded by
+	// the settle and logged after it rather than inside it: the settle holds
+	// the configuration's lock, and a log line is I/O.
+	unknown := ""
+	nothingRegistered := false
+	provider, _ := a.cfg.SettleProviderAndModel(func(provider, model string) (string, string) {
+		if _, known := defaultModels[provider]; !known {
+			if fallback == "" {
+				// Nothing is registered, so there is nothing to settle on.
+				// Leave the configuration exactly as it stands.
+				nothingRegistered = true
+				return provider, model
+			}
+			unknown = provider
+			provider, model = fallback, ""
 		}
+		if model == "" {
+			model = defaultModels[provider]
+		}
+		return provider, model
+	})
+
+	if nothingRegistered {
+		logger.Error("No model provider is registered")
+		return
 	}
-	a.cfg.SetProviderAndModel(provider, model)
+	if unknown != "" {
+		logger.Info("Configured provider %q is not registered, falling back to %q", unknown, provider)
+	}
 }
 
 // newProvider builds one registered provider.

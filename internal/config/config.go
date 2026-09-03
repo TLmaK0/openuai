@@ -151,7 +151,8 @@ func Load() (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
-	cfg.SetPath(path)
+	// No SetPath here: cfg was built with the path, and UnmarshalJSON writes
+	// only c.data, so there is nothing to put back.
 	cfg.migrateProviderCredentials()
 	return cfg, nil
 }
@@ -349,6 +350,32 @@ func (c *Config) SetDefaultModel(model string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data.DefaultModel = model
+}
+
+// SettleProviderAndModel hands the stored pair to settle and keeps what comes
+// back, all under one hold of the lock. It exists because choosing the active
+// provider is a read-modify-write: read the configured pair, decide whether it
+// still names something usable, write the decision. Split into a read and a
+// later write, another goroutine's write lands in the gap and is then
+// overwritten by a decision made from the older snapshot — a user changing
+// provider in the settings screen would see the change undone, and persisted
+// undone.
+//
+// The pair is only assigned when settle actually changes it, so settling on
+// what is already configured writes nothing.
+//
+// settle runs while the lock is held, so it MUST be a pure function of its two
+// arguments: no call back into this Config, which would deadlock, and no I/O,
+// which would hold the lock across it. Anything it needs from elsewhere is
+// gathered before the call and captured.
+func (c *Config) SettleProviderAndModel(settle func(provider, model string) (string, string)) (provider, model string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	provider, model = settle(c.data.Provider, c.data.DefaultModel)
+	if provider != c.data.Provider || model != c.data.DefaultModel {
+		c.data.Provider, c.data.DefaultModel = provider, model
+	}
+	return provider, model
 }
 
 // --- MCP servers ---

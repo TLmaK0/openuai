@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // loadFrom writes body to a temporary config.json and loads it, standing in
@@ -557,4 +558,132 @@ func TestPointerSettingsDefaultWhenUnset(t *testing.T) {
 	if cfg.NotificationsEnabled() {
 		t.Error("NotificationsEnabled() = true after being turned off")
 	}
+}
+
+// Choosing the active provider is a read-modify-write: read the configured
+// pair, decide whether it still names something usable, write the decision.
+// Split into a read and a later write, a settings write lands in the gap and
+// is then overwritten by a decision made from the older snapshot — the user
+// changes provider and watches it undo itself, on disk too, because the
+// caller persists the settled choice.
+//
+// So the settle has to be one critical section. This pins that: the settings
+// write is released while the settle is mid-flight, and must not take effect
+// until the settle has finished, which leaves the user's choice standing.
+func TestSettleProviderAndModelIsOneCriticalSection(t *testing.T) {
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+	cfg.SetProviderAndModel("stale", "stale-model")
+
+	inSettle := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-inSettle
+		// The settings screen, writing while the settle holds the lock.
+		cfg.SetProviderAndModel("chosen", "chosen-model")
+	}()
+
+	settled, _ := cfg.SettleProviderAndModel(func(provider, model string) (string, string) {
+		close(inSettle)
+		// Give the writer every chance to interleave. Under a split
+		// read-modify-write it would, and the write below would bury it.
+		time.Sleep(50 * time.Millisecond)
+		return "settled", "settled-model"
+	})
+	wg.Wait()
+
+	if settled != "settled" {
+		t.Errorf("SettleProviderAndModel() = %q, want the settled name", settled)
+	}
+	provider, model := cfg.ProviderAndModel()
+	if provider != "chosen" || model != "chosen-model" {
+		t.Errorf("provider/model = %q/%q, want chosen/chosen-model: the settings write was lost to the settle", provider, model)
+	}
+}
+
+// Settling on what is already configured must write nothing: on the common
+// path — the configured provider is registered and has a model — the pair is
+// left exactly as it was found.
+func TestSettleLeavesAnUnchangedPairAlone(t *testing.T) {
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+	cfg.SetProviderAndModel("claude", "claude-opus-4-6")
+
+	provider, model := cfg.SettleProviderAndModel(func(provider, model string) (string, string) {
+		return provider, model // registered, and it has a model: nothing to do
+	})
+	if provider != "claude" || model != "claude-opus-4-6" {
+		t.Errorf("settle returned %q/%q, want the configured pair unchanged", provider, model)
+	}
+	if provider, model = cfg.ProviderAndModel(); provider != "claude" || model != "claude-opus-4-6" {
+		t.Errorf("stored pair = %q/%q, want it untouched", provider, model)
+	}
+}
+
+// A settle running against concurrent settings writes must never produce a
+// pair that was not configured, and must never be handed a torn one.
+func TestSettleIsSafeUnderConcurrentUse(t *testing.T) {
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.json")}
+
+	// The registered providers, each with its default model — the shape
+	// buildProviders settles against.
+	defaultModels := map[string]string{
+		"claude": "claude-opus-4-6",
+		"openai": "gpt-5.1-codex",
+	}
+	cfg.SetProviderAndModel("claude", "claude-opus-4-6")
+
+	const rounds = 500
+	var wg sync.WaitGroup
+
+	// The settings screen.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		names := []string{"claude", "openai", "not-registered"}
+		for i := 0; i < rounds; i++ {
+			name := names[i%len(names)]
+			cfg.SetProviderAndModel(name, defaultModels[name])
+		}
+	}()
+
+	// Providers being rebuilt, as adding or removing a plugin does.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < rounds; i++ {
+			provider, model := cfg.SettleProviderAndModel(func(provider, model string) (string, string) {
+				if _, known := defaultModels[provider]; !known {
+					provider, model = "claude", ""
+				}
+				if model == "" {
+					model = defaultModels[provider]
+				}
+				return provider, model
+			})
+			// Whatever it settled on must be a registered provider paired
+			// with that provider's own model.
+			if want, ok := defaultModels[provider]; !ok || model != want {
+				t.Errorf("settled on %q/%q, which is not a registered pair", provider, model)
+				return
+			}
+		}
+	}()
+
+	// And a turn reading the pair it is about to run with.
+	for r := 0; r < 2; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				provider, model := cfg.ProviderAndModel()
+				if want, ok := defaultModels[provider]; ok && model != want {
+					t.Errorf("read %q/%q, a pair never configured", provider, model)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
