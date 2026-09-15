@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"openuai/internal/llm"
 )
@@ -41,6 +43,51 @@ func runFakeClaude(mode string) {
 	init := map[string]any{"type": "system", "subtype": "init", "model": "claude-opus-5", "tools": []string{}}
 
 	switch mode {
+	case "models", "models-empty", "models-error", "models-malformed", "models-hang":
+		var request struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+			Request   struct {
+				Subtype string `json:"subtype"`
+			} `json:"request"`
+		}
+		if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
+			os.Exit(2)
+		}
+		if request.Type != "control_request" || request.Request.Subtype != "initialize" {
+			os.Exit(3)
+		}
+		args := strings.Join(os.Args[1:], argSep)
+		for _, want := range []string{"--input-format" + argSep + "stream-json", "--tools" + argSep + argSep, "--strict-mcp-config", `{"disableAllHooks":true}`, "--no-session-persistence"} {
+			if !strings.Contains(args, want) {
+				os.Exit(4)
+			}
+		}
+		if mode == "models-hang" {
+			time.Sleep(30 * time.Second)
+			return
+		}
+		if mode == "models-malformed" {
+			fmt.Println("{")
+			return
+		}
+		values := []map[string]string{{"value": "default"}, {"value": "opus[1m]"}, {"value": "new-model"}, {"value": "new-model"}, {"value": ""}}
+		if mode == "models-empty" {
+			values = nil
+		}
+		subtype := "success"
+		if mode == "models-error" {
+			subtype = "error"
+		}
+		line(init)
+		line(map[string]any{"type": "control_response", "response": map[string]any{"request_id": "unrelated", "subtype": "success"}})
+		line(map[string]any{"type": "control_response", "response": map[string]any{"request_id": request.RequestID, "subtype": subtype, "response": map[string]any{"models": values}}})
+		// The catalog caller must stop the process after receiving its response.
+		// It must never send a user message to discover models.
+		rest, _ := io.ReadAll(os.Stdin)
+		if len(rest) != 0 {
+			os.Exit(5)
+		}
 	case "authfail":
 		line(init)
 		line(map[string]any{"type": "system", "subtype": "api_retry", "attempt": 1,

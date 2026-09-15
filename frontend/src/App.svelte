@@ -484,8 +484,8 @@
     providers = await GetProviders();
     provider = await GetProvider();
     activeProvider = await GetActiveProvider();
-    models = await GetModels();
     selectedModel = await GetDefaultModel();
+    await refreshModels();
     voiceEnabled = await GetVoiceEnabled();
     ttsVoice = await GetTTSVoice();
     piperSupported = await PiperSupported();
@@ -746,6 +746,14 @@
     showLipDownloadDialog = false;
   }
 
+  async function refreshModels() {
+    models = (await GetModels()) || [];
+    if (!models.includes(selectedModel)) {
+      selectedModel = models[0] || '';
+      await SetDefaultModel(selectedModel);
+    }
+  }
+
   async function changeProvider() {
     await SetProvider(provider);
     activeProvider = await GetActiveProvider();
@@ -758,6 +766,7 @@
   // readiness gets back to the UI after a login or a secret change.
   async function refreshActiveProvider() {
     activeProvider = await GetActiveProvider();
+    await refreshModels();
   }
 
   async function login() {

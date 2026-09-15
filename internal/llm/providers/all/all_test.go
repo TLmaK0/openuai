@@ -21,7 +21,7 @@ func TestShippedProvidersRegister(t *testing.T) {
 		model      string
 	}{
 		"claude":          {"Claude (API key)", llm.CredentialSecret, "claude-sonnet-4-20250514"},
-		"claude-headless": {"Claude Agent (headless)", llm.CredentialNone, "opus"},
+		"claude-headless": {"Claude Code", llm.CredentialNone, "opus"},
 		"openai":          {"OpenAI (ChatGPT subscription)", llm.CredentialLogin, "gpt-5.1-codex"},
 	}
 

@@ -46,12 +46,8 @@ var models = []string{"opus", "sonnet", "haiku"}
 
 func init() {
 	llm.Register(llm.Descriptor{
-		Name: name,
-		// Not "Claude Code": Anthropic's branding guidance does not permit a
-		// third-party product to carry that name, and does permit "Claude
-		// Agent". The shape follows the other in-tree providers, which name
-		// the product and then how it authenticates.
-		DisplayName: "Claude Agent (headless)",
+		Name:        name,
+		DisplayName: "Claude Code",
 		// Authentication is managed by the local agent session; the settings
 		// screen must not ask for an API key.
 		Credential:   llm.CredentialNone,

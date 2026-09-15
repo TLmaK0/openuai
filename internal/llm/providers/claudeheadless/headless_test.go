@@ -19,10 +19,8 @@ func TestRegisteredDescriptorCarriesTheChosenName(t *testing.T) {
 	if d.Name != "claude-headless" {
 		t.Errorf("Name = %q, want claude-headless: a configuration that selected the plugin persists this", d.Name)
 	}
-	// Anthropic's branding guidance does not permit a third-party product to
-	// be called this, so a rename that reintroduces it should fail here.
-	if strings.Contains(d.DisplayName, "Claude Code") {
-		t.Errorf("DisplayName = %q, which is a name the branding guidance does not permit", d.DisplayName)
+	if d.DisplayName != "Claude Code" {
+		t.Errorf("DisplayName = %q, want Claude Code", d.DisplayName)
 	}
 	if d.SecretPlaceholder != "" {
 		t.Errorf("SecretPlaceholder = %q, want no API key prompt", d.SecretPlaceholder)
