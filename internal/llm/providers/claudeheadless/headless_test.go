@@ -10,8 +10,7 @@ import (
 
 // Registering from init() is what makes the provider selectable without
 // anyone knowing an executable exists, so the registered descriptor is what
-// has to be pinned — the name a configuration persists, and the wording that
-// is the only place a user learns the key is optional.
+// has to be pinned, including the authentication metadata used by settings.
 func TestRegisteredDescriptorCarriesTheChosenName(t *testing.T) {
 	d, ok := llm.Lookup(name)
 	if !ok {
@@ -25,12 +24,11 @@ func TestRegisteredDescriptorCarriesTheChosenName(t *testing.T) {
 	if strings.Contains(d.DisplayName, "Claude Code") {
 		t.Errorf("DisplayName = %q, which is a name the branding guidance does not permit", d.DisplayName)
 	}
-	if !strings.Contains(strings.ToLower(d.SecretPlaceholder), "optional") {
-		t.Errorf("SecretPlaceholder = %q, want it to say the key is optional: the ordinary path is the "+
-			"session signed in outside openuai", d.SecretPlaceholder)
+	if d.SecretPlaceholder != "" {
+		t.Errorf("SecretPlaceholder = %q, want no API key prompt", d.SecretPlaceholder)
 	}
-	if d.Credential != llm.CredentialSecret {
-		t.Errorf("Credential = %q, want %q", d.Credential, llm.CredentialSecret)
+	if d.Credential != llm.CredentialNone {
+		t.Errorf("Credential = %q, want %q for externally managed authentication", d.Credential, llm.CredentialNone)
 	}
 	if d.DefaultModel != "opus" {
 		t.Errorf("DefaultModel = %q, want opus", d.DefaultModel)

@@ -52,13 +52,11 @@ func init() {
 		// Agent". The shape follows the other in-tree providers, which name
 		// the product and then how it authenticates.
 		DisplayName: "Claude Agent (headless)",
-		Credential:  llm.CredentialSecret,
-		// The key is optional, and saying so here is the only place the user
-		// finds out: the ordinary path is the session they already signed in
-		// to, outside openuai.
-		SecretPlaceholder: "optional — leave empty to use the session already signed in on this machine",
-		DefaultModel:      "opus",
-		New:               func(store llm.Store) llm.Provider { return New(store) },
+		// Authentication is managed by the local agent session; the settings
+		// screen must not ask for an API key.
+		Credential:   llm.CredentialNone,
+		DefaultModel: "opus",
+		New:          func(store llm.Store) llm.Provider { return New(store) },
 	})
 
 	// Prices per million input/output tokens, declared here so the core ships

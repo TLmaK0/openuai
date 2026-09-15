@@ -21,7 +21,7 @@ func TestShippedProvidersRegister(t *testing.T) {
 		model      string
 	}{
 		"claude":          {"Claude (API key)", llm.CredentialSecret, "claude-sonnet-4-20250514"},
-		"claude-headless": {"Claude Agent (headless)", llm.CredentialSecret, "opus"},
+		"claude-headless": {"Claude Agent (headless)", llm.CredentialNone, "opus"},
 		"openai":          {"OpenAI (ChatGPT subscription)", llm.CredentialLogin, "gpt-5.1-codex"},
 	}
 
@@ -63,6 +63,10 @@ func TestCredentialMetadataIsComplete(t *testing.T) {
 		case llm.CredentialLogin:
 			if d.LoginLabel == "" {
 				t.Errorf("%s logs in interactively but offers no label", d.Name)
+			}
+		case llm.CredentialNone:
+			if d.SecretPlaceholder != "" || d.LoginLabel != "" {
+				t.Errorf("%s manages authentication externally but offers a credential prompt", d.Name)
 			}
 		default:
 			t.Errorf("%s has an unknown credential kind: %q", d.Name, d.Credential)
