@@ -14,3 +14,7 @@ frontend/dist
 
 # External working repos (not part of this module)
 /lip-reading/
+
+# Wails generated bindings (regenerated on every build)
+frontend/wailsjs/
+frontend/package.json.md5

@@ -14,6 +14,12 @@ git worktree add .claude/worktrees/<topic> -b <topic> origin/master
 Do all editing, committing and testing inside that worktree, and remove it once
 the branch is merged (`git worktree remove .claude/worktrees/<topic>`).
 
+## First Steps
+
+Read `README.md` before working in this repository. It contains the current
+development, build, launch, and distribution instructions; use those documented
+commands before inferring alternate workflows.
+
 ## Versioning Policy
 
 - **Patch releases only** (v0.4.x): all new features, fixes, and improvements bump the patch version (e.g. v0.4.1 → v0.4.2 → v0.4.3).
