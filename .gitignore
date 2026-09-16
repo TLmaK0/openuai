@@ -17,3 +17,4 @@ frontend/dist
 
 # Wails generated bindings (regenerated on every build)
 frontend/wailsjs/
+frontend/package.json.md5
