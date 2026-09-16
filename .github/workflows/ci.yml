@@ -29,17 +29,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm install
-          npm run build
+      # Must precede vet and test: main.go has //go:embed all:frontend/dist, so
+      # the package does not compile until the frontend is built. wails build
+      # also generates frontend/wailsjs, which App.svelte imports and which is
+      # no longer tracked -- a plain `npm run build` here cannot resolve it.
+      - name: Build
+        run: wails build -tags webkit2_41
 
       - name: Vet
         run: go vet -tags webkit2_41 ./...
 
       - name: Test
         run: go test -race -tags webkit2_41 ./...
-
-      - name: Build
-        run: wails build -tags webkit2_41
