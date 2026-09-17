@@ -61,6 +61,30 @@ func TestArgsLeaveTheAgentNoToolsAndNoHostSettings(t *testing.T) {
 	}
 }
 
+// The prompt carries the whole conversation and Linux caps a single argument
+// at 128 KiB, so it must stay out of argv entirely; -p with no value is what
+// makes the child read it from stdin instead.
+func TestPromptIsNotAnArgument(t *testing.T) {
+	args := invocation{model: "opus", system: "sys", prompt: "the whole conversation"}.args()
+	for _, a := range args {
+		if a == "the whole conversation" {
+			t.Fatalf("the prompt is passed as an argument, where 128 KiB is the ceiling: %q", args)
+		}
+	}
+	// -p has to be there, and has to be followed by a flag rather than a value,
+	// or the child reads its prompt from the wrong place.
+	for i, a := range args {
+		if a != "-p" {
+			continue
+		}
+		if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+			t.Errorf("-p is followed by %q, so stdin would not be read: %q", args[i+1], args)
+		}
+		return
+	}
+	t.Errorf("args do not pass -p: %q", args)
+}
+
 // --bare never reads OAuth credentials or the keychain, so on the prior-login
 // path — the ordinary one — it would authenticate nothing. It belongs only to
 // the API key path.

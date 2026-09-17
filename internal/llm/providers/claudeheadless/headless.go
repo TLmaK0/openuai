@@ -120,7 +120,11 @@ type invocation struct {
 	apiKey string
 }
 
-// args builds the command line.
+// args builds the command line. The prompt is deliberately absent: it carries
+// the whole conversation, and Linux caps a single argument at 128 KiB
+// (MAX_ARG_STRLEN), so passing it as one made every turn past a few exchanges
+// die with "argument list too long" before the agent ever started. It goes in
+// on stdin instead, which -p reads when it is given no value.
 //
 // --tools "" leaves the agent no tools of its own, which is what makes this a
 // model backend rather than a second agent: openuai keeps its loop, its tools
@@ -137,7 +141,7 @@ type invocation struct {
 // it would authenticate nothing.
 func (in invocation) args() []string {
 	args := []string{
-		"-p", in.prompt,
+		"-p",
 		"--output-format", "stream-json",
 		// stream-json refuses to run without it, and it is what carries the
 		// api_retry events this plugin reports errors from.
@@ -167,6 +171,10 @@ func (in invocation) run(ctx context.Context) (*outcome, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, in.args()...)
+	// The prompt arrives on stdin rather than in argv; see args(). exec copies
+	// it in its own goroutine and closes the pipe at EOF, so the child sees the
+	// end of the prompt while this side is already draining stdout.
+	cmd.Stdin = strings.NewReader(in.prompt)
 	if in.apiKey != "" {
 		// Only on this path: appended to the inherited environment, so the
 		// child keeps HOME and PATH and can still find its own installation.

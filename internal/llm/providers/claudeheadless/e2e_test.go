@@ -24,6 +24,10 @@ const fakeEnv = "OPENUAI_TEST_FAKE_CLAUDE"
 // out exactly, empty values included.
 const argSep = "<|>"
 
+// stdinMark prefixes the prompt the fake read from stdin, so a test can tell
+// it apart from the arguments echoed before it.
+const stdinMark = "stdin:"
+
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeEnv); mode != "" {
 		runFakeClaude(mode)
@@ -33,8 +37,9 @@ func TestMain(m *testing.M) {
 }
 
 // runFakeClaude stands in for the headless agent. In its default mode it
-// echoes the arguments it was given into the result, so a test asserts on what
-// actually reached the child rather than on what the caller believed it passed.
+// echoes the arguments it was given, and then the prompt it read from stdin,
+// into the result, so a test asserts on what actually reached the child rather
+// than on what the caller believed it passed.
 func runFakeClaude(mode string) {
 	line := func(v any) {
 		body, _ := json.Marshal(v)
@@ -105,9 +110,16 @@ func runFakeClaude(mode string) {
 			"usage":          map[string]int{"input_tokens": 9, "output_tokens": 4},
 			"total_cost_usd": 0.002})
 	default:
+		// The prompt no longer travels in argv, so the fake has to drain stdin
+		// to see it at all — and draining it is also what proves the parent
+		// closed the pipe instead of leaving the child waiting for more.
+		prompt, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(6)
+		}
 		line(init)
 		line(map[string]any{"type": "result",
-			"result":         strings.Join(os.Args[1:], argSep),
+			"result":         strings.Join(os.Args[1:], argSep) + argSep + stdinMark + string(prompt),
 			"usage":          map[string]int{"input_tokens": 12, "output_tokens": 5},
 			"total_cost_usd": 0.003})
 	}
@@ -133,12 +145,20 @@ func TestRunPassesTheBackendFlagsToARealProcess(t *testing.T) {
 		t.Fatalf("run() = %v", err)
 	}
 
-	got := strings.Split(out.Text, argSep)
-	for _, want := range []string{"-p", "hello", "--output-format", "stream-json", "--verbose",
+	got, stdin := splitEcho(out.Text)
+	for _, want := range []string{"-p", "--output-format", "stream-json", "--verbose",
 		"--restricted", "--strict-mcp-config", "--model", "opus", "--system-prompt"} {
 		if !contains(got, want) {
 			t.Errorf("the child did not receive %q; it got %q", want, got)
 		}
+	}
+	// The prompt belongs on stdin, not in argv: as an argument it is capped at
+	// 128 KiB, which a conversation of any length passes.
+	if stdin != "hello" {
+		t.Errorf("the child read %q from stdin, want the prompt", stdin)
+	}
+	if contains(got, "hello") {
+		t.Errorf("the prompt was passed as an argument: %q", got)
 	}
 	// --tools followed by an empty value is the flag that leaves the agent no
 	// tools of its own, and an empty value is exactly what a looser check for
@@ -170,12 +190,36 @@ func TestApiKeyRunUsesBareAndKeepsTheKeyOutOfTheArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	got := strings.Split(out.Text, argSep)
+	got, _ := splitEcho(out.Text)
 	if !contains(got, "--bare") {
 		t.Errorf("an API key run reached the child without --bare: %q", got)
 	}
 	if strings.Contains(out.Text, "sk-ant-secret-value") {
 		t.Error("the API key was passed as an argument, where any process listing would show it")
+	}
+}
+
+// The bug this guards: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN),
+// and the prompt carries the whole conversation, so once a chat grew past that
+// every turn died in execve with "argument list too long" — before the agent
+// ran at all. A prompt comfortably over the cap has to reach the child intact.
+func TestPromptLargerThanTheArgumentLimitStillReaches(t *testing.T) {
+	withFake(t, "echo")
+
+	// 512 KiB: four times the per-argument cap, and past the 64 KiB a pipe
+	// holds, so the write has to be draining while the child is being read.
+	prompt := strings.Repeat("conversation line that keeps going\n", 512*1024/35)
+	if len(prompt) <= 128*1024 {
+		t.Fatalf("the prompt is %d bytes, which is not past the limit being tested", len(prompt))
+	}
+
+	out, err := invocation{model: "opus", prompt: prompt}.run(context.Background())
+	if err != nil {
+		t.Fatalf("run() = %v, want a prompt past the argument limit to go through", err)
+	}
+	_, stdin := splitEcho(out.Text)
+	if stdin != prompt {
+		t.Errorf("the child read %d bytes from stdin, want the whole %d-byte prompt", len(stdin), len(prompt))
 	}
 }
 
@@ -243,6 +287,18 @@ func TestChatWithToolsReturnsToolCallsThroughARealProcess(t *testing.T) {
 	if resp == nil || resp.Model != "claude-opus-5" {
 		t.Errorf("response = %+v, want the resolved model", resp)
 	}
+}
+
+// splitEcho takes the echo fake's result apart into the arguments the child
+// was given and the prompt it read from stdin.
+func splitEcho(result string) ([]string, string) {
+	args := strings.Split(result, argSep)
+	stdin := ""
+	if n := len(args) - 1; n >= 0 && strings.HasPrefix(args[n], stdinMark) {
+		stdin = strings.TrimPrefix(args[n], stdinMark)
+		args = args[:n]
+	}
+	return args, stdin
 }
 
 func contains(args []string, want string) bool {
