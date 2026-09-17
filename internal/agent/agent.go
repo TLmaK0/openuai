@@ -13,8 +13,8 @@ import (
 )
 
 const maxIterations = 200
-const maxConsecutiveErrors = 3 // stop calling the same tool after this many consecutive errors
-const maxToolResultBytes = 50000 // truncate tool results larger than this
+const maxConsecutiveErrors = 3    // stop calling the same tool after this many consecutive errors
+const maxToolResultBytes = 400000 // truncate tool results larger than this (web_fetch can legitimately return long docs)
 
 const systemPrompt = `You are OpenUAI, an autonomous AI agent with full access to the user's system.
 You have tools to read/write files, execute shell commands, manage git repositories, browse the web, and more.
@@ -36,6 +36,7 @@ You have tools to read/write files, execute shell commands, manage git repositor
 - NEVER fabricate form values or content. If a form needs data the user did not provide, STOP and ask the user for the values — do not invent names, emails, or messages. Only fill placeholder/test data if the user explicitly asked for a test fill.
 - When a browser click fails with "subtree intercepts pointer events", a modal/overlay is on top. Take a fresh snapshot, interact with the modal first (close/fill/click inside it), then retry.
 - If web_fetch is blocked (HTTP 403, captcha, "enable JS" pages), do NOT retry it on that site — switch to the real browser (computer_open_url / browser tools) and read the page from the screen instead.
+- web_fetch never cuts content silently: when it reports TRUNCATED it tells you the total size and the offset to continue from. Call it again with that offset (or a larger max_bytes) until you have the whole page. On documentation sites it already reads the markdown source automatically.
 
 ## No background execution (IMPORTANT)
 You have NO background execution. Your turn ends the moment you reply without tool calls — nothing keeps running afterwards: no loops, no queued jobs, no "checking in later". It is IMPOSSIBLE for you to "keep working behind the scenes" or "come back with results".
@@ -307,7 +308,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			// Truncate oversized tool results to prevent context overflow
 			if len(resultContent) > maxToolResultBytes {
 				truncated := resultContent[:maxToolResultBytes]
-				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes]", len(resultContent), maxToolResultBytes)
+				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes. Do NOT assume the content ended here â for web_fetch call it again with offset set to the number of bytes already shown; for bash, narrow the command.]", len(resultContent), maxToolResultBytes)
 			}
 
 			a.messages = append(a.messages, llm.Message{
