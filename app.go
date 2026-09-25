@@ -74,6 +74,13 @@ type App struct {
 	// When the same ID arrives back via Trouter, we filter it out.
 	recentSentMu  sync.Mutex
 	recentSentIDs map[string]int64 // message ID → unix timestamp
+
+	// speakMu guards the sound switch together with speakCtx: every speech
+	// synthesis runs under speakCtx, and turning sound off cancels it, which
+	// kills any synthesis still in progress.
+	speakMu     sync.Mutex
+	speakCtx    context.Context
+	speakCancel context.CancelFunc
 }
 
 type permAnswer struct {
@@ -345,6 +352,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// System tray
 	tray.SetEnabled(cfg.NotificationsEnabled())
+	tray.SetSoundEnabled(cfg.VoiceEnabled())
 	tray.SetIconBytes(appIcon)
 	tray.Start(tray.Config{
 		Icon: appIcon,
@@ -1281,15 +1289,40 @@ func (a *App) TranscribeAudio(audioBase64 string) map[string]interface{} {
 	}
 }
 
-// SpeakText converts text to speech using local espeak-ng.
+// SpeakText converts text to speech (Piper, falling back to espeak-ng). While
+// the sound switch is off nothing is synthesized and "muted" is true.
 func (a *App) SpeakText(text string) map[string]interface{} {
-	result := voice.Speak(text, normalizeVoice(a.cfg.TTSVoice()), a.cfg.ConfigDir())
+	// While sound is off no speech is generated at all.
+	ctx, ok := a.speechContext()
+	if !ok {
+		return map[string]interface{}{"audio_base64": "", "format": "", "char_count": 0, "error": "", "muted": true}
+	}
+	result := voice.Speak(ctx, text, normalizeVoice(a.cfg.TTSVoice()), a.cfg.ConfigDir())
+	if ctx.Err() != nil {
+		// Sound was turned off while synthesizing: the audio is discarded.
+		return map[string]interface{}{"audio_base64": "", "format": "", "char_count": 0, "error": "", "muted": true}
+	}
 	return map[string]interface{}{
 		"audio_base64": result.AudioBase64,
 		"format":       result.Format,
 		"char_count":   result.CharCount,
 		"error":        result.Error,
+		"muted":        false,
 	}
+}
+
+// speechContext returns the context speech synthesis must run under, or false
+// when sound is off.
+func (a *App) speechContext() (context.Context, bool) {
+	a.speakMu.Lock()
+	defer a.speakMu.Unlock()
+	if !a.cfg.VoiceEnabled() {
+		return nil, false
+	}
+	if a.speakCtx == nil {
+		a.speakCtx, a.speakCancel = context.WithCancel(context.Background())
+	}
+	return a.speakCtx, true
 }
 
 // GetWorkDir returns the directory the agent saves files into (the process
@@ -1455,7 +1488,8 @@ func (a *App) SetWakePaused(paused bool) {
 	}
 }
 
-// GetVoiceEnabled returns whether voice features are enabled.
+// GetVoiceEnabled returns whether the app's sound is on: the assistant's
+// voice and every other sound OpenUAI produces. The microphone is unaffected.
 func (a *App) GetVoiceEnabled() bool {
 	// Enabled by default; the configuration is what says otherwise.
 	return a.cfg.VoiceEnabled()
@@ -1478,9 +1512,22 @@ func (a *App) SetAudioDevice(deviceID string) error {
 	return a.cfg.Save()
 }
 
-// SetVoiceEnabled toggles voice features.
+// SetVoiceEnabled is the app-wide sound switch. Turning it off aborts any
+// speech still being synthesized and silences every other app sound; turning
+// it on only affects what happens from then on. The state is persisted.
 func (a *App) SetVoiceEnabled(enabled bool) error {
+	a.speakMu.Lock()
 	a.cfg.SetVoiceEnabled(enabled)
+	if !enabled && a.speakCancel != nil {
+		a.speakCancel()
+		a.speakCtx, a.speakCancel = nil, nil
+	}
+	a.speakMu.Unlock()
+	tray.SetSoundEnabled(enabled)
+	if a.ctx != nil {
+		wailsRuntime.EventsEmit(a.ctx, "sound_enabled", enabled)
+	}
+	logger.Info("Sound enabled: %v", enabled)
 	return a.cfg.Save()
 }
 

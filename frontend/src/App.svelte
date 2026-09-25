@@ -403,8 +403,7 @@
   let audioDevices = [];
   let selectedDevice = '';
   let speaking = false;
-  let voiceEnabled = true;
-  let autoSpeakEnabled = localStorage.getItem('autoSpeak') !== '0';
+  let voiceEnabled = true;   // app-wide sound switch, persisted in the config
   let ttsVoice = 'es_ES';
   let ttsVoices = [];          // [{code,name,language,quality,installed}] from Piper catalog
   $: voiceLanguages = [...new Set(ttsVoices.map(v => v.language))];
@@ -487,6 +486,7 @@
     selectedModel = await GetDefaultModel();
     await refreshModels();
     voiceEnabled = await GetVoiceEnabled();
+    localStorage.removeItem('autoSpeak'); // superseded by the sound switch
     ttsVoice = await GetTTSVoice();
     piperSupported = await PiperSupported();
     ttsVoices = await GetTTSVoices();
@@ -510,6 +510,12 @@
     } catch (e) { /* no history — start empty */ }
 
     // Listen for MCP auth completion
+    // The sound switch can change from outside this window (tray, API...).
+    EventsOn('sound_enabled', (on) => {
+      voiceEnabled = on;
+      if (!on) { speakQueue = []; stopSpeaking(); }
+    });
+
     EventsOn('mcp_auth_done', async (result) => {
       if (result.error) alert('Auth failed: ' + result.error);
       await refreshMCPServers();
@@ -1151,7 +1157,9 @@
   let currentAudio = null; // <audio> fallback element
   let _ttsNode = null;     // Web Audio playback node
   async function playTTS(clean) {
+    if (!voiceEnabled) return;   // sound off: no synthesis at all
     const result = await SpeakText(clean);
+    if (result.muted || !voiceEnabled) return;  // muted while synthesizing
     if (result.error) throw new Error(result.error);
     if (ttsStopped) return;      // stopped while synthesizing — don't start playback
     if (await ttsCtxReady()) {
@@ -1200,7 +1208,7 @@
 
   // Manual: triggered by the speaker button on a message.
   async function speakMessage(text) {
-    if (speaking) return;
+    if (speaking || !voiceEnabled) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
     speaking = true;
@@ -1216,7 +1224,7 @@
   // Auto-speak: queue assistant responses and read them in order.
   let speakQueue = [];
   async function queueSpeak(text) {
-    if (!autoSpeakEnabled) return;
+    if (!voiceEnabled) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
     speakQueue.push(clean);
@@ -1228,6 +1236,18 @@
     }
     speakQueue = [];
     speaking = false;
+  }
+
+  // App-wide sound switch (button next to the mic). Turning it off stops
+  // whatever is playing, drops the queue and aborts synthesis in progress;
+  // turning it on only affects what comes next.
+  async function toggleSound() {
+    voiceEnabled = !voiceEnabled;
+    if (!voiceEnabled) {
+      speakQueue = [];
+      stopSpeaking();
+    }
+    await SetVoiceEnabled(voiceEnabled);
   }
 
   async function changeTTSVoice() {
@@ -1390,14 +1410,6 @@
 
       <div class="settings-group">
         <div class="settings-group-title">Voice</div>
-        <div class="setting-row">
-          <label>Auto-speak</label>
-          <label class="switch-label">
-            <input type="checkbox" bind:checked={autoSpeakEnabled}
-                   on:change={() => localStorage.setItem('autoSpeak', autoSpeakEnabled ? '1' : '0')} />
-            <span>Read responses aloud automatically</span>
-          </label>
-        </div>
         <div class="setting-row">
           <label>Voice</label>
           <select bind:value={ttsVoice} on:change={changeTTSVoice} disabled={voiceDownloading}>
@@ -1738,7 +1750,7 @@
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
           <div class="message-content markdown">{@html md(msg.content)}</div>
-          <button class="speak-btn" class:speaking
+          <button class="speak-btn" class:speaking disabled={!voiceEnabled && !speaking}
                   on:click={() => speaking ? stopSpeaking() : speakMessage(msg.content)}
                   title={speaking ? 'Stop speaking (Esc)' : 'Read aloud'}>
             {#if speaking}
@@ -1821,6 +1833,13 @@
         ...
       {:else}
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      {/if}
+    </button>
+    <button class="mic-btn sound-btn" class:sound-off={!voiceEnabled} on:click={toggleSound} title={voiceEnabled ? 'Mute sound' : 'Unmute sound'} aria-label={voiceEnabled ? 'Mute sound' : 'Unmute sound'} aria-pressed={!voiceEnabled}>
+      {#if voiceEnabled}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+      {:else}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
       {/if}
     </button>
     {#if recording}
@@ -2746,6 +2765,7 @@
     transition: background 0.2s, box-shadow 0.2s;
   }
   .mic-btn:hover { background: #1d5bb0; box-shadow: 0 0 14px rgba(47,158,255,0.4); }
+  .sound-off { color: #ff8fa3; border-color: #5e1c2e; }
   .mic-recording {
     background: #ff4d6d !important;
     color: #fff;
