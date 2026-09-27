@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -486,6 +486,11 @@
     selectedModel = await GetDefaultModel();
     await refreshModels();
     voiceEnabled = await GetVoiceEnabled();
+    // Migrate the old Auto-speak setting: whoever had it off keeps silence.
+    if (localStorage.getItem('autoSpeak') === '0' && voiceEnabled) {
+      voiceEnabled = false;
+      await SetVoiceEnabled(false);
+    }
     localStorage.removeItem('autoSpeak'); // superseded by the sound switch
     ttsVoice = await GetTTSVoice();
     piperSupported = await PiperSupported();
@@ -509,13 +514,13 @@
       }
     } catch (e) { /* no history — start empty */ }
 
-    // Listen for MCP auth completion
-    // The sound switch can change from outside this window (tray, API...).
+    // Keep the sound switch in sync with the backend state.
     EventsOn('sound_enabled', (on) => {
       voiceEnabled = on;
       if (!on) { speakQueue = []; stopSpeaking(); }
     });
 
+    // Listen for MCP auth completion
     EventsOn('mcp_auth_done', async (result) => {
       if (result.error) alert('Auth failed: ' + result.error);
       await refreshMCPServers();
@@ -1202,6 +1207,7 @@
     if (!speaking) return;
     ttsStopped = true;
     speakQueue = [];
+    StopSpeaking().catch(() => {}); // abort synthesis still in progress
     if (_ttsNode) { try { _ttsNode.stop(); } catch (e) { /* already stopped */ } }
     if (currentAudio) currentAudio.pause();
   }

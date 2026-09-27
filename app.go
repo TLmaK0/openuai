@@ -1316,6 +1316,17 @@ func (a *App) speechContext() (context.Context, bool) {
 	return a.speakCtx, true
 }
 
+// StopSpeaking aborts the speech being synthesized right now (Stop button /
+// Escape) without touching the sound switch; the next utterance starts afresh.
+func (a *App) StopSpeaking() {
+	a.speakMu.Lock()
+	defer a.speakMu.Unlock()
+	if a.speakCancel != nil {
+		a.speakCancel()
+		a.speakCtx, a.speakCancel = nil, nil
+	}
+}
+
 // GetWorkDir returns the directory the agent saves files into (the process
 // working directory), so the frontend can resolve a bare file name the agent
 // mentions into a full path to open. Empty string if it can't be determined.
