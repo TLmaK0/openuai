@@ -38,7 +38,8 @@ type Handlers struct {
 	ResetCosts        func()
 	GetNotifications  func() any
 	SetNotifications  func(enabled bool)
-	RequestRestart    func() any
+	// RequestRestart relaunches the app (dev mode); worktree may be empty.
+	RequestRestart func(worktree string) (any, error)
 }
 
 // Server is the REST API + WebSocket server.
