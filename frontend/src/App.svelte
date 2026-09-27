@@ -403,8 +403,7 @@
   let audioDevices = [];
   let selectedDevice = '';
   let speaking = false;
-  let voiceEnabled = true;
-  let autoSpeakEnabled = localStorage.getItem('autoSpeak') !== '0';
+  let voiceEnabled = true;   // app-wide sound switch, persisted in the config
   let ttsVoice = 'es_ES';
   let ttsVoices = [];          // [{code,name,language,quality,installed}] from Piper catalog
   $: voiceLanguages = [...new Set(ttsVoices.map(v => v.language))];
@@ -487,6 +486,7 @@
     selectedModel = await GetDefaultModel();
     await refreshModels();
     voiceEnabled = await GetVoiceEnabled();
+    localStorage.removeItem('autoSpeak'); // superseded by the sound switch
     ttsVoice = await GetTTSVoice();
     piperSupported = await PiperSupported();
     ttsVoices = await GetTTSVoices();
@@ -510,6 +510,12 @@
     } catch (e) { /* no history — start empty */ }
 
     // Listen for MCP auth completion
+    // The sound switch can change from outside this window (tray, API...).
+    EventsOn('sound_enabled', (on) => {
+      voiceEnabled = on;
+      if (!on) { speakQueue = []; stopSpeaking(); }
+    });
+
     EventsOn('mcp_auth_done', async (result) => {
       if (result.error) alert('Auth failed: ' + result.error);
       await refreshMCPServers();
@@ -1151,7 +1157,9 @@
   let currentAudio = null; // <audio> fallback element
   let _ttsNode = null;     // Web Audio playback node
   async function playTTS(clean) {
+    if (!voiceEnabled) return;   // sound off: no synthesis at all
     const result = await SpeakText(clean);
+    if (result.muted || !voiceEnabled) return;  // muted while synthesizing
     if (result.error) throw new Error(result.error);
     if (ttsStopped) return;      // stopped while synthesizing — don't start playback
     if (await ttsCtxReady()) {
@@ -1200,7 +1208,7 @@
 
   // Manual: triggered by the speaker button on a message.
   async function speakMessage(text) {
-    if (speaking) return;
+    if (speaking || !voiceEnabled) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
     speaking = true;
@@ -1216,7 +1224,7 @@
   // Auto-speak: queue assistant responses and read them in order.
   let speakQueue = [];
   async function queueSpeak(text) {
-    if (!autoSpeakEnabled) return;
+    if (!voiceEnabled) return;
     const clean = cleanForSpeech(text);
     if (!clean) return;
     speakQueue.push(clean);
@@ -1228,6 +1236,18 @@
     }
     speakQueue = [];
     speaking = false;
+  }
+
+  // App-wide sound switch (button next to the mic). Turning it off stops
+  // whatever is playing, drops the queue and aborts synthesis in progress;
+  // turning it on only affects what comes next.
+  async function toggleSound() {
+    voiceEnabled = !voiceEnabled;
+    if (!voiceEnabled) {
+      speakQueue = [];
+      stopSpeaking();
+    }
+    await SetVoiceEnabled(voiceEnabled);
   }
 
   async function changeTTSVoice() {
@@ -1270,12 +1290,17 @@
   // wake listener never transcribes the assistant's own TTS or a push-to-talk.
   $: if (wakeListening) SetWakePaused(loading || speaking || transcribing || recording);
 
-  function handleGlobalKeydown(e) {
-    if (e.key !== 'Escape') return;
-    // Escape stops everything at once: the voice AND the in-flight request.
-    if (speaking || (loading && !aborting)) e.preventDefault();
+  // Stops everything at once: the voice AND the in-flight request. Used by
+  // Escape and by the Stop button, so both always do the same thing.
+  function stopAll() {
     if (speaking) stopSpeaking();
     if (loading && !aborting) abort();
+  }
+
+  function handleGlobalKeydown(e) {
+    if (e.key !== 'Escape') return;
+    if (speaking || (loading && !aborting)) e.preventDefault();
+    stopAll();
   }
 
   function handleKeydown(e) {
@@ -1390,14 +1415,6 @@
 
       <div class="settings-group">
         <div class="settings-group-title">Voice</div>
-        <div class="setting-row">
-          <label>Auto-speak</label>
-          <label class="switch-label">
-            <input type="checkbox" bind:checked={autoSpeakEnabled}
-                   on:change={() => localStorage.setItem('autoSpeak', autoSpeakEnabled ? '1' : '0')} />
-            <span>Read responses aloud automatically</span>
-          </label>
-        </div>
         <div class="setting-row">
           <label>Voice</label>
           <select bind:value={ttsVoice} on:change={changeTTSVoice} disabled={voiceDownloading}>
@@ -1738,7 +1755,7 @@
       {:else if msg.role === 'assistant'}
         <div class="message assistant">
           <div class="message-content markdown">{@html md(msg.content)}</div>
-          <button class="speak-btn" class:speaking
+          <button class="speak-btn" class:speaking disabled={!voiceEnabled && !speaking}
                   on:click={() => speaking ? stopSpeaking() : speakMessage(msg.content)}
                   title={speaking ? 'Stop speaking (Esc)' : 'Read aloud'}>
             {#if speaking}
@@ -1809,11 +1826,22 @@
       {/if}
     </button>
     {/if}
-    <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
-      <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c0 0 3-6 10-6s10 6 10 6"/><path d="M2 10c0 0 3 6 10 6s10-6 10-6"/><circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg>
-      <span class="wake-track"><span class="wake-knob"></span></span>
-    </label>
+    <div class="voice-toggles">
+      <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
+        <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0"/><path d="M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"/></svg>
+        <span class="wake-track"><span class="wake-knob"></span></span>
+      </label>
+      <label class="wake-toggle sound-toggle" class:wake-on={voiceEnabled} title={voiceEnabled ? 'Mute sound' : 'Unmute sound'}>
+        <input type="checkbox" checked={voiceEnabled} on:change={toggleSound} aria-label={voiceEnabled ? 'Mute sound' : 'Unmute sound'} />
+        {#if voiceEnabled}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        {:else}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        {/if}
+        <span class="wake-track"><span class="wake-knob"></span></span>
+      </label>
+    </div>
     <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} class:mic-session={wakeSession && !recording && !transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={wakeSession ? 'Conversation open — talk without the wake word' : recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -1847,9 +1875,9 @@
       rows="1"
       disabled={loading || !isReady || transcribing}
     ></textarea>
-    {#if loading}
-      <button class="stop-btn" on:click={abort} disabled={aborting} title="Stop the running task (Esc)">
-        {#if aborting}Stopping...{:else}Stop{/if}
+    {#if loading || speaking}
+      <button class="stop-btn" on:click={stopAll} disabled={aborting && !speaking} title={loading ? 'Stop the running task (Esc)' : 'Stop speaking (Esc)'}>
+        {#if aborting && !speaking}Stopping...{:else}Stop{/if}
       </button>
     {:else}
       <button on:click={send} disabled={!isReady || !input.trim()}>Send</button>
@@ -2698,6 +2726,7 @@
     transition: color 0.2s;
   }
   .wake-toggle input { display: none; }
+  .voice-toggles { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; }
   .wake-track {
     position: relative;
     width: 30px;

@@ -9,6 +9,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -282,7 +283,12 @@ func EnsureVoice(configDir, code string) error {
 
 // Speak synthesizes text with the given voice, returning 22kHz mono WAV bytes.
 // It ensures the binary and the voice are present (downloading on demand).
-func Speak(configDir, code, text string) ([]byte, error) {
+// Cancelling ctx kills the synthesis process at once, so muting the app stops
+// speech still being generated.
+func Speak(ctx context.Context, configDir, code, text string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := EnsureBinary(configDir); err != nil {
 		return nil, err
 	}
@@ -297,13 +303,16 @@ func Speak(configDir, code, text string) ([]byte, error) {
 	// --sentence_silence: pause between sentences. This build defaults to ~0, so
 	// punctuation alone produces run-on speech (lists read with no gaps); set a
 	// natural pause explicitly so each sentence / list item is separated.
-	cmd := exec.Command(binPath(configDir), "-m", model, "--sentence_silence", "0.3", "-f", outFile)
+	cmd := exec.CommandContext(ctx, binPath(configDir), "-m", model, "--sentence_silence", "0.3", "-f", outFile)
 	cmd.Dir = piperRoot
 	// Piper loads its bundled shared libs and espeak-ng-data from its own dir.
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+piperRoot, "DYLD_LIBRARY_PATH="+piperRoot)
 	cmd.Stdin = strings.NewReader(text)
 	sysproc.HideConsole(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("piper synthesis failed: %v — %s", err, string(out))
 	}
 	return os.ReadFile(outFile)
