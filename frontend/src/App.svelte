@@ -1821,11 +1821,22 @@
       {/if}
     </button>
     {/if}
-    <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
-      <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c0 0 3-6 10-6s10 6 10 6"/><path d="M2 10c0 0 3 6 10 6s10-6 10-6"/><circle cx="12" cy="10" r="1.5" fill="currentColor" stroke="none"/></svg>
-      <span class="wake-track"><span class="wake-knob"></span></span>
-    </label>
+    <div class="voice-toggles">
+      <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
+        <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0"/><path d="M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"/></svg>
+        <span class="wake-track"><span class="wake-knob"></span></span>
+      </label>
+      <label class="wake-toggle sound-toggle" class:wake-on={voiceEnabled} title={voiceEnabled ? 'Mute sound' : 'Unmute sound'}>
+        <input type="checkbox" checked={voiceEnabled} on:change={toggleSound} aria-label={voiceEnabled ? 'Mute sound' : 'Unmute sound'} />
+        {#if voiceEnabled}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        {:else}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        {/if}
+        <span class="wake-track"><span class="wake-knob"></span></span>
+      </label>
+    </div>
     <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} class:mic-session={wakeSession && !recording && !transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={wakeSession ? 'Conversation open — talk without the wake word' : recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -1835,15 +1846,6 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="1" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
       {/if}
     </button>
-    <label class="wake-toggle sound-toggle" class:wake-on={voiceEnabled} title={voiceEnabled ? 'Mute sound' : 'Unmute sound'}>
-      <input type="checkbox" checked={voiceEnabled} on:change={toggleSound} aria-label={voiceEnabled ? 'Mute sound' : 'Unmute sound'} />
-      {#if voiceEnabled}
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-      {:else}
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
-      {/if}
-      <span class="wake-track"><span class="wake-knob"></span></span>
-    </label>
     {#if recording}
       <div class="voice-meter">
         <div class="voice-meter-bar" style="width: {voiceLevel}%"></div>
@@ -2719,6 +2721,7 @@
     transition: color 0.2s;
   }
   .wake-toggle input { display: none; }
+  .voice-toggles { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; }
   .wake-track {
     position: relative;
     width: 30px;
