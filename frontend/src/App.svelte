@@ -1290,12 +1290,17 @@
   // wake listener never transcribes the assistant's own TTS or a push-to-talk.
   $: if (wakeListening) SetWakePaused(loading || speaking || transcribing || recording);
 
-  function handleGlobalKeydown(e) {
-    if (e.key !== 'Escape') return;
-    // Escape stops everything at once: the voice AND the in-flight request.
-    if (speaking || (loading && !aborting)) e.preventDefault();
+  // Stops everything at once: the voice AND the in-flight request. Used by
+  // Escape and by the Stop button, so both always do the same thing.
+  function stopAll() {
     if (speaking) stopSpeaking();
     if (loading && !aborting) abort();
+  }
+
+  function handleGlobalKeydown(e) {
+    if (e.key !== 'Escape') return;
+    if (speaking || (loading && !aborting)) e.preventDefault();
+    stopAll();
   }
 
   function handleKeydown(e) {
@@ -1870,9 +1875,9 @@
       rows="1"
       disabled={loading || !isReady || transcribing}
     ></textarea>
-    {#if loading}
-      <button class="stop-btn" on:click={abort} disabled={aborting} title="Stop the running task (Esc)">
-        {#if aborting}Stopping...{:else}Stop{/if}
+    {#if loading || speaking}
+      <button class="stop-btn" on:click={stopAll} disabled={aborting && !speaking} title={loading ? 'Stop the running task (Esc)' : 'Stop speaking (Esc)'}>
+        {#if aborting && !speaking}Stopping...{:else}Stop{/if}
       </button>
     {:else}
       <button on:click={send} disabled={!isReady || !input.trim()}>Send</button>
