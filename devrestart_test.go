@@ -37,11 +37,10 @@ func TestResolveRestartTargetRejects(t *testing.T) {
 	}
 }
 
-func TestRequestRestartRefusesWithoutRelaunchLoop(t *testing.T) {
-	t.Setenv(relaunchFileEnv, "")
-	a := &App{}
-	if _, err := a.RequestRestart(""); err == nil {
-		t.Fatal("restart must be refused when not under dev-relaunch.sh")
+func TestSpawnRelaunchLoopNeedsScript(t *testing.T) {
+	empty := t.TempDir()
+	if _, err := spawnRelaunchLoop(empty, empty); err == nil {
+		t.Fatal("expected an error when dev-relaunch.sh is missing")
 	}
 }
 

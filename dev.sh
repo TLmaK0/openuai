@@ -5,6 +5,12 @@ set -e
 install_deps() {
   case "$(uname -s)" in
     Linux)
+      # Already installed: skip sudo, so unattended relaunches never block
+      # waiting for a password.
+      if pkg-config --exists webkit2gtk-4.1 2>/dev/null || pkg-config --exists webkit2gtk-4.0 2>/dev/null; then
+        echo "→ webkit2gtk already installed"
+        return
+      fi
       if command -v apt-get &>/dev/null; then
         echo "→ Installing webkit2gtk (apt)..."
         sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev 2>/dev/null || \

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,42 +15,58 @@ import (
 // where the app writes the directory the next launch must build and run.
 const relaunchFileEnv = "OPENUAI_RELAUNCH_FILE"
 
-// RequestRestart exits with code 42 so scripts/dev-relaunch.sh rebuilds and
-// relaunches the app. With a worktree, the relaunch happens in that directory;
-// without one, in the same directory as now.
+// RequestRestart exits with code 42 and makes sure the app comes back up,
+// in worktree if given or in the current directory otherwise.
 //
-// It refuses when the app is not running under the relaunch loop, because
-// exiting would then just close the app.
+// Under scripts/dev-relaunch.sh the loop relaunches it. When the app was
+// started any other way (e.g. plain ./dev.sh) it first starts a detached
+// relaunch loop that waits for this process to exit and then launches the
+// app again, so a restart always brings the app back.
 func (a *App) RequestRestart(worktree string) (map[string]any, error) {
-	file := os.Getenv(relaunchFileEnv)
-	if file == "" {
-		return nil, errors.New("not running under scripts/dev-relaunch.sh: restarting would close the app without relaunching it")
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
 	}
-
-	target := ""
+	target := cwd
 	if worktree != "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return nil, err
-		}
 		if target, err = resolveRestartTarget(cwd, worktree); err != nil {
 			return nil, err
 		}
 	}
-	if err := writeRelaunchTarget(file, target); err != nil {
-		return nil, fmt.Errorf("cannot record restart target: %w", err)
+
+	if file := os.Getenv(relaunchFileEnv); file != "" {
+		if err := writeRelaunchTarget(file, target); err != nil {
+			return nil, fmt.Errorf("cannot record restart target: %w", err)
+		}
+	} else {
+		logPath, err := spawnRelaunchLoop(cwd, target)
+		if err != nil {
+			return nil, fmt.Errorf("cannot start relaunch loop: %w", err)
+		}
+		logger.Info("Started detached relaunch loop (log: %s)", logPath)
 	}
 
-	if target == "" {
-		logger.Info("Restart requested (same directory)")
-	} else {
-		logger.Info("Restart requested in worktree %s", target)
-	}
+	logger.Info("Restart requested in %s", target)
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		os.Exit(42)
 	}()
 	return map[string]any{"ok": true, "code": 42, "worktree": target}, nil
+}
+
+// spawnRelaunchLoop starts scripts/dev-relaunch.sh detached from this
+// process. It prefers the script of the running checkout (it matches this
+// binary, so it understands --wait-pid) and falls back to the target's.
+func spawnRelaunchLoop(cwd, target string) (string, error) {
+	script := filepath.Join(cwd, "scripts", "dev-relaunch.sh")
+	if _, err := os.Stat(script); err != nil {
+		script = filepath.Join(target, "scripts", "dev-relaunch.sh")
+		if _, err := os.Stat(script); err != nil {
+			return "", fmt.Errorf("scripts/dev-relaunch.sh not found")
+		}
+	}
+	logPath := filepath.Join(os.TempDir(), "openuai-dev-relaunch.log")
+	return logPath, startDetached(script, target, logPath)
 }
 
 // resolveRestartTarget turns dir (absolute, or relative to base) into the

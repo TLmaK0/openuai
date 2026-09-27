@@ -2,8 +2,11 @@
 # Runs OpenUAI in a loop: when the app exits with code 42 (restart requested,
 # e.g. POST /api/dev/restart) it is rebuilt and launched again.
 #
-# Usage: scripts/dev-relaunch.sh [--worktree DIR] [command...]
+# Usage: scripts/dev-relaunch.sh [--worktree DIR] [--wait-pid PID] [command...]
 #   --worktree DIR  directory to build and run first (default: current dir)
+#   --wait-pid PID  wait for that process to exit before the first launch
+#                   (used by the app to relaunch itself when it was not
+#                   started under this loop)
 #   command         what to run inside that directory (default: ./dev.sh)
 #
 # The app chooses the directory of the next launch: POST /api/dev/restart with
@@ -12,14 +15,21 @@
 set -u
 
 dir="$PWD"
-if [ "${1:-}" = "--worktree" ]; then
-  if [ "$#" -lt 2 ]; then
-    echo "--worktree needs a directory" >&2
-    exit 2
-  fi
-  dir="$2"
-  shift 2
-fi
+wait_pid=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --worktree)
+      if [ "$#" -lt 2 ]; then echo "--worktree needs a directory" >&2; exit 2; fi
+      dir="$2"; shift 2 ;;
+    --wait-pid)
+      if [ "$#" -lt 2 ]; then echo "--wait-pid needs a PID" >&2; exit 2; fi
+      wait_pid="$2"; shift 2 ;;
+    --)
+      shift; break ;;
+    *)
+      break ;;
+  esac
+done
 
 APP_CMD=("./dev.sh")
 if [ "$#" -gt 0 ]; then
@@ -31,6 +41,13 @@ fi
 OPENUAI_RELAUNCH_FILE="$(mktemp "${TMPDIR:-/tmp}/openuai-relaunch.XXXXXX")"
 export OPENUAI_RELAUNCH_FILE
 trap 'rm -f "$OPENUAI_RELAUNCH_FILE"' EXIT
+
+if [ -n "$wait_pid" ]; then
+  echo "→ OpenUAI dev: waiting for PID $wait_pid to exit"
+  while kill -0 "$wait_pid" 2>/dev/null; do
+    sleep 0.2
+  done
+fi
 
 while true; do
   if ! cd "$dir"; then
