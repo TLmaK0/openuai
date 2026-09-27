@@ -20,6 +20,24 @@ Read `README.md` before working in this repository. It contains the current
 development, build, launch, and distribution instructions; use those documented
 commands before inferring alternate workflows.
 
+## Verifying Changes in the App
+
+Whenever a change can be checked in the running app (UI, behaviour, voice,
+notifications...), always build and restart the app so the user can see it,
+without waiting to be asked. "It compiles" is not the end of the task.
+
+- Commit and push first, and tell the user what to check: restarting ends the
+  current chat session.
+- The app must be running under `scripts/dev-relaunch.sh`; otherwise a restart
+  just closes it. If it is not, ask the user to launch it that way instead.
+- Restart into your worktree (the loop rebuilds with `./dev.sh` and relaunches
+  there):
+
+  ```
+  curl -X POST localhost:9120/api/dev/restart -H 'Content-Type: application/json' \
+    -d '{"worktree":"<absolute path of your worktree>"}'
+  ```
+
 ## Versioning Policy
 
 - **Patch releases only** (v0.4.x): all new features, fixes, and improvements bump the patch version (e.g. v0.4.1 → v0.4.2 → v0.4.3).

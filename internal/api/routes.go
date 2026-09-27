@@ -197,11 +197,23 @@ func (s *Server) handleSetNotifications(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
+type devRestartRequest struct {
+	// Worktree is the directory to relaunch in (optional; default: same one).
+	Worktree string `json:"worktree"`
+}
+
 func (s *Server) handleDevRestart(c echo.Context) error {
 	if s.handlers.RequestRestart == nil {
 		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "restart handler not configured"})
 	}
-	result := s.handlers.RequestRestart()
+	var req devRestartRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	result, err := s.handlers.RequestRestart(req.Worktree)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
 	return c.JSON(http.StatusOK, map[string]any{"status": "restarting", "result": result})
 }
 
