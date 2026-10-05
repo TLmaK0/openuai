@@ -38,6 +38,12 @@ without waiting to be asked. "It compiles" is not the end of the task.
     -d '{"worktree":"<absolute path of your worktree>"}'
   ```
 
+## Pending Work
+
+Pending features and bugs are tracked as GitHub issues
+(`gh issue list`), not in a plan file in the repository. Open an issue for new
+work rather than writing a roadmap document.
+
 ## Versioning Policy
 
 - **Patch releases only** (v0.4.x): all new features, fixes, and improvements bump the patch version (e.g. v0.4.1 → v0.4.2 → v0.4.3).
