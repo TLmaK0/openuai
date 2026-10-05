@@ -64,6 +64,10 @@ build() {
 # Run
 run() {
   local bin="./build/bin/openuai"
+  # On macOS wails build produces an .app bundle
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    bin="./build/bin/openuai.app/Contents/MacOS/openuai"
+  fi
   echo "→ Launching $bin ..."
   if [[ "$(uname -s)" == "Linux" && -z "$DISPLAY" ]]; then
     export DISPLAY=:1
