@@ -63,7 +63,7 @@ cd openuai
 ./dev.sh
 ```
 
-`dev.sh` installs system dependencies (webkit2gtk), installs the Wails CLI if missing, builds, and launches the app.
+`dev.sh` installs system dependencies (webkit2gtk on Linux; Xcode Command Line Tools, Go and Node via Homebrew on macOS), installs the Wails CLI if missing, builds, and launches the app.
 
 ### Manual build
 

@@ -27,18 +27,55 @@ install_deps() {
         echo "⚠ Unknown package manager — install webkit2gtk manually"
       fi
       ;;
-    Darwin|MINGW*|MSYS*)
-      echo "→ No system deps needed on macOS/Windows"
+    Darwin)
+      install_deps_macos
+      ;;
+    MINGW*|MSYS*)
+      echo "→ No system deps needed on Windows"
       ;;
   esac
 }
 
+# macOS: Xcode Command Line Tools (clang for CGO), Go and Node/npm (frontend
+# build). Missing tools are installed with Homebrew.
+install_deps_macos() {
+  if ! xcode-select -p &>/dev/null; then
+    echo "→ Installing Xcode Command Line Tools..."
+    xcode-select --install || true
+    echo "⚠ Finish the Xcode Command Line Tools installer, then run ./dev.sh again"
+    exit 1
+  fi
+
+  local missing=()
+  command -v go &>/dev/null || missing+=(go)
+  command -v npm &>/dev/null || missing+=(node)
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    echo "→ Xcode CLT, Go and Node already installed"
+    return
+  fi
+
+  if ! command -v brew &>/dev/null; then
+    for prefix in /opt/homebrew /usr/local; do
+      if [[ -x "$prefix/bin/brew" ]]; then
+        eval "$("$prefix/bin/brew" shellenv)"
+      fi
+    done
+  fi
+  if ! command -v brew &>/dev/null; then
+    echo "⚠ Missing: ${missing[*]}. Install Homebrew (https://brew.sh) or install them manually, then run ./dev.sh again"
+    exit 1
+  fi
+  echo "→ Installing ${missing[*]} (brew)..."
+  brew install "${missing[@]}"
+}
+
 # Install Go tools
 install_go_tools() {
+  # go install puts binaries here; it is often missing from PATH.
+  export PATH="$PATH:$(go env GOPATH)/bin"
   if ! command -v wails &>/dev/null; then
     echo "→ Installing Wails CLI..."
     go install github.com/wailsapp/wails/v2/cmd/wails@latest
-    export PATH="$PATH:$(go env GOPATH)/bin"
   fi
 }
 

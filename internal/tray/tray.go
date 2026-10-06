@@ -18,18 +18,18 @@ var (
 	quitCh      chan struct{}
 )
 
-// Start initializes and runs the system tray in a goroutine.
+// Start initializes and runs the system tray.
 func Start(c Config) {
 	cfg = c
 	quitCh = make(chan struct{})
-	go systray.Run(onReady, onExit)
+	run(onReady, onExit)
 	started = true
 }
 
 // Stop shuts down the system tray.
 func Stop() {
 	if started {
-		systray.Quit()
+		quit()
 		started = false
 	}
 }
