@@ -57,7 +57,7 @@
     renderer: codeRenderer,
   });
 
-  // Delegated chat clicks: code-copy buttons and links.
+  // Delegated chat clicks: code-copy buttons and file names.
   function onChatClick(e) {
     const btn = e.target.closest && e.target.closest('.code-copy');
     if (btn) {
@@ -78,22 +78,24 @@
     if (fl) {
       e.preventDefault();
       openFile(fl.getAttribute('data-file') || '');
-      return;
     }
+  }
 
-    // Links: open externally instead of navigating the embedded webview away.
-    // A web URL goes to the system browser; a local file (the agent's output)
-    // opens directly in the OS default app for that document type.
+  // Links anywhere in the app (chat, update notes, settings): open externally
+  // instead of navigating the embedded webview away, which would leave no way
+  // back. A web URL goes to the system browser; a local file (the agent's
+  // output) opens directly in the OS default app for that document type.
+  function onLinkClick(e) {
+    if (e.defaultPrevented) return;
     const a = e.target.closest && e.target.closest('a[href]');
-    if (a) {
-      const raw = a.getAttribute('href') || '';
-      if (/^https?:\/\//i.test(raw)) {
-        e.preventDefault();
-        BrowserOpenURL(raw);
-      } else if (raw && !/^(#|mailto:|tel:|javascript:)/i.test(raw)) {
-        e.preventDefault();
-        openFile(decodeURI(raw));
-      }
+    if (!a) return;
+    const raw = a.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(raw)) {
+      e.preventDefault();
+      BrowserOpenURL(raw);
+    } else if (raw && !/^(#|mailto:|tel:|javascript:)/i.test(raw)) {
+      e.preventDefault();
+      openFile(decodeURI(raw));
     }
   }
 
@@ -1335,7 +1337,7 @@
   }
 </script>
 
-<svelte:window on:keydown={handleGlobalKeydown} />
+<svelte:window on:keydown={handleGlobalKeydown} on:click={onLinkClick} />
 
 <div class="orb-bg" class:active={loading || speaking || listening}>
   <div class="orb-aura" style="transform: translate({auraTX}px, {auraTY}px)"></div>
