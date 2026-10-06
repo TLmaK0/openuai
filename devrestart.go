@@ -11,15 +11,15 @@ import (
 	"openuai/internal/logger"
 )
 
-// relaunchFileEnv is exported by scripts/dev-relaunch.sh. It names the file
+// relaunchFileEnv is exported by the dev.sh relaunch loop. It names the file
 // where the app writes the directory the next launch must build and run.
 const relaunchFileEnv = "OPENUAI_RELAUNCH_FILE"
 
 // RequestRestart exits with code 42 and makes sure the app comes back up,
 // in worktree if given or in the current directory otherwise.
 //
-// Under scripts/dev-relaunch.sh the loop relaunches it. When the app was
-// started any other way (e.g. plain ./dev.sh) it first starts a detached
+// Under the dev.sh relaunch loop the loop relaunches it. When the app was
+// started any other way (e.g. ./dev.sh --once) it first starts a detached
 // relaunch loop that waits for this process to exit and then launches the
 // app again, so a restart always brings the app back.
 func (a *App) RequestRestart(worktree string) (map[string]any, error) {
@@ -54,15 +54,15 @@ func (a *App) RequestRestart(worktree string) (map[string]any, error) {
 	return map[string]any{"ok": true, "code": 42, "worktree": target}, nil
 }
 
-// spawnRelaunchLoop starts scripts/dev-relaunch.sh detached from this
+// spawnRelaunchLoop starts the dev.sh relaunch loop detached from this
 // process. It prefers the script of the running checkout (it matches this
 // binary, so it understands --wait-pid) and falls back to the target's.
 func spawnRelaunchLoop(cwd, target string) (string, error) {
-	script := filepath.Join(cwd, "scripts", "dev-relaunch.sh")
+	script := filepath.Join(cwd, "dev.sh")
 	if _, err := os.Stat(script); err != nil {
-		script = filepath.Join(target, "scripts", "dev-relaunch.sh")
+		script = filepath.Join(target, "dev.sh")
 		if _, err := os.Stat(script); err != nil {
-			return "", fmt.Errorf("scripts/dev-relaunch.sh not found")
+			return "", fmt.Errorf("dev.sh not found")
 		}
 	}
 	logPath := filepath.Join(os.TempDir(), "openuai-dev-relaunch.log")
