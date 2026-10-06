@@ -28,10 +28,11 @@ without waiting to be asked. "It compiles" is not the end of the task.
 
 - Commit and push first, and tell the user what to check: restarting ends the
   current chat session.
-- The app must be running under `scripts/dev-relaunch.sh`; otherwise a restart
-  just closes it. If it is not, ask the user to launch it that way instead.
-- Restart into your worktree (the loop rebuilds with `./dev.sh` and relaunches
-  there):
+- `./dev.sh` runs the app inside a relaunch loop (`./dev.sh --once` builds and
+  runs it a single time). On macOS and Linux a restart brings the app back even
+  if it was started another way; on Windows it must be running under `./dev.sh`.
+- Restart into your worktree (the loop rebuilds with that worktree's
+  `./dev.sh --once` and relaunches there):
 
   ```
   curl -X POST localhost:9120/api/dev/restart -H 'Content-Type: application/json' \

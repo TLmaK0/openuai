@@ -40,7 +40,7 @@ func TestResolveRestartTargetRejects(t *testing.T) {
 func TestSpawnRelaunchLoopNeedsScript(t *testing.T) {
 	empty := t.TempDir()
 	if _, err := spawnRelaunchLoop(empty, empty); err == nil {
-		t.Fatal("expected an error when dev-relaunch.sh is missing")
+		t.Fatal("expected an error when dev.sh is missing")
 	}
 }
 

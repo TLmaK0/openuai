@@ -63,7 +63,7 @@ cd openuai
 ./dev.sh
 ```
 
-`dev.sh` installs system dependencies (webkit2gtk on Linux; Xcode Command Line Tools, Go and Node via Homebrew on macOS), installs the Wails CLI if missing, builds, and launches the app.
+`dev.sh` installs system dependencies (webkit2gtk on Linux; Xcode Command Line Tools, Go and Node via Homebrew on macOS), installs the Wails CLI if missing, builds, and launches the app. It keeps running as a relaunch loop: when the app requests a restart (`POST /api/dev/restart`, optionally with a `worktree`) it is rebuilt and launched again. Use `./dev.sh --once` to build and run a single time.
 
 ### Manual build
 

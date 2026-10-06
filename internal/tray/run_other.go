@@ -2,11 +2,20 @@
 
 package tray
 
-import "fyne.io/systray"
+import (
+	"runtime"
 
-// run starts the tray with its own event loop in a goroutine.
+	"fyne.io/systray"
+)
+
+// run starts the tray with its own event loop in a goroutine. The goroutine
+// stays on one OS thread: on Windows the tray window only gets its messages
+// on the thread that created it.
 func run(onReady, onExit func()) {
-	go systray.Run(onReady, onExit)
+	go func() {
+		runtime.LockOSThread()
+		systray.Run(onReady, onExit)
+	}()
 }
 
 func quit() {
