@@ -106,4 +106,4 @@ wails build
 
 ## License
 
-Commons Clause + MIT
+[Commons Clause + MIT](LICENSE): free to use, modify and redistribute under the MIT terms, but you may not sell the software or a service whose value derives substantially from it. See [LICENSE](LICENSE) for the full text.
