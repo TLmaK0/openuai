@@ -4,6 +4,7 @@
 package procs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -82,6 +83,9 @@ type Proc struct {
 	agentOffset   int64 // where the agent's next read continues from
 	killedByAgent bool
 	exitSeen      bool // the agent already saw the exit through a read
+
+	userLine []byte   // what the user is typing right now (never leaves the app)
+	typed    []string // recent lines typed by the user, scrubbed from agent reads
 }
 
 // ID returns the process ID.
@@ -119,6 +123,43 @@ func (p *Proc) appendLocked(b []byte) {
 		copy(nb, p.buf[len(p.buf)-BufferSize:])
 		p.buf = nb
 	}
+}
+
+// minTypedScrub is the shortest typed line that is scrubbed from agent reads;
+// shorter ones ("y", "1") would mangle unrelated output.
+const minTypedScrub = 4
+
+const maxTyped = 32
+
+func (p *Proc) trackTypedLocked(data []byte) {
+	for _, b := range data {
+		switch {
+		case b == '\r' || b == '\n':
+			line := strings.TrimSpace(ansiRe.ReplaceAllString(string(p.userLine), ""))
+			p.userLine = p.userLine[:0]
+			if len(line) >= minTypedScrub {
+				p.typed = append(p.typed, line)
+				if len(p.typed) > maxTyped {
+					p.typed = p.typed[len(p.typed)-maxTyped:]
+				}
+			}
+		case b == 0x7f || b == '\b':
+			if n := len(p.userLine); n > 0 {
+				p.userLine = p.userLine[:n-1]
+			}
+		case b == 0x03: // Ctrl-C abandons the line
+			p.userLine = p.userLine[:0]
+		default:
+			p.userLine = append(p.userLine, b)
+		}
+	}
+}
+
+func scrubTyped(out string, typed []string) string {
+	for _, t := range typed {
+		out = strings.ReplaceAll(out, t, "[typed by user]")
+	}
+	return out
 }
 
 func (p *Proc) startOffsetLocked() int64 { return p.total - int64(len(p.buf)) }
@@ -371,7 +412,7 @@ func (m *Manager) Read(id string, since int64) (ReadResult, error) {
 		from = p.total - maxAgentRead
 		r.Truncated = true
 	}
-	r.Output = Redact(Clean(string(data)))
+	r.Output = Redact(scrubTyped(Clean(string(data)), p.typed))
 	r.From, r.Next = from, p.total
 	p.agentOffset = p.total
 	if p.exited {
@@ -390,6 +431,34 @@ func (m *Manager) Pending(id string) int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.total - p.agentOffset
+}
+
+// Wait blocks until the process has output the agent has not read, is waiting
+// for input, has exited, the timeout passes or ctx ends.
+func (m *Manager) Wait(ctx context.Context, id string, timeout time.Duration) error {
+	p, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		p.mu.Lock()
+		ready := p.exited || p.waiting || p.total > p.agentOffset
+		p.mu.Unlock()
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return nil
+		case <-tick.C:
+		}
+	}
 }
 
 // Idle returns how long the process has been silent.
@@ -415,8 +484,15 @@ func (m *Manager) Snapshot(id string) ([]byte, int64, error) {
 	return append([]byte(nil), p.buf...), p.total, nil
 }
 
-// Write sends input to the process as if typed on its terminal.
-func (m *Manager) Write(id string, data []byte) error {
+// Write sends input from the agent to the process as if typed on its terminal.
+func (m *Manager) Write(id string, data []byte) error { return m.write(id, data, false) }
+
+// WriteUser sends input typed by the user. What the user types (passwords,
+// tokens...) must never reach the LLM, so it is remembered and scrubbed from
+// the output the agent reads, in case the program echoes it back.
+func (m *Manager) WriteUser(id string, data []byte) error { return m.write(id, data, true) }
+
+func (m *Manager) write(id string, data []byte, user bool) error {
 	p, err := m.get(id)
 	if err != nil {
 		return err
@@ -425,6 +501,9 @@ func (m *Manager) Write(id string, data []byte) error {
 	if p.exited {
 		p.mu.Unlock()
 		return fmt.Errorf("process %s has exited", id)
+	}
+	if user {
+		p.trackTypedLocked(data)
 	}
 	wasWaiting := p.waiting
 	p.waiting = false

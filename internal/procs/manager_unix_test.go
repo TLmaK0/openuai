@@ -3,6 +3,7 @@
 package procs
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -104,4 +105,42 @@ func TestUnknownProcess(t *testing.T) {
 	if _, err := m.Read("nope", -1); err == nil {
 		t.Fatal("expected error")
 	}
+}
+
+func TestUserTypedTextIsScrubbedFromAgentReads(t *testing.T) {
+	m := NewManager(Callbacks{})
+	defer m.Shutdown()
+	p, err := m.Start(`printf 'Token: '; read x; echo "got $x"; sleep 0.2`, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(func() bool { return p.Info().Status == StatusWaiting }, 6*time.Second) {
+		t.Fatal("never waiting")
+	}
+	if err := m.WriteUser(p.ID(), []byte("hunter2-secret\r")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.Done()
+	r, _ := m.Read(p.ID(), -1)
+	if strings.Contains(r.Output, "hunter2-secret") {
+		t.Fatalf("typed text leaked to the agent: %q", r.Output)
+	}
+	raw, _, _ := m.Snapshot(p.ID())
+	if !strings.Contains(string(raw), "hunter2-secret") {
+		t.Fatal("the user's own terminal view must keep the raw output")
+	}
+}
+
+func TestWaitReturnsOnOutput(t *testing.T) {
+	m := NewManager(Callbacks{})
+	defer m.Shutdown()
+	p, _ := m.Start(`sleep 0.3; echo hi; sleep 5`, t.TempDir())
+	start := time.Now()
+	if err := m.Wait(context.Background(), p.ID(), 4*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatal("Wait did not return on new output")
+	}
+	_ = m.Kill(p.ID(), true)
 }
