@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	fyne.io/systray v1.12.0
+	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/esiqveland/notify v0.13.3
 	github.com/gen2brain/beeep v0.11.2
 	github.com/gen2brain/malgo v0.11.25
@@ -19,8 +20,8 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackmordaunt/icns/v3 v3.0.1 // indirect
@@ -43,6 +44,7 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tadvi/systray v0.0.0-20190226123456-11a2b8fa57af // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
+	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
