@@ -5,6 +5,7 @@
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import hljs from 'highlight.js';
+  import ProcTerminal from './ProcTerminal.svelte';
   import 'highlight.js/styles/github-dark.css';
 
   // Render markdown sanitized. The model's output can echo third-party content
@@ -338,6 +339,15 @@
   });
 
   let messages = [];
+  // The tool group a tool_result belongs to: terminal cards of background
+  // processes may have been added to the chat after it.
+  function lastToolsIndex() {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'tools') return i;
+      if (messages[i].role !== 'proc') break;
+    }
+    return messages.length - 1;
+  }
   let input = '';
   let loading = false;
   let inputHistory = JSON.parse(localStorage.getItem('inputHistory') || '[]');
@@ -548,10 +558,11 @@
       }
       if (step.type === 'text' || step.type === 'done') {
         // Finalize any active tool group
-        const last = messages[messages.length - 1];
+        const li = lastToolsIndex();
+        const last = messages[li];
         if (last && last.role === 'tools' && last.active) {
           last.active = false;
-          messages = [...messages.slice(0, -1), { ...last }];
+          messages = [...messages.slice(0, li), { ...last }, ...messages.slice(li + 1)];
         }
         if (step.content) {
           messages = [...messages, { role: 'assistant', content: step.content }];
@@ -568,7 +579,8 @@
           messages = [...messages, { role: 'tools', steps: [entry], expanded: false, active: true }];
         }
       } else if (step.type === 'tool_result') {
-        const last = messages[messages.length - 1];
+        const li = lastToolsIndex();
+        const last = messages[li];
         if (last && last.role === 'tools' && last.steps.length > 0) {
           const current = last.steps[last.steps.length - 1];
           let output = step.content.replace(/^Tool \S+ result:\n/, '');
@@ -577,7 +589,7 @@
           current.result = preview;
           current.status = 'done';
           // Keep active — still show this tool until a new tool_call or text/done arrives
-          messages = [...messages.slice(0, -1), { ...last }];
+          messages = [...messages.slice(0, li), { ...last }, ...messages.slice(li + 1)];
         }
       } else if (step.type === 'error') {
         const last = messages[messages.length - 1];
@@ -591,6 +603,13 @@
           }
         }
         messages = [...messages, { role: 'error', content: step.content }];
+      }
+    });
+
+    // Background processes: each one gets a live terminal card in the chat.
+    EventsOn('proc_start', (info) => {
+      if (!messages.some((m) => m.role === 'proc' && m.info.id === info.id)) {
+        messages = [...messages, { role: 'proc', info }];
       }
     });
 
@@ -1773,6 +1792,8 @@
             {/if}
           </button>
         </div>
+      {:else if msg.role === 'proc'}
+        <ProcTerminal info={msg.info} />
       {:else if msg.role === 'tools'}
         <div class="tool-group" class:expanded={msg.expanded}>
           <button class="tool-group-header" on:click={() => { msg.expanded = !msg.expanded; messages = messages; }}>
