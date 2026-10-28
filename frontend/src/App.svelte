@@ -619,6 +619,25 @@
       }
     });
 
+    // Every new sub-agent gets the name of a Spanish humour comic character
+    // and announces itself out loud when it starts and when it finishes.
+    const SA_NAMES = [
+      'Mortadelo', 'Filemón', 'Pancracio', 'Superintendente Vicente', 'Bacterio', 'Ofelia',
+      'Rompetechos', 'Pepe Gotera', 'Otilio', 'Carpanta', 'Zipi', 'Zape', 'Sacarino',
+      'Anacleto', 'Doña Urraca', 'Don Pantuflo', 'Petra', 'Tete Cohete', 'Superlópez',
+      'Jaimito', 'Rigoberto Picaporte', 'Doña Tula', 'Pafman', 'Agamenón',
+    ];
+    let saNameSeq = 0;
+    let saNameDup = 0;
+    function pickSubAgentName() {
+      const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.nick));
+      for (let i = 0; i < SA_NAMES.length; i++) {
+        const n = SA_NAMES[(saNameSeq + i) % SA_NAMES.length];
+        if (!used.has(n)) { saNameSeq = (saNameSeq + i + 1) % SA_NAMES.length; return n; }
+      }
+      return SA_NAMES[saNameSeq++ % SA_NAMES.length] + ' ' + (++saNameDup + 1);
+    }
+
     // Sub-agents: each one gets its own card (task, activity, output, cost).
     function updateSubAgent(key, fn) {
       const i = messages.findIndex((m) => m.role === 'subagent' && m.sa.key === key);
@@ -631,7 +650,9 @@
       if (messages.some((m) => m.role === 'subagent' && m.sa.key === e.key)) return;
       const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.color));
       const color = SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
-      messages = [...messages, { role: 'subagent', sa: { ...e, color, status: 'running', steps: [] } }];
+      const nick = pickSubAgentName();
+      messages = [...messages, { role: 'subagent', sa: { ...e, nick, color, status: 'running', steps: [] } }];
+      queueSpeak(`Agente ${nick} atendiendo la petición`);
     });
     EventsOn('subagent_step', (e) => {
       updateSubAgent(e.key, (sa) => {
@@ -650,10 +671,13 @@
       });
     });
     EventsOn('subagent_done', (e) => {
+      let nick = null;
       updateSubAgent(e.key, (sa) => {
+        nick = sa.nick;
         Object.assign(sa, e, { status: 'finished' });
         sa.steps.forEach((st) => { if (st.status === 'running') st.status = e.error ? 'error' : 'done'; });
       });
+      if (nick && !e.error) queueSpeak(`Agente ${nick} trabajo realizado`);
     });
 
     // Background processes: each one gets a live terminal card in the chat.

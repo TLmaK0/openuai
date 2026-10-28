@@ -21,7 +21,7 @@
 </script>
 
 <button class="sa-tile" class:cancelling style="--sa-color:{color}"
-  title="{sa.agent} · {sa.id}{sa.model ? ' · ' + sa.model : ''}\n{sa.description || ''}"
+  title="{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent} · {sa.id}{sa.model ? ' · ' + sa.model : ''}\n{sa.description || ''}"
   on:click={() => dispatch('select')}>
   <span class="sa-x" role="button" tabindex="0" title="Cancel this sub-agent"
     on:click={cancel} on:keydown={(e) => e.key === 'Enter' && cancel(e)}>×</span>
@@ -31,7 +31,7 @@
     <span class="blob b3"></span>
     <span class="core"></span>
   </span>
-  <span class="sa-name">{sa.agent}</span>
+  <span class="sa-name">{sa.nick || sa.agent}</span>
   <span class="sa-doing">{cancelling ? 'cancelling…' : lastTool ? lastTool.tool : 'thinking…'}</span>
 </button>
 
