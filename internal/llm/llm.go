@@ -29,6 +29,10 @@ type Response struct {
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	Model        string `json:"model"`
+	// CostUSD is the exact cost reported by the provider for this call, when
+	// it knows it (e.g. the Claude Code CLI). Zero means "unknown": the cost
+	// is then computed from the tokens and the declared model price.
+	CostUSD float64 `json:"cost_usd,omitempty"`
 }
 
 // ToolDefinition describes a tool the model may call.

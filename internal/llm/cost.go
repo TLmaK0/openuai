@@ -46,7 +46,10 @@ func (ct *CostTracker) Track(resp *Response) CostEntry {
 		Model:        resp.Model,
 		InputTokens:  resp.InputTokens,
 		OutputTokens: resp.OutputTokens,
-		CostUSD:      calculateCost(resp.Model, resp.InputTokens, resp.OutputTokens),
+		CostUSD:      resp.CostUSD,
+	}
+	if entry.CostUSD <= 0 {
+		entry.CostUSD = calculateCost(resp.Model, resp.InputTokens, resp.OutputTokens)
 	}
 	ct.entries = append(ct.entries, entry)
 	return entry

@@ -952,7 +952,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 
 	// Roll up sub-agent costs into parent tracker
 	for _, r := range results {
-		if r.InputTokens > 0 || r.OutputTokens > 0 {
+		if r.InputTokens > 0 || r.OutputTokens > 0 || r.CostUSD > 0 {
 			m := r.Model
 			if m == "" {
 				m = parentModel
@@ -961,6 +961,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 				Model:        m,
 				InputTokens:  r.InputTokens,
 				OutputTokens: r.OutputTokens,
+				CostUSD:      r.CostUSD,
 			})
 		}
 	}
