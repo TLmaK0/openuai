@@ -27,6 +27,7 @@ import (
 	"openuai/internal/mcpclient"
 	"openuai/internal/memory"
 	"openuai/internal/piper"
+	"openuai/internal/procs"
 	"openuai/internal/tools"
 	"openuai/internal/tray"
 	"openuai/internal/updater"
@@ -50,6 +51,7 @@ type App struct {
 	permissions  *agent.PermissionManager
 	currentAgent *agent.Agent
 	eventBus     *eventbus.Bus
+	procs        *procs.Manager
 
 	mcpManager     *mcpclient.Manager
 	apiServer      *api.Server
@@ -205,6 +207,12 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.SearchFiles{})
 	a.registry.Register(tools.Bash{})
 	a.registry.Register(tools.BashSudo{})
+	a.procs = procs.NewManager(a.procCallbacks())
+	a.registry.Register(tools.ProcStart{M: a.procs})
+	a.registry.Register(tools.ProcRead{M: a.procs})
+	a.registry.Register(tools.ProcWrite{M: a.procs})
+	a.registry.Register(tools.ProcKill{M: a.procs})
+	a.registry.Register(tools.ProcList{M: a.procs})
 	a.registry.Register(tools.GitStatus{})
 	a.registry.Register(tools.GitDiff{})
 	a.registry.Register(tools.GitLog{})
@@ -414,6 +422,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.apiServer != nil {
 		a.apiServer.Shutdown(ctx)
+	}
+	if a.procs != nil {
+		a.procs.Shutdown()
 	}
 	tray.Stop()
 }
@@ -772,8 +783,17 @@ func (a *App) AbortAgent() {
 // triggerAgentWithNotification immediately runs the agent with an event notification.
 // It acquires agentMu so it serializes with SendMessage and other autonomous triggers.
 func (a *App) triggerAgentWithNotification(notification string) {
+	a.triggerAgentIf(notification, nil)
+}
+
+// triggerAgentIf is triggerAgentWithNotification, but once it holds the agent
+// it skips the run if proceed (when not nil) returns false.
+func (a *App) triggerAgentIf(notification string, proceed func() bool) {
 	a.agentMu.Lock()
 	defer a.agentMu.Unlock()
+	if proceed != nil && !proceed() {
+		return
+	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.agentCancel = cancel

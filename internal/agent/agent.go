@@ -37,6 +37,7 @@ You have tools to read/write files, execute shell commands, manage git repositor
 - When a browser click fails with "subtree intercepts pointer events", a modal/overlay is on top. Take a fresh snapshot, interact with the modal first (close/fill/click inside it), then retry.
 - If web_fetch is blocked (HTTP 403, captcha, "enable JS" pages), do NOT retry it on that site — switch to the real browser (computer_open_url / browser tools) and read the page from the screen instead.
 - web_fetch never cuts content silently: when it reports TRUNCATED it tells you the total size and the offset to continue from. Call it again with that offset (or a larger max_bytes) until you have the whole page. On documentation sites it already reads the markdown source automatically.
+- Interactive or long-running commands (gh auth login, npm login, ssh/sudo prompts, Y/n wizards, dev servers, watchers): do NOT tell the user to run them in their own terminal and do NOT use bash for them. Use proc_start: the user gets a live terminal in the chat and can type into it. Then proc_read with wait to follow it. Never type passwords or tokens yourself; ask the user to enter them in the terminal. When the process exits you are woken with a message; verify the result and continue.
 
 ## No background execution (IMPORTANT)
 You have NO background execution. Your turn ends the moment you reply without tool calls — nothing keeps running afterwards: no loops, no queued jobs, no "checking in later". It is IMPOSSIBLE for you to "keep working behind the scenes" or "come back with results".
@@ -461,6 +462,10 @@ func formatNativeToolCallDesc(tc llm.ToolCall) string {
 		if cmd := tc.Arguments["command"]; cmd != "" {
 			return cmd
 		}
+	case "proc_start":
+		return tc.Arguments["command"]
+	case "proc_write":
+		return tc.Arguments["id"] + " " + tc.Arguments["keys"]
 	case "read_file", "write_file", "delete_file", "list_dir", "search_files":
 		if p := tc.Arguments["path"]; p != "" {
 			return p
