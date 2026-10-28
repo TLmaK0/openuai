@@ -26,7 +26,7 @@
   }
 </script>
 
-<div class="sa-card" class:sa-running={running} class:sa-error={!running && sa.error && !sa.cancelled}>
+<div class="sa-card" data-sa-key={sa.key} style={sa.color ? `border-left-color:${sa.color}` : ''} class:sa-running={running} class:sa-error={!running && sa.error && !sa.cancelled}>
   <button class="sa-header" on:click={() => (expanded = !expanded)}>
     <span class="sa-arrow">{expanded ? '▼' : '▶'}</span>
     <span class="sa-agent">{sa.agent}</span>

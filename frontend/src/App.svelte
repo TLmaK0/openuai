@@ -7,6 +7,7 @@
   import hljs from 'highlight.js';
   import ProcTerminal from './ProcTerminal.svelte';
   import SubAgentCard from './SubAgentCard.svelte';
+  import SubAgentOrb from './SubAgentOrb.svelte';
   import 'highlight.js/styles/github-dark.css';
 
   // Render markdown sanitized. The model's output can echo third-party content
@@ -116,6 +117,17 @@
   // sine harmonics, so the waves continuously expand/contract and drift around
   // the ring — the shape deforms rather than a fixed silhouette merely turning.
   // Lines only (no fills/filters), morphed at ~30fps, so it stays responsive.
+  // Colours for running sub-agents. The main agent's orb is blue, so blue is
+  // left out; each live sub-agent takes the first colour no other live one uses.
+  const SA_COLORS = ['#f5b942', '#5ee6a8', '#ff7ab6', '#b48bff', '#ff8c5a', '#4fd8e8',
+    '#d6e65e', '#ff5f6d', '#9be15d', '#e08cff', '#ffd166', '#7ef0d0'];
+  $: liveSubAgents = messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa);
+
+  function scrollToSubAgent(key) {
+    const el = chatEl && chatEl.querySelector(`[data-sa-key="${CSS.escape(key)}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   const TAU = Math.PI * 2;
   const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -617,7 +629,9 @@
     }
     EventsOn('subagent_start', (e) => {
       if (messages.some((m) => m.role === 'subagent' && m.sa.key === e.key)) return;
-      messages = [...messages, { role: 'subagent', sa: { ...e, status: 'running', steps: [] } }];
+      const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.color));
+      const color = SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
+      messages = [...messages, { role: 'subagent', sa: { ...e, color, status: 'running', steps: [] } }];
     });
     EventsOn('subagent_step', (e) => {
       updateSubAgent(e.key, (sa) => {
@@ -1814,7 +1828,15 @@
     </div>
   {/if}
 
-  <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
+  {#if liveSubAgents.length}
+    <aside class="sa-column" aria-label="Running sub-agents">
+      {#each liveSubAgents as sa (sa.key)}
+        <SubAgentOrb {sa} on:select={() => scrollToSubAgent(sa.key)} />
+      {/each}
+    </aside>
+  {/if}
+
+  <div class="chat" class:with-sa-column={liveSubAgents.length > 0} bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
         <div class="message user">
@@ -2399,6 +2421,24 @@
   }
 
   /* ── Animated orb (fixed ambient centrepiece) ──────────────── */
+  /* Running sub-agents: one tile per agent, stacked vertically, scrollable */
+  .sa-column {
+    position: fixed;
+    right: 0.6rem;
+    top: 4.5rem;
+    bottom: 5.5rem;
+    width: 108px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0;
+    z-index: 2;
+    scrollbar-width: thin;
+  }
+  .chat.with-sa-column { padding-right: calc(1.25rem + 118px); }
   .orb-bg {
     position: fixed;
     top: 50%;
