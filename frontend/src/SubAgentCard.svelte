@@ -49,6 +49,7 @@
     <div class="sa-body">
       <div class="sa-section"><span class="sa-label">Task</span><pre>{sa.description}</pre></div>
       {#if sa.model}<div class="sa-section"><span class="sa-label">Model</span> {sa.model}</div>{/if}
+      {#if sa.depth > 1}<div class="sa-section"><span class="sa-label">Level</span> {sa.depth}{sa.parentNick ? ' · launched by Agente ' + sa.parentNick : ''}</div>{/if}
       {#if sa.notice}<div class="sa-section sa-notice">{sa.notice}</div>{/if}
       {#if sa.steps.length}
         <div class="sa-section"><span class="sa-label">Activity</span>

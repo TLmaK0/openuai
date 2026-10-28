@@ -40,9 +40,10 @@ import (
 )
 
 type App struct {
-	subRuns subAgentRuns // running sub-agents, cancellable one by one
-	ctx     context.Context
-	cfg     *config.Config
+	subRuns    subAgentRuns    // running sub-agents, cancellable one by one
+	subLimiter subAgentLimiter // one concurrency limit for the whole sub-agent tree
+	ctx        context.Context
+	cfg        *config.Config
 	// providers is written while the app runs — a plugin can be added or
 	// removed from the settings screen — and read from the goroutines that
 	// run agent turns, so it is guarded.
@@ -875,6 +876,29 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	var available []string
 	availableLoaded := false
 
+	// Nesting: the caller's level comes from ctx (main conversation = 0).
+	// Children only get tools their parent has; the deepest level does not
+	// get spawn_agents at all.
+	scope := subAgentScopeFrom(ctx)
+	childDepth := scope.depth + 1
+	if childDepth > agent.MaxSubAgentDepth {
+		msg := fmt.Sprintf("nesting limit reached: sub-agents can delegate up to %d levels deep; do this work yourself instead of calling spawn_agents again", agent.MaxSubAgentDepth)
+		logger.Info("[sub-agent:%s] %s", scope.key, msg)
+		out := make([]tools.SubTaskResult, len(tasks))
+		for i, t := range tasks {
+			out[i] = tools.SubTaskResult{ID: t.ID, Agent: t.Agent, Error: msg}
+		}
+		return out
+	}
+	baseRegistry := a.registry
+	if scope.registry != nil {
+		baseRegistry = scope.registry
+	}
+	if childDepth >= agent.MaxSubAgentDepth {
+		baseRegistry = baseRegistry.Without("spawn_agents")
+	}
+	taskRegistries := map[string]*tools.Registry{}
+
 	agentTasks := make([]agent.SubAgentTask, len(tasks))
 	for i, t := range tasks {
 		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent}
@@ -891,7 +915,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			}
 			def = d
 		}
-		registry, err := subagents.FilterTools(a.registry, def)
+		registry, err := subagents.FilterTools(baseRegistry, def)
 		if err != nil {
 			at.SetupError = err.Error()
 			agentTasks[i] = at
@@ -910,6 +934,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] %s", t.ID, notice)
 		}
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
+		taskRegistries[t.ID] = registry
 		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
 		agentTasks[i] = at
 	}
@@ -918,9 +943,15 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
 		Provider:      provider,
 		Model:         parentModel,
-		Registry:      a.registry.Without(subagents.AlwaysExcluded...),
+		Registry:      baseRegistry.Without(subagents.AlwaysExcluded...),
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
+		// One limit for the whole tree: top-level tasks wait for a free slot,
+		// nested ones fail at once (waiting while the parent holds its slot
+		// could deadlock).
+		Acquire: func(c context.Context, _ agent.SubAgentTask) (func(), error) {
+			return a.subLimiter.acquire(c, maxConcurrent, scope.depth == 0)
+		},
 		// Each sub-agent gets its own view: its steps go to subagent_* events,
 		// never into the main conversation stream.
 		OnStep: func(taskID string, step agent.StepResult) {
@@ -934,8 +965,10 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			if name == "" {
 				name = subagents.BuiltinGeneral
 			}
+			logger.Info("[sub-agent:%s] level=%d parent=%q", t.ID, childDepth, scope.key)
 			a.emitSubAgent("subagent_start", map[string]any{
 				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
+				"parent": scope.key, "depth": childDepth,
 			})
 		},
 		OnDone: func(r agent.SubAgentResult) {
@@ -946,7 +979,8 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			})
 		},
 		TaskContext: func(taskID string, parent context.Context) (context.Context, func()) {
-			return a.subRuns.taskContext(run+"/"+taskID, parent)
+			c, release := a.subRuns.taskContext(run+"/"+taskID, parent)
+			return withSubAgentScope(c, subAgentScope{depth: childDepth, key: run + "/" + taskID, registry: taskRegistries[taskID]}), release
 		},
 	}, agentTasks)
 
