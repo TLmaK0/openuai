@@ -356,8 +356,11 @@ func (a *App) startup(ctx context.Context) {
 		a.mcpManager.OnReady(func() {
 			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
 			logger.Info("MCP tools registered: %d total tools now", len(a.registry.Definitions()))
-			// Reset agent so it picks up new tools
+			// Reset agent so it picks up new tools. Under agentMu so it never
+			// races with startup recovery or a running turn.
+			a.agentMu.Lock()
 			a.currentAgent = nil
+			a.agentMu.Unlock()
 		})
 		if err := a.eventBus.RegisterSource(a.mcpManager); err != nil {
 			logger.Error("Failed to register MCP manager: %s", err.Error())
@@ -699,8 +702,11 @@ type ChatResponse struct {
 }
 
 func (a *App) ensureAgent() *agent.Agent {
-	if a.currentAgent == nil {
-		a.currentAgent = agent.New(agent.Config{
+	if ag := a.currentAgent; ag != nil {
+		return ag
+	}
+	{
+		ag := agent.New(agent.Config{
 			Provider:    a.activeProvider(),
 			Model:       a.cfg.DefaultModel(),
 			Registry:    a.registry,
@@ -716,11 +722,14 @@ func (a *App) ensureAgent() *agent.Agent {
 			},
 		})
 		// Try to restore previous session
-		if err := a.currentAgent.LoadSession(a.cfg.ConfigDir()); err != nil {
+		if err := ag.LoadSession(a.cfg.ConfigDir()); err != nil {
 			logger.Error("Failed to load session: %s", err.Error())
 		}
+		// Return the local: a concurrent reset (e.g. MCP tools becoming ready)
+		// may set currentAgent to nil at any moment.
+		a.currentAgent = ag
+		return ag
 	}
-	return a.currentAgent
 }
 
 func (a *App) SendMessage(content string) ChatResponse {
