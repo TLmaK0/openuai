@@ -80,6 +80,16 @@ const systemPrompt = "You are the model behind another agent. Answer the last me
 	"conversation given to you. Do not describe tools, do not offer to run commands, and do not ask to " +
 	"take actions: the agent you answer to owns all of that."
 
+// toolSystemPrompt replaces systemPrompt when openuai offers tools. The plain
+// prompt says "do not describe tools, do not offer to run commands", and with
+// tools on offer smaller models (haiku) read that as "you have no tools" and
+// answer that they cannot read the file instead of calling read_file: 0 of 3
+// real runs called a tool with it, 3 of 3 with this one.
+const toolSystemPrompt = "You are the model behind another agent. Answer the last message using only the " +
+	"conversation given to you. The tools listed in the prompt are the ones you can use: you call them by " +
+	"putting them in tool_calls, and the agent you answer to runs them and gives you the results in the next " +
+	"turn. They are available to you; never say a listed tool is unavailable, and do not describe them in text."
+
 // Provider runs turns through the headless agent.
 type Provider struct {
 	store llm.Store
@@ -163,7 +173,7 @@ func (p *Provider) ChatWithTools(ctx context.Context, messages []llm.Message, mo
 
 	out, err := invocation{
 		model:      model,
-		system:     systemPrompt + " " + toolInstruction,
+		system:     toolSystemPrompt + " " + toolInstruction,
 		prompt:     renderPrompt(messages, toolDefs),
 		jsonSchema: toolSchema,
 		apiKey:     secret,

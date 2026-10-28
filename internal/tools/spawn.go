@@ -46,7 +46,7 @@ type SpawnAgents struct {
 }
 
 func (s SpawnAgents) Definition() Definition {
-	desc := "Run multiple sub-agents in parallel, each working on an independent task. Use this to decompose complex work into concurrent sub-tasks. Each sub-agent starts with a fresh context (it does NOT see this conversation), so describe the task fully. A task may name an \"agent\" (a subagent definition with its own instructions, tools and model) and a \"model\"."
+	desc := "Run multiple sub-agents in parallel, each working on an independent task. Use this to decompose complex work into concurrent sub-tasks. Each sub-agent starts with a fresh context (it does NOT see this conversation), so describe the task fully. A task may name an \"agent\" (a subagent definition with its own instructions, tools and model) and a \"model\"; without an agent the task runs with the general-purpose agent.\n\nDelegate proactively: when a task matches an agent's description, use that agent without waiting to be asked. Use \"explore\" for searches and investigations that only need reading, \"general-purpose\" for self-contained tasks that also need to act, and more specific agents when they fit better. Launch independent tasks together in one call so they run in parallel."
 	if s.Agents != nil {
 		if list := s.Agents(); list != "" {
 			desc += "\n\nAvailable agents:\n" + list
