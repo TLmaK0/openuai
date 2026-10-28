@@ -85,6 +85,20 @@ install_deps_macos() {
   brew install "${missing[@]}"
 }
 
+# npm: use exactly the version pinned in frontend/package.json
+# ("packageManager"), so `npm install` never rewrites package-lock.json with
+# another npm's format. Installed in the user's Node prefix when different.
+ensure_npm() {
+  local want have
+  want=$(node -p "(require('./frontend/package.json').packageManager || '').replace(/^npm@/, '')" 2>/dev/null)
+  [[ -z "$want" ]] && return
+  have=$(npm --version 2>/dev/null)
+  if [[ "$have" != "$want" ]]; then
+    echo "→ npm $have found, frontend/package.json pins npm $want: installing it..."
+    npm install -g "npm@$want" || { echo "⚠ Could not install npm $want (try: npm install -g npm@$want)"; exit 1; }
+  fi
+}
+
 # Install Go tools
 install_go_tools() {
   # go install puts binaries here; it is often missing from PATH.
@@ -207,5 +221,6 @@ fi
 echo "=== OpenUAI dev setup ==="
 install_deps
 install_go_tools
+ensure_npm
 build
 run
