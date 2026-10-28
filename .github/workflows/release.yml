@@ -45,6 +45,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup npm (version pinned in frontend/package.json)
+        run: npm install -g "$(node -p "require('./frontend/package.json').packageManager")"
+
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
