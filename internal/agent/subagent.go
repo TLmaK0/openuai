@@ -28,6 +28,14 @@ type SubAgentConfig struct {
 	Permissions   *PermissionManager
 	MaxConcurrent int
 	OnStep        func(taskID string, step StepResult)
+	// OnStart, when set, is called as each sub-agent starts (also for tasks
+	// that fail during setup, so every task is visible).
+	OnStart func(task SubAgentTask, model string)
+	// OnDone, when set, is called with each sub-agent's result.
+	OnDone func(SubAgentResult)
+	// TaskContext, when set, derives the context one task runs under so it
+	// can be cancelled on its own; release is called when the task ends.
+	TaskContext func(taskID string, parent context.Context) (ctx context.Context, release func())
 }
 
 // SubAgentTask is a single task to assign to a sub-agent.
@@ -57,6 +65,7 @@ type SubAgentResult struct {
 	Error        string
 	Notice       string
 	Partial      bool // stopped at maxTurns: Output is the work done so far
+	Cancelled    bool // stopped on its own by the user: Output is the work done so far
 	CostUSD      float64
 	InputTokens  int
 	OutputTokens int
@@ -84,6 +93,9 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 			defer func() { <-sem }()
 
 			results[idx] = runSingleSubAgent(ctx, cfg, t)
+			if cfg.OnDone != nil {
+				cfg.OnDone(results[idx])
+			}
 		}(i, task)
 	}
 
@@ -94,6 +106,9 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTask) SubAgentResult {
 	if task.SetupError != "" {
 		logger.Error("[sub-agent:%s] Not started: %s", task.ID, task.SetupError)
+		if cfg.OnStart != nil {
+			cfg.OnStart(task, task.Model)
+		}
 		return SubAgentResult{ID: task.ID, Agent: task.Agent, Error: task.SetupError, Notice: task.Notice}
 	}
 
@@ -111,6 +126,15 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 
 	logger.Info("[sub-agent:%s] Starting (agent=%q model=%q maxTurns=%d): %s", task.ID, task.Agent, model, task.MaxTurns, task.Description)
+	if cfg.OnStart != nil {
+		cfg.OnStart(task, model)
+	}
+	runCtx := ctx
+	if cfg.TaskContext != nil {
+		c, release := cfg.TaskContext(task.ID, ctx)
+		defer release()
+		runCtx = c
+	}
 
 	tracker := llm.NewCostTracker()
 
@@ -132,7 +156,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		MaxTurns:     task.MaxTurns,
 	})
 
-	err := ag.Run(ctx, task.Description)
+	err := ag.Run(runCtx, task.Description)
 
 	summary := tracker.Summary()
 	result := SubAgentResult{
@@ -152,6 +176,12 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		// With no text answer yet, report the tool work done so far.
 		result.Output = ag.PartialWork()
 		logger.Info("[sub-agent:%s] Stopped at maxTurns=%d (partial): output_len=%d", task.ID, task.MaxTurns, len(result.Output))
+	case err != nil && runCtx.Err() != nil && ctx.Err() == nil:
+		// Only this sub-agent was cancelled (by the user), not the whole turn.
+		result.Cancelled = true
+		result.Error = "cancelled by the user"
+		result.Output = ag.PartialWork()
+		logger.Info("[sub-agent:%s] Cancelled by the user", task.ID)
 	case err != nil:
 		result.Error = err.Error()
 		logger.Error("[sub-agent:%s] Error: %s", task.ID, err.Error())

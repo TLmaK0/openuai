@@ -6,6 +6,7 @@
   import DOMPurify from 'dompurify';
   import hljs from 'highlight.js';
   import ProcTerminal from './ProcTerminal.svelte';
+  import SubAgentCard from './SubAgentCard.svelte';
   import 'highlight.js/styles/github-dark.css';
 
   // Render markdown sanitized. The model's output can echo third-party content
@@ -604,6 +605,41 @@
         }
         messages = [...messages, { role: 'error', content: step.content }];
       }
+    });
+
+    // Sub-agents: each one gets its own card (task, activity, output, cost).
+    function updateSubAgent(key, fn) {
+      const i = messages.findIndex((m) => m.role === 'subagent' && m.sa.key === key);
+      if (i < 0) return;
+      const sa = { ...messages[i].sa, steps: [...messages[i].sa.steps] };
+      fn(sa);
+      messages = [...messages.slice(0, i), { role: 'subagent', sa }, ...messages.slice(i + 1)];
+    }
+    EventsOn('subagent_start', (e) => {
+      if (messages.some((m) => m.role === 'subagent' && m.sa.key === e.key)) return;
+      messages = [...messages, { role: 'subagent', sa: { ...e, status: 'running', steps: [] } }];
+    });
+    EventsOn('subagent_step', (e) => {
+      updateSubAgent(e.key, (sa) => {
+        if (e.type === 'tool_call') {
+          sa.steps.push({ tool: e.tool_name, command: e.content, status: 'running' });
+        } else if (e.type === 'tool_result' || e.type === 'error') {
+          const cur = [...sa.steps].reverse().find((st) => st.tool && st.status === 'running');
+          const out = (e.content || '').replace(/^Tool \S+ result:\n/, '');
+          const lines = out.split('\n');
+          const preview = lines.slice(0, 10).join('\n') + (lines.length > 10 ? '\n... (' + lines.length + ' lines)' : '');
+          if (cur) { cur.result = preview; cur.status = e.type === 'error' ? 'error' : 'done'; }
+          else if (e.type === 'error') sa.steps.push({ text: e.content });
+        } else if ((e.type === 'text' || e.type === 'done') && e.content) {
+          sa.steps.push({ text: e.content });
+        }
+      });
+    });
+    EventsOn('subagent_done', (e) => {
+      updateSubAgent(e.key, (sa) => {
+        Object.assign(sa, e, { status: 'finished' });
+        sa.steps.forEach((st) => { if (st.status === 'running') st.status = e.error ? 'error' : 'done'; });
+      });
     });
 
     // Background processes: each one gets a live terminal card in the chat.
@@ -1810,6 +1846,8 @@
         </div>
       {:else if msg.role === 'proc'}
         <ProcTerminal info={msg.info} />
+      {:else if msg.role === 'subagent'}
+        <SubAgentCard sa={msg.sa} />
       {:else if msg.role === 'tools'}
         <div class="tool-group" class:expanded={msg.expanded}>
           <button class="tool-group-header" on:click={() => { msg.expanded = !msg.expanded; messages = messages; }}>
