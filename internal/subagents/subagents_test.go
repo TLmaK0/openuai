@@ -130,7 +130,9 @@ func TestFilterTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := names(r)
-	if !got["bash"] || got["spawn_agents"] || got["watch_chat"] || got["unwatch_chat"] {
+	// spawn_agents is kept: nesting is allowed (the depth limit is applied
+	// by the caller, which removes it at the deepest level).
+	if !got["bash"] || !got["spawn_agents"] || got["watch_chat"] || got["unwatch_chat"] {
 		t.Fatalf("default filter: %v", got)
 	}
 
@@ -151,8 +153,8 @@ func TestFilterTools(t *testing.T) {
 		t.Fatalf("disallowed only: %v", got)
 	}
 
-	_, err = FilterTools(reg, &Definition{Name: "none", HasTools: true, Tools: []string{"Read", "spawn_agents"}})
-	if err == nil || !strings.Contains(err.Error(), "Read") || !strings.Contains(err.Error(), "spawn_agents") {
+	_, err = FilterTools(reg, &Definition{Name: "none", HasTools: true, Tools: []string{"Read", "watch_chat"}})
+	if err == nil || !strings.Contains(err.Error(), "Read") || !strings.Contains(err.Error(), "watch_chat") {
 		t.Fatalf("expected an error naming the unrecognized tools, got %v", err)
 	}
 }

@@ -41,9 +41,10 @@ When you finish, reply with a clear summary of what you found or did: it is all 
 
 const maxInstructionBytes = 64 * 1024
 
-// AlwaysExcluded are tools no subagent gets: they spawn more agents or
-// change what the main conversation listens to.
-var AlwaysExcluded = []string{"spawn_agents", "watch_chat", "unwatch_chat"}
+// AlwaysExcluded are tools no subagent gets: they change what the main
+// conversation listens to. spawn_agents is not here: sub-agents may delegate
+// up to agent.MaxSubAgentDepth levels; the deepest level does not get it.
+var AlwaysExcluded = []string{"watch_chat", "unwatch_chat"}
 
 // Definition is one parsed subagent definition.
 type Definition struct {

@@ -651,7 +651,8 @@
       const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.color));
       const color = SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
       const nick = pickSubAgentName();
-      messages = [...messages, { role: 'subagent', sa: { ...e, nick, color, status: 'running', steps: [] } }];
+      const parentNick = e.parent ? messages.find((m) => m.role === 'subagent' && m.sa.key === e.parent)?.sa.nick : null;
+      messages = [...messages, { role: 'subagent', sa: { ...e, nick, parentNick, color, status: 'running', steps: [] } }];
       queueSpeak(`Agente ${nick} atendiendo la petición`);
     });
     EventsOn('subagent_step', (e) => {

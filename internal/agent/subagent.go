@@ -17,6 +17,10 @@ var ErrMaxTurns = errors.New("reached maxTurns")
 // config says otherwise (same default as Claude Code: 20).
 const DefaultMaxConcurrentSubAgents = 20
 
+// MaxSubAgentDepth is how many levels of sub-agents may exist below the main
+// agent (same as Claude Code: 3). The deepest level cannot delegate further.
+const MaxSubAgentDepth = 3
+
 const subAgentSystemPrompt = `You are a focused sub-agent of OpenUAI working on a specific task.
 Complete it efficiently using your tools. Be direct and concise.`
 
@@ -36,6 +40,10 @@ type SubAgentConfig struct {
 	// TaskContext, when set, derives the context one task runs under so it
 	// can be cancelled on its own; release is called when the task ends.
 	TaskContext func(taskID string, parent context.Context) (ctx context.Context, release func())
+	// Acquire, when set, replaces the local MaxConcurrent limit: it takes a
+	// slot of a limit shared by the whole tree of sub-agents. An error fails
+	// the task without running it.
+	Acquire func(ctx context.Context, task SubAgentTask) (release func(), err error)
 }
 
 // SubAgentTask is a single task to assign to a sub-agent.
@@ -89,8 +97,19 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 		go func(idx int, t SubAgentTask) {
 			defer wg.Done()
 
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			if cfg.Acquire != nil {
+				if t.SetupError == "" {
+					release, err := cfg.Acquire(ctx, t)
+					if err != nil {
+						t.SetupError = err.Error()
+					} else {
+						defer release()
+					}
+				}
+			} else {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+			}
 
 			results[idx] = runSingleSubAgent(ctx, cfg, t)
 			if cfg.OnDone != nil {
