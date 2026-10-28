@@ -237,7 +237,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
 	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
 	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
-	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents, Agents: a.describeSubAgents})
+	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents, Agents: a.describeSubAgents, Models: a.describeSubAgentModels})
 	if cfg.ComputerUseEnabled() {
 		disp := a.GetComputerUseDisplay()
 		computeruse.RegisterTools(a.registry, computeruse.New(disp, cfg.ComputerUseMonitor(), cfg.ComputerUseProfile()))
@@ -1005,6 +1005,23 @@ func (a *App) loadSubAgentDefs(workDir string, logWarnings bool) subagents.Set {
 // spawn_agents tool description.
 func (a *App) describeSubAgents() string {
 	return a.loadSubAgentDefs(a.GetWorkDir(), false).Describe()
+}
+
+// describeSubAgentModels lists the models a sub-agent may be asked to run
+// on: the active provider's model aliases (for Claude Code: opus, sonnet,
+// haiku), like the aliases Claude Code offers on its Agent tool.
+func (a *App) describeSubAgentModels() string {
+	p := a.activeProvider()
+	if p == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range p.Models() {
+		if m = strings.TrimSpace(m); m != "" {
+			b.WriteString("- " + m + "\n")
+		}
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func joinOrNone(names []string) string {

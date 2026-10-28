@@ -43,6 +43,9 @@ type SpawnAgents struct {
 	// Agents, when set, lists the subagent definitions available (one
 	// "- name: description" per line); it is added to the tool description.
 	Agents func() string
+	// Models, when set, lists the models a task may ask for (one per line,
+	// "- name"); like Claude Code's aliases, it is added to the description.
+	Models func() string
 }
 
 func (s SpawnAgents) Definition() Definition {
@@ -52,6 +55,11 @@ func (s SpawnAgents) Definition() Definition {
 			desc += "\n\nAvailable agents:\n" + list
 		}
 	}
+	if s.Models != nil {
+		if list := s.Models(); list != "" {
+			desc += "\n\nAvailable models for the optional per-task \"model\" (omit it to use the agent's own model, which by default is the main conversation's model; use a cheaper model only for simple tasks):\n" + list
+		}
+	}
 	return Definition{
 		Name:        "spawn_agents",
 		Description: desc,
@@ -59,7 +67,7 @@ func (s SpawnAgents) Definition() Definition {
 			{
 				Name:        "tasks",
 				Type:        "string",
-				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (e.g. "sonnet", "haiku", a full model ID, or "inherit"). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
+				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (one of the available models listed in the tool description). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
 				Required:    true,
 			},
 		},
