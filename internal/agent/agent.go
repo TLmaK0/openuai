@@ -102,6 +102,7 @@ type Agent struct {
 	messages    []llm.Message
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
+	maxTurns    int
 
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
@@ -117,6 +118,12 @@ type Config struct {
 	CostTracker *llm.CostTracker
 	OnStep      func(StepResult)
 	MemoryText  string // pre-loaded memory content injected into system prompt
+	// SystemPrompt replaces the default system prompt (used by sub-agents);
+	// environment details are still appended.
+	SystemPrompt string
+	// MaxTurns caps the model calls of one Run; 0 means the default limit.
+	// Reaching it returns an error wrapping ErrMaxTurns.
+	MaxTurns int
 }
 
 func New(cfg Config) *Agent {
@@ -124,6 +131,9 @@ func New(cfg Config) *Agent {
 	toolDefs := convertToolDefs(cfg.Registry)
 
 	prompt := systemPrompt
+	if cfg.SystemPrompt != "" {
+		prompt = cfg.SystemPrompt
+	}
 
 	// Inject environment info so the LLM knows what's available
 	prompt += "\n\n## Environment"
@@ -154,6 +164,7 @@ func New(cfg Config) *Agent {
 		permissions: cfg.Permissions,
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
+		maxTurns:    cfg.MaxTurns,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -185,14 +196,18 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		return a.runSimpleChat(ctx)
 	}
 
-	for i := 0; i < maxIterations; i++ {
+	limit := maxIterations
+	if a.maxTurns > 0 && a.maxTurns < limit {
+		limit = a.maxTurns
+	}
+	for i := 0; i < limit; i++ {
 		select {
 		case <-ctx.Done():
 			a.emit(StepResult{Type: "done", Content: "Aborted by user."})
 			return ctx.Err()
 		default:
 		}
-		logger.Info("Agent iteration %d/%d, messages=%d", i+1, maxIterations, len(a.messages))
+		logger.Info("Agent iteration %d/%d, messages=%d", i+1, limit, len(a.messages))
 
 		// MicroCompact: prune old tool results to keep context manageable.
 		// Keep the last 6 tool results intact, replace older ones with a stub.
@@ -334,6 +349,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 	}
 
+	if limit < maxIterations {
+		a.emit(StepResult{Type: "error", Content: fmt.Sprintf("Reached maxTurns (%d)", limit)})
+		return fmt.Errorf("%w (%d)", ErrMaxTurns, limit)
+	}
 	a.emit(StepResult{Type: "error", Content: "Agent reached maximum iterations"})
 	return fmt.Errorf("agent reached maximum iterations (%d)", maxIterations)
 }

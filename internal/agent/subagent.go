@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/tools"
 )
+
+// ErrMaxTurns is returned (wrapped) by Run when Config.MaxTurns is reached.
+var ErrMaxTurns = errors.New("reached maxTurns")
 
 const subAgentSystemPrompt = `You are a focused sub-agent of OpenUAI working on a specific task.
 Complete it efficiently using your tools. Be direct and concise.`
@@ -27,13 +30,29 @@ type SubAgentConfig struct {
 type SubAgentTask struct {
 	ID          string
 	Description string
+
+	// Optional per-task settings, usually resolved from a subagent
+	// definition. Empty values fall back to SubAgentConfig.
+	Agent        string
+	Model        string
+	Registry     *tools.Registry
+	SystemPrompt string
+	MaxTurns     int
+	// Notice is passed through to the result (e.g. a model fallback).
+	Notice string
+	// SetupError fails the task without running it.
+	SetupError string
 }
 
 // SubAgentResult holds the outcome of a single sub-agent run.
 type SubAgentResult struct {
 	ID           string
+	Agent        string
+	Model        string
 	Output       string
 	Error        string
+	Notice       string
+	Partial      bool // stopped at maxTurns: Output is the work done so far
 	CostUSD      float64
 	InputTokens  int
 	OutputTokens int
@@ -60,8 +79,7 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			result := runSingleSubAgent(ctx, cfg, t)
-			results[idx] = result
+			results[idx] = runSingleSubAgent(ctx, cfg, t)
 		}(i, task)
 	}
 
@@ -70,7 +88,25 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 }
 
 func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTask) SubAgentResult {
-	logger.Info("[sub-agent:%s] Starting: %s", task.ID, task.Description)
+	if task.SetupError != "" {
+		logger.Error("[sub-agent:%s] Not started: %s", task.ID, task.SetupError)
+		return SubAgentResult{ID: task.ID, Agent: task.Agent, Error: task.SetupError, Notice: task.Notice}
+	}
+
+	model := cfg.Model
+	if task.Model != "" {
+		model = task.Model
+	}
+	registry := cfg.Registry
+	if task.Registry != nil {
+		registry = task.Registry
+	}
+	prompt := subAgentSystemPrompt
+	if task.SystemPrompt != "" {
+		prompt = task.SystemPrompt
+	}
+
+	logger.Info("[sub-agent:%s] Starting (agent=%q model=%q maxTurns=%d): %s", task.ID, task.Agent, model, task.MaxTurns, task.Description)
 
 	tracker := llm.NewCostTracker()
 
@@ -82,33 +118,38 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 
 	ag := New(Config{
-		Provider:    cfg.Provider,
-		Model:       cfg.Model,
-		Registry:    cfg.Registry,
-		Permissions: cfg.Permissions,
-		CostTracker: tracker,
-		OnStep:      onStep,
+		Provider:     cfg.Provider,
+		Model:        model,
+		Registry:     registry,
+		Permissions:  cfg.Permissions,
+		CostTracker:  tracker,
+		OnStep:       onStep,
+		SystemPrompt: prompt,
+		MaxTurns:     task.MaxTurns,
 	})
-	// Override system prompt for sub-agents
-	if len(ag.messages) > 0 {
-		ag.messages[0].Content = subAgentSystemPrompt
-	}
 
 	err := ag.Run(ctx, task.Description)
 
 	summary := tracker.Summary()
 	result := SubAgentResult{
 		ID:           task.ID,
+		Agent:        task.Agent,
+		Model:        model,
+		Notice:       task.Notice,
 		Output:       ag.LastAssistantContent(),
 		CostUSD:      summary.TotalCostUSD,
 		InputTokens:  summary.TotalInputTokens,
 		OutputTokens: summary.TotalOutputTokens,
 	}
 
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrMaxTurns):
+		result.Partial = true
+		logger.Info("[sub-agent:%s] Stopped at maxTurns=%d (partial): output_len=%d", task.ID, task.MaxTurns, len(result.Output))
+	case err != nil:
 		result.Error = err.Error()
 		logger.Error("[sub-agent:%s] Error: %s", task.ID, err.Error())
-	} else {
+	default:
 		logger.Info("[sub-agent:%s] Complete: output_len=%d cost=$%.4f", task.ID, len(result.Output), result.CostUSD)
 	}
 
@@ -117,16 +158,13 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 
 // FormatSubAgentResults formats results into a readable string for the parent agent.
 func FormatSubAgentResults(results []SubAgentResult) string {
-	var out string
-	for _, r := range results {
-		out += fmt.Sprintf("=== Task: %s ===\n", r.ID)
-		if r.Error != "" {
-			out += fmt.Sprintf("Error: %s\n", r.Error)
+	out := make([]tools.SubTaskResult, len(results))
+	for i, r := range results {
+		out[i] = tools.SubTaskResult{
+			ID: r.ID, Agent: r.Agent, Model: r.Model, Output: r.Output, Error: r.Error,
+			Notice: r.Notice, Partial: r.Partial, CostUSD: r.CostUSD,
+			InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
 		}
-		if r.Output != "" {
-			out += r.Output + "\n"
-		}
-		out += fmt.Sprintf("(tokens: %d in, %d out, $%.4f)\n\n", r.InputTokens, r.OutputTokens, r.CostUSD)
 	}
-	return out
+	return tools.FormatResults(out)
 }
