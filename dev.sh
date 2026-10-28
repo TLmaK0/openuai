@@ -144,6 +144,9 @@ relaunch_loop() {
     done
   fi
 
+  # prev_dir is the directory that last ran fine; a version that dies right
+  # after a restart into another directory falls back to it.
+  local prev_dir=""
   while true; do
     if ! cd "$dir"; then
       echo "OpenUAI dev: cannot enter $dir" >&2
@@ -152,14 +155,25 @@ relaunch_loop() {
     echo "→ OpenUAI dev: running in $dir"
     : > "$OPENUAI_RELAUNCH_FILE"
 
-    local code=0
+    local code=0 started=$SECONDS
     ./dev.sh --once || code=$?
     if [ "$code" -ne 42 ]; then
+      # Build failure or crash shortly after switching directory: do not
+      # leave the user without the app, go back to the one that worked.
+      if [ "$code" -ne 0 ] && [ -n "$prev_dir" ] && [ "$dir" != "$prev_dir" ] &&
+        [ $((SECONDS - started)) -lt 120 ]; then
+        echo "OpenUAI dev: $dir failed (code $code) right after the restart; going back to $prev_dir" >&2
+        dir="$prev_dir"
+        prev_dir=""
+        sleep 1
+        continue
+      fi
       exit "$code"
     fi
 
     local next
     next="$(cat "$OPENUAI_RELAUNCH_FILE" 2>/dev/null)"
+    prev_dir="$dir"
     if [ -n "$next" ]; then
       dir="$next"
     fi

@@ -109,6 +109,12 @@ type Agent struct {
 	lastErrorTool  string
 	lastErrorMsg   string
 	consecutiveErr int
+
+	// Restart recovery (see restart.go): a turn in progress is saved with the
+	// session so it can be resumed after OpenUAI restarts.
+	runInProgress  bool
+	resumePending  bool
+	resumeAttempts int
 }
 
 type Config struct {
@@ -182,13 +188,9 @@ func (a *Agent) InjectEvent(notification string) {
 	})
 }
 
-func (a *Agent) Run(ctx context.Context, userMessage string) error {
-	a.messages = append(a.messages, llm.Message{
-		Role:    llm.RoleUser,
-		Content: userMessage,
-	})
+// loop runs the agent on the current conversation until the turn ends.
+func (a *Agent) loop(ctx context.Context) error {
 	logger.Debug("System prompt length: %d", len(a.messages[0].Content))
-	logger.Debug("User message: %s", userMessage)
 
 	// Check if provider supports native tool calling
 	toolProvider, hasNativeTools := a.provider.(llm.ToolCallProvider)

@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory } from '../wailsjs/go/main/App';
+  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -525,6 +525,20 @@
         messages = history.map((m) => ({ role: m.role, content: m.content }));
       }
     } catch (e) { /* no history — start empty */ }
+
+    // After a restart: finish the interrupted turn and the background
+    // messages that were waiting, showing the agent as busy meanwhile.
+    try {
+      if (await HasInterruptedWork()) {
+        loading = true;
+        stickToBottom = true;
+        const resp = await ResumeInterrupted();
+        loading = false;
+        aborting = false;
+        totalCost = resp.cost_usd || 0;
+        totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+      }
+    } catch (e) { loading = false; }
 
     // Keep the sound switch in sync with the backend state.
     EventsOn('sound_enabled', (on) => {
@@ -1835,6 +1849,10 @@
             </div>
           {/if}
         </div>
+      {:else if msg.role === 'notice'}
+        <div class="message notice-msg">
+          <div class="message-content">↻ {msg.content.match(/^\[OpenUAI restarted at [0-9:]+\]/)?.[0]?.slice(1, -1) || 'OpenUAI restarted'}</div>
+        </div>
       {:else if msg.role === 'error'}
         <div class="message error-msg">
           <div class="message-content">{msg.content}</div>
@@ -2601,6 +2619,15 @@
     color: #777;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+
+  .message.notice-msg {
+    align-self: center;
+    background: transparent;
+    border: 1px dashed #3a4a63;
+    color: #8aa0c0;
+    font-size: 0.8rem;
+    padding: 0.25rem 0.75rem;
   }
 
   .message.error-msg {
