@@ -162,10 +162,14 @@ type Set struct {
 	Warnings []string // definitions skipped because of an error
 }
 
-// Load reads the user directory first and then the project directories from
-// the repository root down to workDir, so later (closer) ones win.
+// Load starts from the built-in agents, then reads the user directory and
+// then the project directories from the repository root down to workDir, so
+// later (closer) ones win.
 func Load(workDir, userDir string) Set {
 	s := Set{Defs: map[string]*Definition{}}
+	for _, d := range Builtins() {
+		s.Defs[d.Name] = d
+	}
 	if userDir != "" {
 		s.loadDir(userDir, ScopeUser)
 	}

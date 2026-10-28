@@ -833,7 +833,10 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	for i, t := range tasks {
 		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent}
 		var def *subagents.Definition
-		if t.Agent != "" {
+		if t.Agent == "" {
+			// No agent named: run as the general-purpose agent.
+			def = defs.Defs[subagents.BuiltinGeneral]
+		} else {
 			d, ok := defs.Defs[t.Agent]
 			if !ok {
 				at.SetupError = fmt.Sprintf("unknown agent %q; available agents: %s", t.Agent, joinOrNone(defs.Names()))

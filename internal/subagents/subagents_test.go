@@ -78,8 +78,14 @@ func TestLoadPrecedence(t *testing.T) {
 	if got := s.Defs["only-user"]; got == nil || got.Scope != ScopeUser {
 		t.Fatalf("user definition missing: %+v", got)
 	}
-	if len(s.Defs) != 2 {
-		t.Fatalf("expected 2 definitions, got %v", s.Names())
+	files := 0
+	for _, d := range s.Defs {
+		if d.Scope != ScopeBuiltin {
+			files++
+		}
+	}
+	if files != 2 {
+		t.Fatalf("expected 2 file definitions, got %v", s.Names())
 	}
 	if len(s.Warnings) != 1 || !strings.Contains(s.Warnings[0], "broken.md") {
 		t.Fatalf("warnings: %v", s.Warnings)
