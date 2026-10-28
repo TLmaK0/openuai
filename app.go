@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"openuai/internal/agent"
@@ -84,6 +85,12 @@ type App struct {
 	speakMu     sync.Mutex
 	speakCtx    context.Context
 	speakCancel context.CancelFunc
+
+	// Restart recovery (app_restart.go): background messages waiting for the
+	// agent survive restarts, and the turn a restart interrupted is resumed.
+	pending      *pendingStore
+	resumeOnce   sync.Once
+	shuttingDown atomic.Bool
 }
 
 type permAnswer struct {
@@ -208,6 +215,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.Bash{})
 	a.registry.Register(tools.BashSudo{})
 	a.procs = procs.NewManager(a.procCallbacks())
+	a.pending = loadPendingStore(filepath.Join(cfg.ConfigDir(), "sessions"))
 	a.registry.Register(tools.ProcStart{M: a.procs})
 	a.registry.Register(tools.ProcRead{M: a.procs})
 	a.registry.Register(tools.ProcWrite{M: a.procs})
@@ -321,7 +329,15 @@ func (a *App) startup(ctx context.Context) {
 			preview = preview[:80] + "..."
 		}
 		tray.Notify(fmt.Sprintf("%s — %s", event.Source, senderName), preview)
-		go a.triggerAgentWithNotification(notification)
+		// Queued on disk first, so a restart before the agent handles it
+		// loses nothing, and a message delivered again is not processed twice.
+		key := event.Source + ":" + msgID
+		if msgID == "" {
+			key = fmt.Sprintf("%s:%s:%d", event.Source, chatJID, time.Now().UnixNano())
+		}
+		if a.pending.Add(key, notification) {
+			go a.drainPending()
+		}
 		return nil
 	})
 	a.eventBus.Start(ctx)
@@ -412,11 +428,14 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
+	a.recoverAfterRestart()
 	logger.Info("Startup complete")
 }
 
 func (a *App) shutdown(ctx context.Context) {
 	logger.Info("Shutting down")
+	// Keep the list of running processes: the next start reports them.
+	a.shuttingDown.Store(true)
 	if a.wake != nil {
 		a.wake.Stop() // terminate the listener so its capture device is released
 	}
@@ -715,7 +734,10 @@ func (a *App) SendMessage(content string) ChatResponse {
 	defer func() { a.agentCancel = nil }()
 
 	ag := a.ensureAgent()
-	err := ag.Run(ctx, content)
+	// Saved before running, so the message survives a restart mid-turn.
+	ag.Begin(content)
+	a.saveSession(ag)
+	err := ag.Continue(ctx)
 
 	// Save session after each interaction (success or failure)
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
@@ -754,7 +776,9 @@ func (a *App) EditMessage(index int, content string) ChatResponse {
 
 	ag := a.ensureAgent()
 	ag.RewindToUserMessage(index)
-	err := ag.Run(ctx, content)
+	ag.Begin(content)
+	a.saveSession(ag)
+	err := ag.Continue(ctx)
 
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
 		logger.Error("Failed to save session: %s", saveErr.Error())
@@ -794,19 +818,31 @@ func (a *App) triggerAgentIf(notification string, proceed func() bool) {
 	if proceed != nil && !proceed() {
 		return
 	}
+	a.runNotificationLocked(notification, nil)
+}
 
+// runNotificationLocked runs the agent on a background notification. The
+// caller holds agentMu. onBegin (optional) runs once the notification is
+// saved in the session, i.e. once a restart can no longer lose it.
+func (a *App) runNotificationLocked(notification string, onBegin func()) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.agentCancel = cancel
-	defer func() { a.agentCancel = nil }()
+	defer func() {
+		a.agentCancel = nil
+		cancel()
+	}()
 
 	ag := a.ensureAgent()
 	logger.Info("Autonomous agent run starting: %s", notification)
-	if err := ag.Run(ctx, notification); err != nil {
+	ag.Begin(notification)
+	a.saveSession(ag)
+	if onBegin != nil {
+		onBegin()
+	}
+	if err := ag.Continue(ctx); err != nil {
 		logger.Error("Autonomous agent run error: %s", err.Error())
 	}
-	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
-		logger.Error("Failed to save session after autonomous run: %s", saveErr.Error())
-	}
+	a.saveSession(ag)
 	tray.Notify("OpenUAI", "Agent completed autonomous run")
 	logger.Info("Autonomous agent run complete")
 }
@@ -1297,7 +1333,12 @@ func (a *App) GetChatHistory() []ChatHistoryMessage {
 		}
 		switch m.Role {
 		case llm.RoleUser, llm.RoleAssistant:
-			out = append(out, ChatHistoryMessage{Role: string(m.Role), Content: m.Content})
+			role := string(m.Role)
+			// Restart notes are shown as a notice, not as something the user said.
+			if m.Role == llm.RoleUser && strings.HasPrefix(m.Content, agent.RestartNotePrefix) {
+				role = "notice"
+			}
+			out = append(out, ChatHistoryMessage{Role: role, Content: m.Content})
 		}
 	}
 	return out
