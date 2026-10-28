@@ -818,7 +818,7 @@ func (a *App) triggerAgentIf(notification string, proceed func() bool) {
 func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools.SubTaskResult {
 	maxConcurrent := a.cfg.MaxConcurrentAgents()
 	if maxConcurrent <= 0 {
-		maxConcurrent = 5
+		maxConcurrent = agent.DefaultMaxConcurrentSubAgents
 	}
 
 	workDir := a.GetWorkDir()

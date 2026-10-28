@@ -165,6 +165,11 @@ func TestResolveModel(t *testing.T) {
 		{"", "", "opus", "m", nil, "opus", false},
 		{"gpt-x", "", "", "m", []string{"m", "haiku"}, "m", true},
 		{"haiku", "", "", "m", []string{"m", "haiku"}, "haiku", false},
+		// Like Claude Code: the global default resolves to what it names, even
+		// when it is the main agent's family; a global "inherit" means unset.
+		{"", "", "sonnet", "claude-sonnet-4", nil, "sonnet", false},
+		{"", "", "inherit", "m", nil, "m", false},
+		{"sonnet", "", "opus", "claude-sonnet-4", nil, "claude-sonnet-4", false},
 	}
 	for _, c := range cases {
 		got, notice := ResolveModel(c.call, c.def, c.global, c.parent, c.available)

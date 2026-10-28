@@ -346,17 +346,23 @@ func family(model string) string {
 // exactly the main agent's model. A model that is not available falls back to
 // the main agent's, with a notice explaining it.
 func ResolveModel(call, def, global, parent string, available []string) (string, string) {
-	want := ""
-	for _, m := range []string{call, def, global} {
+	want, fromGlobal := "", false
+	if g := strings.TrimSpace(global); strings.EqualFold(g, "inherit") {
+		global = "" // a global "inherit" is the same as no global default
+	}
+	for i, m := range []string{call, def, global} {
 		if m = strings.TrimSpace(m); m != "" {
-			want = m
+			want, fromGlobal = m, i == 2
 			break
 		}
 	}
 	if want == "" || strings.EqualFold(want, "inherit") || want == parent {
 		return parent, ""
 	}
-	if f := family(parent); f != "" && strings.EqualFold(want, f) {
+	// Like Claude Code, a family alias from the call or the definition that
+	// matches the main agent's family means exactly the main agent's model;
+	// the global default always resolves to what it names.
+	if f := family(parent); !fromGlobal && f != "" && strings.EqualFold(want, f) {
 		return parent, ""
 	}
 	if len(available) == 0 {

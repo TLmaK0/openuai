@@ -13,6 +13,10 @@ import (
 // ErrMaxTurns is returned (wrapped) by Run when Config.MaxTurns is reached.
 var ErrMaxTurns = errors.New("reached maxTurns")
 
+// DefaultMaxConcurrentSubAgents is how many sub-agents run at once unless the
+// config says otherwise (same default as Claude Code: 20).
+const DefaultMaxConcurrentSubAgents = 20
+
 const subAgentSystemPrompt = `You are a focused sub-agent of OpenUAI working on a specific task.
 Complete it efficiently using your tools. Be direct and concise.`
 
@@ -61,7 +65,7 @@ type SubAgentResult struct {
 // RunSubAgents runs multiple tasks concurrently, each in its own Agent instance.
 func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask) []SubAgentResult {
 	if cfg.MaxConcurrent <= 0 {
-		cfg.MaxConcurrent = 5
+		cfg.MaxConcurrent = DefaultMaxConcurrentSubAgents
 	}
 
 	results := make([]SubAgentResult, len(tasks))
