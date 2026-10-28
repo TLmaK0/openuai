@@ -703,6 +703,7 @@
         totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
       }
     } catch (e) { loading = false; }
+    drainQueue();
 
     // Listen for event bus events
     EventsOn('event_received', (event) => {
@@ -749,9 +750,8 @@
       wakeAwaitingCmd = false;
       wakeCapturing = false;
       wakeHeardText = '';
-      if (loading || !text) return;
-      input = text;
-      send();
+      if (!text) return;
+      submit(text); // queued if a response is in progress
     });
 
     // Listen for permission requests
@@ -916,9 +916,18 @@
     await SetDefaultModel(selectedModel);
   }
 
+  // Messages sent while a response is in progress wait here, shown as
+  // pending in the conversation, and are sent one by one, in the order they
+  // were written, as soon as the current response finishes. Stop/Esc only
+  // stop the current response: the queue is kept and sent next.
+  let queue = [];
+  let queueSeq = 0;
+  let queueEditId = -1;
+  let queueEditText = '';
+
   async function send() {
-    if (!input.trim() || loading) return;
     const content = input.trim();
+    if (!content) return;
     inputHistory = [...inputHistory, content];
     // Keep last 100 entries
     if (inputHistory.length > 100) inputHistory = inputHistory.slice(-100);
@@ -926,16 +935,67 @@
     historyIndex = -1;
     savedInput = '';
     input = '';
-    messages = [...messages, { role: 'user', content }];
+    submit(content);
+  }
+
+  // Sends now, or queues it when the assistant is busy.
+  function submit(content) {
+    content = (content || '').trim();
+    if (!content) return;
     stickToBottom = true; // sending a message jumps back to the latest
+    if (loading) {
+      queue = [...queue, { id: ++queueSeq, content }];
+      return;
+    }
+    runMessage(content);
+  }
+
+  async function runMessage(content) {
+    messages = [...messages, { role: 'user', content }];
+    stickToBottom = true;
     loading = true;
+    try {
+      const resp = await SendMessage(content);
+      totalCost = resp.cost_usd || 0;
+      totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+    } finally {
+      loading = false;
+      aborting = false;
+    }
+    drainQueue();
+  }
 
-    const resp = await SendMessage(content);
-    loading = false;
-    aborting = false;
+  // Sends the oldest queued message (skipping one that is being edited).
+  function drainQueue() {
+    if (loading) return;
+    const next = queue.find((q) => q.id !== queueEditId);
+    if (!next) return;
+    queue = queue.filter((q) => q.id !== next.id);
+    runMessage(next.content);
+  }
 
-    totalCost = resp.cost_usd || 0;
-    totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+  function removeQueued(id) {
+    queue = queue.filter((q) => q.id !== id);
+    if (queueEditId === id) cancelQueueEdit();
+  }
+  function startQueueEdit(q) {
+    queueEditId = q.id;
+    queueEditText = q.content;
+  }
+  function cancelQueueEdit() {
+    queueEditId = -1;
+    queueEditText = '';
+    drainQueue();
+  }
+  function saveQueueEdit(id) {
+    const content = queueEditText.trim();
+    if (!content) return;
+    queue = queue.map((q) => (q.id === id ? { ...q, content } : q));
+    cancelQueueEdit();
+  }
+  function queueEditKeydown(e, id) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveQueueEdit(id); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancelQueueEdit(); }
   }
 
   // Editing a previous user message and continuing from there.
@@ -966,6 +1026,7 @@
     aborting = false;
     totalCost = resp.cost_usd || 0;
     totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+    drainQueue();
   }
   function editKeydown(e, i) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEdit(i); }
@@ -1136,7 +1197,7 @@
   }
 
   async function startRecording() {
-    if (recording || transcribing || loading) return;
+    if (recording || transcribing) return;
     stopSpeaking();              // talking over the agent cuts it off
     const err = await StartRecording();
     if (err) {
@@ -1406,7 +1467,7 @@
 
   // Pause listening whenever the app is otherwise using audio or busy, so the
   // wake listener never transcribes the assistant's own TTS or a push-to-talk.
-  $: if (wakeListening) SetWakePaused(loading || speaking || transcribing || recording);
+  $: if (wakeListening) SetWakePaused(speaking || transcribing || recording);
 
   // Stops everything at once: the voice AND the in-flight request. Used by
   // Escape and by the Stop button, so both always do the same thing.
@@ -1946,6 +2007,28 @@
         </div>
       {/if}
     {/each}
+    {#each queue as q (q.id)}
+      <div class="message user queued">
+        {#if queueEditId === q.id}
+          <textarea class="edit-area" bind:value={queueEditText} on:keydown={(e) => queueEditKeydown(e, q.id)} rows="2"></textarea>
+          <div class="edit-actions">
+            <button class="edit-cancel" on:click={cancelQueueEdit}>Cancel</button>
+            <button class="edit-save" on:click={() => saveQueueEdit(q.id)} disabled={!queueEditText.trim()}>Save</button>
+          </div>
+        {:else}
+          <div class="queued-badge">Pending · sent after the current response</div>
+          <div class="message-content">{q.content}</div>
+          <div class="queued-actions">
+            <button class="queued-btn" on:click={() => startQueueEdit(q)} title="Edit before it is sent" aria-label="Edit queued message">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </button>
+            <button class="queued-btn" on:click={() => removeQueued(q.id)} title="Remove: it will not be sent" aria-label="Remove queued message">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/each}
   </div>
 
   <div class="input-area">
@@ -1976,7 +2059,7 @@
         <span class="wake-track"><span class="wake-knob"></span></span>
       </label>
     </div>
-    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} class:mic-session={wakeSession && !recording && !transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={loading || transcribing} title={wakeSession ? 'Conversation open — talk without the wake word' : recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
+    <button class="mic-btn" class:mic-recording={recording} class:mic-transcribing={transcribing} class:mic-session={wakeSession && !recording && !transcribing} on:mousedown={startRecording} on:mouseup={stopRecordingAndSend} on:mouseleave={stopRecordingAndSend} on:touchstart|preventDefault={startRecording} on:touchend|preventDefault={stopRecordingAndSend} disabled={transcribing} title={wakeSession ? 'Conversation open — talk without the wake word' : recording ? 'Release to send' : transcribing ? 'Transcribing...' : 'Hold to talk'}>
       {#if recording}
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
       {:else if transcribing}
@@ -2005,22 +2088,28 @@
       bind:this={textareaEl}
       bind:value={input}
       on:keydown={handleKeydown}
-      placeholder={transcribing ? 'Transcribing...' : 'Give me a task...'}
+      placeholder={transcribing ? 'Transcribing...' : loading ? 'Write the next message (it will be queued)...' : 'Give me a task...'}
       rows="1"
-      disabled={loading || !isReady || transcribing}
+      disabled={!isReady || transcribing}
     ></textarea>
     {#if loading || speaking}
       <button class="stop-btn" on:click={stopAll} disabled={aborting && !speaking} title={loading ? 'Stop the running task (Esc)' : 'Stop speaking (Esc)'}>
         {#if aborting && !speaking}Stopping...{:else}Stop{/if}
       </button>
-    {:else}
-      <button on:click={send} disabled={!isReady || !input.trim()}>Send</button>
+    {/if}
+    {#if !(loading || speaking) || input.trim()}
+      <button on:click={send} disabled={!isReady || !input.trim()} title={loading ? 'Queued: sent when the current response finishes' : 'Send'}>{loading ? 'Queue' : 'Send'}</button>
     {/if}
     <button class="clear-btn" on:click={clearChat}>Clear</button>
   </div>
 </main>
 
 <style>
+  .message.queued { opacity: 0.7; border-style: dashed; }
+  .queued-badge { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #8fb8ff; margin-bottom: 0.25rem; }
+  .queued-actions { display: flex; gap: 0.3rem; justify-content: flex-end; margin-top: 0.3rem; }
+  .queued-btn { background: transparent; border: 1px solid #2a3b55; color: #9fb3cc; padding: 0.15rem 0.35rem; border-radius: 6px; cursor: pointer; }
+  .queued-btn:hover { color: #fff; border-color: #4a6a95; }
   :global(select) {
     background: #070b12 !important;
     color: #eee !important;
