@@ -21,7 +21,10 @@ func (a *App) procCallbacks() procs.Callbacks {
 		}
 	}
 	return procs.Callbacks{
-		OnStart: func(i procs.Info) { emit("proc_start", i) },
+		OnStart: func(i procs.Info) {
+			emit("proc_start", i)
+			a.saveRunningProcs()
+		},
 		// Raw terminal bytes go to the user's terminal only, never to the LLM.
 		OnOutput: func(id string, offset int64, data []byte) {
 			wailsRuntime.EventsEmit(a.ctx, "proc_output", map[string]any{
@@ -36,6 +39,7 @@ func (a *App) procCallbacks() procs.Callbacks {
 		},
 		OnExit: func(i procs.Info) {
 			emit("proc_exit", i)
+			a.saveRunningProcs()
 			if a.procs.ExitObserved(i.ID) {
 				return
 			}

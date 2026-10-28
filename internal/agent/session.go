@@ -22,6 +22,14 @@ type SessionState struct {
 	Messages  []llm.Message `json:"messages"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`
+	// RunInProgress is true when the session was saved in the middle of a
+	// turn (the app restarted before it finished).
+	RunInProgress  bool `json:"run_in_progress,omitempty"`
+	ResumeAttempts int  `json:"resume_attempts,omitempty"`
+	// ResumePending is true when startup recovery decided to resume the
+	// interrupted turn but it has not run yet. Persisted so the decision
+	// survives the agent being rebuilt (e.g. when MCP tools become ready).
+	ResumePending bool `json:"resume_pending,omitempty"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions (without messages).
@@ -49,6 +57,10 @@ func (a *Agent) SaveSession(configDir string) error {
 		Provider:  a.provider.Name(),
 		Messages:  a.messages,
 		UpdatedAt: time.Now(),
+
+		RunInProgress:  a.runInProgress,
+		ResumeAttempts: a.resumeAttempts,
+		ResumePending:  a.resumePending,
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -57,7 +69,11 @@ func (a *Agent) SaveSession(configDir string) error {
 	}
 
 	path := filepath.Join(sessDir, "current.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
 
@@ -101,6 +117,9 @@ func (a *Agent) loadSessionFrom(path string) error {
 	if len(state.Messages) > 1 {
 		a.messages = append(a.messages[:1], state.Messages[1:]...)
 	}
+	a.runInProgress = state.RunInProgress
+	a.resumeAttempts = state.ResumeAttempts
+	a.resumePending = state.ResumePending
 	logger.Info("Session restored: %d messages from %s", len(a.messages), path)
 	return nil
 }
