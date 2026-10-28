@@ -136,3 +136,21 @@ func TestSpawnAgents_Definition(t *testing.T) {
 		t.Error("expected single 'tasks' parameter")
 	}
 }
+
+// Like Claude Code, the tool description lists the agents and, separately,
+// the models a task may ask for.
+func TestSpawnAgents_DefinitionListsAgentsAndModels(t *testing.T) {
+	s := SpawnAgents{
+		Agents: func() string { return "- explore: read-only" },
+		Models: func() string { return "- opus\n- sonnet\n- haiku" },
+	}
+	d := s.Definition().Description
+	for _, want := range []string{"Available agents:\n- explore", "Available models", "- sonnet", "- haiku"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("description lacks %q:\n%s", want, d)
+		}
+	}
+	if d2 := (SpawnAgents{}).Definition().Description; strings.Contains(d2, "Available models") {
+		t.Error("no models section expected without a Models func")
+	}
+}
