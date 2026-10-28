@@ -35,6 +35,7 @@ import (
 	"openuai/internal/whisper"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"openuai/internal/subagents"
 )
 
 type App struct {
@@ -227,7 +228,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.DeleteMemory{Store: a.memoryStore})
 	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
 	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
-	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents})
+	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents, Agents: a.describeSubAgents})
 	if cfg.ComputerUseEnabled() {
 		disp := a.GetComputerUseDisplay()
 		computeruse.RegisterTools(a.registry, computeruse.New(disp, cfg.ComputerUseMonitor(), cfg.ComputerUseProfile()))
@@ -811,25 +812,63 @@ func (a *App) triggerAgentIf(notification string, proceed func() bool) {
 }
 
 // spawnSubAgents is the bridge between the spawn_agents tool and the agent package.
+// A task may name a subagent definition (.openuai/agents/ in the project,
+// <config dir>/agents/ for the user) and a model. Definitions are read again
+// on every call, so edits apply without restarting.
 func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools.SubTaskResult {
 	maxConcurrent := a.cfg.MaxConcurrentAgents()
 	if maxConcurrent <= 0 {
-		maxConcurrent = 5
+		maxConcurrent = agent.DefaultMaxConcurrentSubAgents
 	}
 
-	// Convert tool tasks to agent tasks
+	workDir := a.GetWorkDir()
+	defs := a.loadSubAgentDefs(workDir, true)
+	provider := a.activeProvider()
+	parentModel := a.cfg.DefaultModel()
+	globalModel := os.Getenv("OPENUAI_SUBAGENT_MODEL")
+	var available []string
+	availableLoaded := false
+
 	agentTasks := make([]agent.SubAgentTask, len(tasks))
 	for i, t := range tasks {
-		agentTasks[i] = agent.SubAgentTask{ID: t.ID, Description: t.Description}
+		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent}
+		var def *subagents.Definition
+		if t.Agent != "" {
+			d, ok := defs.Defs[t.Agent]
+			if !ok {
+				at.SetupError = fmt.Sprintf("unknown agent %q; available agents: %s", t.Agent, joinOrNone(defs.Names()))
+				agentTasks[i] = at
+				continue
+			}
+			def = d
+		}
+		registry, err := subagents.FilterTools(a.registry, def)
+		if err != nil {
+			at.SetupError = err.Error()
+			agentTasks[i] = at
+			continue
+		}
+		defModel, maxTurns := "", 0
+		if def != nil {
+			defModel, maxTurns = def.Model, def.MaxTurns
+		}
+		if !availableLoaded && (t.Model != "" || defModel != "" || globalModel != "") {
+			available = llm.AvailableModels(ctx, provider)
+			availableLoaded = true
+		}
+		model, notice := subagents.ResolveModel(t.Model, defModel, globalModel, parentModel, available)
+		if notice != "" {
+			logger.Info("[sub-agent:%s] %s", t.ID, notice)
+		}
+		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
+		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		agentTasks[i] = at
 	}
 
-	// Create filtered registry (no spawn_agents to prevent nesting)
-	filteredRegistry := a.registry.Without("spawn_agents")
-
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
-		Provider:      a.activeProvider(),
-		Model:         a.cfg.DefaultModel(),
-		Registry:      filteredRegistry,
+		Provider:      provider,
+		Model:         parentModel,
+		Registry:      a.registry.Without(subagents.AlwaysExcluded...),
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
 		OnStep: func(taskID string, step agent.StepResult) {
@@ -849,8 +888,12 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	// Roll up sub-agent costs into parent tracker
 	for _, r := range results {
 		if r.InputTokens > 0 || r.OutputTokens > 0 {
+			m := r.Model
+			if m == "" {
+				m = parentModel
+			}
 			a.costTracker.Track(&llm.Response{
-				Model:        a.cfg.DefaultModel(),
+				Model:        m,
 				InputTokens:  r.InputTokens,
 				OutputTokens: r.OutputTokens,
 			})
@@ -862,14 +905,47 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	for i, r := range results {
 		toolResults[i] = tools.SubTaskResult{
 			ID:           r.ID,
+			Agent:        r.Agent,
+			Model:        r.Model,
 			Output:       r.Output,
 			Error:        r.Error,
+			Notice:       r.Notice,
+			Partial:      r.Partial,
 			CostUSD:      r.CostUSD,
 			InputTokens:  r.InputTokens,
 			OutputTokens: r.OutputTokens,
 		}
 	}
 	return toolResults
+}
+
+// loadSubAgentDefs reads the subagent definitions for workDir; skipped
+// definitions are logged when logWarnings is set.
+func (a *App) loadSubAgentDefs(workDir string, logWarnings bool) subagents.Set {
+	userDir := ""
+	if a.cfg != nil {
+		userDir = filepath.Join(a.cfg.ConfigDir(), "agents")
+	}
+	defs := subagents.Load(workDir, userDir)
+	if logWarnings {
+		for _, w := range defs.Warnings {
+			logger.Error("Subagent definition skipped: %s", w)
+		}
+	}
+	return defs
+}
+
+// describeSubAgents lists the available subagent definitions for the
+// spawn_agents tool description.
+func (a *App) describeSubAgents() string {
+	return a.loadSubAgentDefs(a.GetWorkDir(), false).Describe()
+}
+
+func joinOrNone(names []string) string {
+	if len(names) == 0 {
+		return "(none defined)"
+	}
+	return strings.Join(names, ", ")
 }
 
 // WatchChat adds a JID or phone number to the event watch list.

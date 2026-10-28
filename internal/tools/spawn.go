@@ -4,23 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SubTask is a task to be executed by a sub-agent.
 type SubTask struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
+	// Agent optionally names a subagent definition to run the task with.
+	Agent string `json:"agent,omitempty"`
+	// Model optionally overrides the model (alias, full ID or "inherit").
+	Model string `json:"model,omitempty"`
 }
 
 // SubTaskResult holds the outcome of a sub-agent task.
 type SubTaskResult struct {
 	ID           string
+	Agent        string
+	Model        string
 	Output       string
 	Error        string
+	Notice       string
+	Partial      bool
 	CostUSD      float64
 	InputTokens  int
 	OutputTokens int
 }
+
+// PartialNote heads the output of a sub-agent stopped by its maxTurns limit.
+const PartialNote = "[PARTIAL] The sub-agent reached its maxTurns limit before finishing; below is the work done so far."
 
 // SpawnFunc is the function signature for spawning sub-agents.
 type SpawnFunc func(ctx context.Context, tasks []SubTask) []SubTaskResult
@@ -28,17 +40,26 @@ type SpawnFunc func(ctx context.Context, tasks []SubTask) []SubTaskResult
 // SpawnAgents is a tool that lets the parent agent run multiple sub-agents concurrently.
 type SpawnAgents struct {
 	Fn SpawnFunc
+	// Agents, when set, lists the subagent definitions available (one
+	// "- name: description" per line); it is added to the tool description.
+	Agents func() string
 }
 
 func (s SpawnAgents) Definition() Definition {
+	desc := "Run multiple sub-agents in parallel, each working on an independent task. Use this to decompose complex work into concurrent sub-tasks. Each sub-agent starts with a fresh context (it does NOT see this conversation), so describe the task fully. A task may name an \"agent\" (a subagent definition with its own instructions, tools and model) and a \"model\"."
+	if s.Agents != nil {
+		if list := s.Agents(); list != "" {
+			desc += "\n\nAvailable agents:\n" + list
+		}
+	}
 	return Definition{
 		Name:        "spawn_agents",
-		Description: "Run multiple sub-agents in parallel, each working on an independent task. Use this to decompose complex work into concurrent sub-tasks. Each sub-agent gets its own context and tools.",
+		Description: desc,
 		Parameters: []Parameter{
 			{
 				Name:        "tasks",
 				Type:        "string",
-				Description: `JSON array of tasks, each with "id" (unique identifier) and "description" (what the sub-agent should do). Example: [{"id":"research-go","description":"Research Go channels and summarize best practices"}]`,
+				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (e.g. "sonnet", "haiku", a full model ID, or "inherit"). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
 				Required:    true,
 			},
 		},
@@ -76,20 +97,38 @@ func (s SpawnAgents) Execute(ctx context.Context, args map[string]string) Result
 		seen[t.ID] = true
 	}
 
-	results := s.Fn(ctx, tasks)
+	return Result{Output: FormatResults(s.Fn(ctx, tasks))}
+}
 
-	// Format results
-	var output string
+// FormatResults renders sub-agent results for the parent agent.
+func FormatResults(results []SubTaskResult) string {
+	var b strings.Builder
 	for _, r := range results {
-		output += fmt.Sprintf("=== Task: %s ===\n", r.ID)
+		b.WriteString("=== Task: " + r.ID)
+		var tags []string
+		if r.Agent != "" {
+			tags = append(tags, "agent: "+r.Agent)
+		}
+		if r.Model != "" {
+			tags = append(tags, "model: "+r.Model)
+		}
+		if len(tags) > 0 {
+			b.WriteString(" (" + strings.Join(tags, ", ") + ")")
+		}
+		b.WriteString(" ===\n")
+		if r.Partial {
+			b.WriteString(PartialNote + "\n")
+		}
+		if r.Notice != "" {
+			b.WriteString("Note: " + r.Notice + "\n")
+		}
 		if r.Error != "" {
-			output += fmt.Sprintf("Error: %s\n", r.Error)
+			b.WriteString("Error: " + r.Error + "\n")
 		}
 		if r.Output != "" {
-			output += r.Output + "\n"
+			b.WriteString(r.Output + "\n")
 		}
-		output += fmt.Sprintf("(tokens: %d in, %d out, $%.4f)\n\n", r.InputTokens, r.OutputTokens, r.CostUSD)
+		fmt.Fprintf(&b, "(tokens: %d in, %d out, $%.4f)\n\n", r.InputTokens, r.OutputTokens, r.CostUSD)
 	}
-
-	return Result{Output: output}
+	return b.String()
 }

@@ -13,6 +13,7 @@ require (
 	github.com/labstack/echo/v4 v4.15.3
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/wailsapp/wails/v2 v2.11.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -56,7 +57,6 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 // replace github.com/wailsapp/wails/v2 v2.11.0 => /home/hugo/go/pkg/mod
