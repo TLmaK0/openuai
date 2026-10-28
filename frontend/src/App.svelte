@@ -7,7 +7,7 @@
   import hljs from 'highlight.js';
   import ProcTerminal from './ProcTerminal.svelte';
   import SubAgentCard from './SubAgentCard.svelte';
-  import SubAgentOrb from './SubAgentOrb.svelte';
+  import SubAgentMap from './SubAgentMap.svelte';
   import 'highlight.js/styles/github-dark.css';
 
   // Render markdown sanitized. The model's output can echo third-party content
@@ -121,7 +121,17 @@
   // left out; each live sub-agent takes the first colour no other live one uses.
   const SA_COLORS = ['#f5b942', '#5ee6a8', '#ff7ab6', '#b48bff', '#ff8c5a', '#4fd8e8',
     '#d6e65e', '#ff5f6d', '#9be15d', '#e08cff', '#ffd166', '#7ef0d0'];
-  $: liveSubAgents = messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa);
+  // Finished sub-agents stay a few seconds in the map so the arrow of their
+  // result going back to the parent can be seen.
+  let saLinger = {};
+  let saLinks = {};   // one entry per pair of agents: the last message between them
+  let saLinkSeq = 0;
+  function saLink(from, to) {
+    const k = [from, to].sort().join('|');
+    saLinks = { ...saLinks, [k]: { from, to, at: ++saLinkSeq } };
+  }
+  $: liveSubAgents = messages.filter((m) => m.role === 'subagent' && (m.sa.status === 'running' || saLinger[m.sa.key])).map((m) => m.sa);
+  $: if (!liveSubAgents.length && Object.keys(saLinks).length) saLinks = {};
 
   function scrollToSubAgent(key) {
     const el = chatEl && chatEl.querySelector(`[data-sa-key="${CSS.escape(key)}"]`);
@@ -653,6 +663,7 @@
       const nick = pickSubAgentName();
       const parentNick = e.parent ? messages.find((m) => m.role === 'subagent' && m.sa.key === e.parent)?.sa.nick : null;
       messages = [...messages, { role: 'subagent', sa: { ...e, nick, parentNick, color, status: 'running', steps: [] } }];
+      saLink(e.parent || 'main', e.key);   // delegation: parent -> child
       queueSpeak(`Agente ${nick} atendiendo la petición`);
     });
     EventsOn('subagent_step', (e) => {
@@ -673,12 +684,19 @@
     });
     EventsOn('subagent_done', (e) => {
       let nick = null;
+      let parent = null;
       updateSubAgent(e.key, (sa) => {
         nick = sa.nick;
+        parent = sa.parent;
         Object.assign(sa, e, { status: 'finished' });
         sa.steps.forEach((st) => { if (st.status === 'running') st.status = e.error ? 'error' : 'done'; });
       });
       if (nick && !e.error) queueSpeak(`Agente ${nick} trabajo realizado`);
+      if (nick) {
+        saLink(e.key, parent || 'main');   // result: child -> parent
+        saLinger = { ...saLinger, [e.key]: true };
+        setTimeout(() => { const { [e.key]: _, ...rest } = saLinger; saLinger = rest; }, 4000);
+      }
     });
 
     // Background processes: each one gets a live terminal card in the chat.
@@ -1915,11 +1933,7 @@
   {/if}
 
   {#if liveSubAgents.length}
-    <aside class="sa-column" aria-label="Running sub-agents">
-      {#each liveSubAgents as sa (sa.key)}
-        <SubAgentOrb {sa} on:select={() => scrollToSubAgent(sa.key)} />
-      {/each}
-    </aside>
+    <SubAgentMap agents={liveSubAgents} links={Object.values(saLinks)} mainBusy={loading} on:select={(e) => scrollToSubAgent(e.detail)} />
   {/if}
 
   <div class="chat" class:with-sa-column={liveSubAgents.length > 0} bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
@@ -2535,24 +2549,7 @@
   }
 
   /* ── Animated orb (fixed ambient centrepiece) ──────────────── */
-  /* Running sub-agents: one tile per agent, stacked vertically, scrollable */
-  .sa-column {
-    position: fixed;
-    right: 0.6rem;
-    top: 4.5rem;
-    bottom: 5.5rem;
-    width: 108px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.3rem 0;
-    z-index: 2;
-    scrollbar-width: thin;
-  }
-  .chat.with-sa-column { padding-right: calc(1.25rem + 118px); }
+  .chat.with-sa-column { padding-right: calc(1.25rem + 146px); }
   .orb-bg {
     position: fixed;
     top: 50%;
