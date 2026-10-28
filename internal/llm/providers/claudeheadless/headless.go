@@ -275,6 +275,9 @@ func (o *outcome) response(fallbackModel string) *llm.Response {
 		InputTokens:  o.InputTokens,
 		OutputTokens: o.OutputTokens,
 		Model:        model,
+		// The CLI's own figure includes cached tokens and the real model
+		// price, which the token counts reported here do not.
+		CostUSD: o.CostUSD,
 	}
 }
 

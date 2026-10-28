@@ -6,6 +6,8 @@
   import DOMPurify from 'dompurify';
   import hljs from 'highlight.js';
   import ProcTerminal from './ProcTerminal.svelte';
+  import SubAgentCard from './SubAgentCard.svelte';
+  import SubAgentOrb from './SubAgentOrb.svelte';
   import 'highlight.js/styles/github-dark.css';
 
   // Render markdown sanitized. The model's output can echo third-party content
@@ -115,6 +117,17 @@
   // sine harmonics, so the waves continuously expand/contract and drift around
   // the ring — the shape deforms rather than a fixed silhouette merely turning.
   // Lines only (no fills/filters), morphed at ~30fps, so it stays responsive.
+  // Colours for running sub-agents. The main agent's orb is blue, so blue is
+  // left out; each live sub-agent takes the first colour no other live one uses.
+  const SA_COLORS = ['#f5b942', '#5ee6a8', '#ff7ab6', '#b48bff', '#ff8c5a', '#4fd8e8',
+    '#d6e65e', '#ff5f6d', '#9be15d', '#e08cff', '#ffd166', '#7ef0d0'];
+  $: liveSubAgents = messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa);
+
+  function scrollToSubAgent(key) {
+    const el = chatEl && chatEl.querySelector(`[data-sa-key="${CSS.escape(key)}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   const TAU = Math.PI * 2;
   const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -604,6 +617,67 @@
         }
         messages = [...messages, { role: 'error', content: step.content }];
       }
+    });
+
+    // Every new sub-agent gets the name of a Spanish humour comic character
+    // and announces itself out loud when it starts and when it finishes.
+    const SA_NAMES = [
+      'Mortadelo', 'Filemón', 'Pancracio', 'Superintendente Vicente', 'Bacterio', 'Ofelia',
+      'Rompetechos', 'Pepe Gotera', 'Otilio', 'Carpanta', 'Zipi', 'Zape', 'Sacarino',
+      'Anacleto', 'Doña Urraca', 'Don Pantuflo', 'Petra', 'Tete Cohete', 'Superlópez',
+      'Jaimito', 'Rigoberto Picaporte', 'Doña Tula', 'Pafman', 'Agamenón',
+    ];
+    let saNameSeq = 0;
+    let saNameDup = 0;
+    function pickSubAgentName() {
+      const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.nick));
+      for (let i = 0; i < SA_NAMES.length; i++) {
+        const n = SA_NAMES[(saNameSeq + i) % SA_NAMES.length];
+        if (!used.has(n)) { saNameSeq = (saNameSeq + i + 1) % SA_NAMES.length; return n; }
+      }
+      return SA_NAMES[saNameSeq++ % SA_NAMES.length] + ' ' + (++saNameDup + 1);
+    }
+
+    // Sub-agents: each one gets its own card (task, activity, output, cost).
+    function updateSubAgent(key, fn) {
+      const i = messages.findIndex((m) => m.role === 'subagent' && m.sa.key === key);
+      if (i < 0) return;
+      const sa = { ...messages[i].sa, steps: [...messages[i].sa.steps] };
+      fn(sa);
+      messages = [...messages.slice(0, i), { role: 'subagent', sa }, ...messages.slice(i + 1)];
+    }
+    EventsOn('subagent_start', (e) => {
+      if (messages.some((m) => m.role === 'subagent' && m.sa.key === e.key)) return;
+      const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.color));
+      const color = SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
+      const nick = pickSubAgentName();
+      messages = [...messages, { role: 'subagent', sa: { ...e, nick, color, status: 'running', steps: [] } }];
+      queueSpeak(`Agente ${nick} atendiendo la petición`);
+    });
+    EventsOn('subagent_step', (e) => {
+      updateSubAgent(e.key, (sa) => {
+        if (e.type === 'tool_call') {
+          sa.steps.push({ tool: e.tool_name, command: e.content, status: 'running' });
+        } else if (e.type === 'tool_result' || e.type === 'error') {
+          const cur = [...sa.steps].reverse().find((st) => st.tool && st.status === 'running');
+          const out = (e.content || '').replace(/^Tool \S+ result:\n/, '');
+          const lines = out.split('\n');
+          const preview = lines.slice(0, 10).join('\n') + (lines.length > 10 ? '\n... (' + lines.length + ' lines)' : '');
+          if (cur) { cur.result = preview; cur.status = e.type === 'error' ? 'error' : 'done'; }
+          else if (e.type === 'error') sa.steps.push({ text: e.content });
+        } else if ((e.type === 'text' || e.type === 'done') && e.content) {
+          sa.steps.push({ text: e.content });
+        }
+      });
+    });
+    EventsOn('subagent_done', (e) => {
+      let nick = null;
+      updateSubAgent(e.key, (sa) => {
+        nick = sa.nick;
+        Object.assign(sa, e, { status: 'finished' });
+        sa.steps.forEach((st) => { if (st.status === 'running') st.status = e.error ? 'error' : 'done'; });
+      });
+      if (nick && !e.error) queueSpeak(`Agente ${nick} trabajo realizado`);
     });
 
     // Background processes: each one gets a live terminal card in the chat.
@@ -1778,7 +1852,15 @@
     </div>
   {/if}
 
-  <div class="chat" bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
+  {#if liveSubAgents.length}
+    <aside class="sa-column" aria-label="Running sub-agents">
+      {#each liveSubAgents as sa (sa.key)}
+        <SubAgentOrb {sa} on:select={() => scrollToSubAgent(sa.key)} />
+      {/each}
+    </aside>
+  {/if}
+
+  <div class="chat" class:with-sa-column={liveSubAgents.length > 0} bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
     {#each messages as msg, i}
       {#if msg.role === 'user'}
         <div class="message user">
@@ -1810,6 +1892,8 @@
         </div>
       {:else if msg.role === 'proc'}
         <ProcTerminal info={msg.info} />
+      {:else if msg.role === 'subagent'}
+        <SubAgentCard sa={msg.sa} />
       {:else if msg.role === 'tools'}
         <div class="tool-group" class:expanded={msg.expanded}>
           <button class="tool-group-header" on:click={() => { msg.expanded = !msg.expanded; messages = messages; }}>
@@ -2361,6 +2445,24 @@
   }
 
   /* ── Animated orb (fixed ambient centrepiece) ──────────────── */
+  /* Running sub-agents: one tile per agent, stacked vertically, scrollable */
+  .sa-column {
+    position: fixed;
+    right: 0.6rem;
+    top: 4.5rem;
+    bottom: 5.5rem;
+    width: 108px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0;
+    z-index: 2;
+    scrollbar-width: thin;
+  }
+  .chat.with-sa-column { padding-right: calc(1.25rem + 118px); }
   .orb-bg {
     position: fixed;
     top: 50%;

@@ -40,8 +40,9 @@ import (
 )
 
 type App struct {
-	ctx context.Context
-	cfg *config.Config
+	subRuns subAgentRuns // running sub-agents, cancellable one by one
+	ctx     context.Context
+	cfg     *config.Config
 	// providers is written while the app runs — a plugin can be added or
 	// removed from the settings screen — and read from the goroutines that
 	// run agent turns, so it is guarded.
@@ -913,29 +914,45 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		agentTasks[i] = at
 	}
 
+	run := a.subRuns.newRun()
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
 		Provider:      provider,
 		Model:         parentModel,
 		Registry:      a.registry.Without(subagents.AlwaysExcluded...),
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
+		// Each sub-agent gets its own view: its steps go to subagent_* events,
+		// never into the main conversation stream.
 		OnStep: func(taskID string, step agent.StepResult) {
 			logger.Debug("[sub-agent:%s] step: type=%s tool=%s", taskID, step.Type, step.ToolName)
-			subStep := agent.StepResult{
-				Type:     step.Type,
-				Content:  fmt.Sprintf("[sub-agent:%s] %s", taskID, step.Content),
-				ToolName: step.ToolName,
+			a.emitSubAgent("subagent_step", map[string]any{
+				"key": run + "/" + taskID, "type": step.Type, "content": step.Content, "tool_name": step.ToolName,
+			})
+		},
+		OnStart: func(t agent.SubAgentTask, model string) {
+			name := t.Agent
+			if name == "" {
+				name = subagents.BuiltinGeneral
 			}
-			wailsRuntime.EventsEmit(a.ctx, "agent_step", subStep)
-			if a.apiServer != nil {
-				a.apiServer.Broadcast("agent_step", "", subStep)
-			}
+			a.emitSubAgent("subagent_start", map[string]any{
+				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
+			})
+		},
+		OnDone: func(r agent.SubAgentResult) {
+			a.emitSubAgent("subagent_done", map[string]any{
+				"key": run + "/" + r.ID, "output": r.Output, "error": r.Error, "notice": r.Notice,
+				"partial": r.Partial, "cancelled": r.Cancelled, "cost_usd": r.CostUSD,
+				"input_tokens": r.InputTokens, "output_tokens": r.OutputTokens,
+			})
+		},
+		TaskContext: func(taskID string, parent context.Context) (context.Context, func()) {
+			return a.subRuns.taskContext(run+"/"+taskID, parent)
 		},
 	}, agentTasks)
 
 	// Roll up sub-agent costs into parent tracker
 	for _, r := range results {
-		if r.InputTokens > 0 || r.OutputTokens > 0 {
+		if r.InputTokens > 0 || r.OutputTokens > 0 || r.CostUSD > 0 {
 			m := r.Model
 			if m == "" {
 				m = parentModel
@@ -944,6 +961,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 				Model:        m,
 				InputTokens:  r.InputTokens,
 				OutputTokens: r.OutputTokens,
+				CostUSD:      r.CostUSD,
 			})
 		}
 	}
