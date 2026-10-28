@@ -5,6 +5,7 @@ package procs
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,8 +22,16 @@ func waitFor(cond func() bool, d time.Duration) bool {
 }
 
 func TestInteractivePrompt(t *testing.T) {
-	var exits []Info
-	m := NewManager(Callbacks{OnExit: func(i Info) { exits = append(exits, i) }})
+	// OnExit runs on the manager's goroutine: guard the slice.
+	var (
+		exitsMu sync.Mutex
+		exits   []Info
+	)
+	m := NewManager(Callbacks{OnExit: func(i Info) {
+		exitsMu.Lock()
+		exits = append(exits, i)
+		exitsMu.Unlock()
+	}})
 	defer m.Shutdown()
 
 	p, err := m.Start(`printf 'Name: '; read x; echo "hello $x"; exit 3`, t.TempDir())
@@ -56,8 +65,11 @@ func TestInteractivePrompt(t *testing.T) {
 	if !m.ExitObserved(p.ID()) {
 		t.Fatal("exit should be observed after reading it")
 	}
-	if len(exits) != 1 {
-		t.Fatalf("OnExit called %d times", len(exits))
+	exitsMu.Lock()
+	n := len(exits)
+	exitsMu.Unlock()
+	if n != 1 {
+		t.Fatalf("OnExit called %d times", n)
 	}
 	// A second read continues where the first stopped.
 	if r2, _ := m.Read(p.ID(), -1); r2.Output != "" {
