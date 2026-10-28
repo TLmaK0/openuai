@@ -104,6 +104,7 @@ type Agent struct {
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
 	maxTurns    int
+	compactAt   int // estimated tokens that trigger compaction (0: never)
 
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
@@ -131,6 +132,9 @@ type Config struct {
 	// MaxTurns caps the model calls of one Run; 0 means the default limit.
 	// Reaching it returns an error wrapping ErrMaxTurns.
 	MaxTurns int
+	// CompactAtTokens, when > 0, makes the agent summarize its older history
+	// once the context grows past that estimated size, instead of failing.
+	CompactAtTokens int
 }
 
 func New(cfg Config) *Agent {
@@ -172,6 +176,7 @@ func New(cfg Config) *Agent {
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
 		maxTurns:    cfg.MaxTurns,
+		compactAt:   cfg.CompactAtTokens,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -215,6 +220,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		// MicroCompact: prune old tool results to keep context manageable.
 		// Keep the last 6 tool results intact, replace older ones with a stub.
 		a.pruneOldToolResults(6)
+		a.maybeCompact(ctx)
 
 		resp, toolCalls, err := toolProvider.ChatWithTools(ctx, a.messages, a.model, a.toolDefs)
 		if err != nil {
