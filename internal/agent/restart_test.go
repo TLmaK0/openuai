@@ -108,3 +108,61 @@ func TestResumeGivesUpAfterRepeatedRestarts(t *testing.T) {
 		}
 	}
 }
+
+// The resume decision must survive the agent being rebuilt from disk after
+// startup recovery (MCP becoming ready resets the agent). Seen in a real run:
+// the rebuilt agent had no pending resume and the turn was never continued.
+func TestResumePendingSurvivesAgentRebuild(t *testing.T) {
+	dir := t.TempDir()
+	a := newRestartTestAgent("x")
+	a.Begin("prueba")
+	_ = a.SaveSession(dir)
+
+	b := newRestartTestAgent("x")
+	_ = b.LoadSession(dir)
+	if resume, _ := b.RecoverInterrupted(nil, time.Now()); !resume {
+		t.Fatal("interrupted turn should be resumed")
+	}
+	if err := b.SaveSession(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Agent rebuilt from disk, as the app does when MCP tools become ready.
+	c := newRestartTestAgent("done")
+	if err := c.LoadSession(dir); err != nil {
+		t.Fatal(err)
+	}
+	if !c.ResumePending() {
+		t.Fatal("resume decision lost when the agent was rebuilt")
+	}
+	if err := c.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c.LastAssistantContent() != "done" || c.ResumePending() || c.resumeAttempts != 0 {
+		t.Fatalf("resume did not finish cleanly: pending=%v attempts=%d", c.ResumePending(), c.resumeAttempts)
+	}
+	_ = c.SaveSession(dir)
+	d := newRestartTestAgent("x")
+	_ = d.LoadSession(dir)
+	if d.ResumePending() || d.RunInProgress() {
+		t.Fatal("finished resume must not be pending again after reload")
+	}
+}
+
+// A new user message cancels a pending resume (the user moved on).
+func TestNewMessageClearsPendingResume(t *testing.T) {
+	dir := t.TempDir()
+	a := newRestartTestAgent("x")
+	a.Begin("one")
+	_ = a.SaveSession(dir)
+	b := newRestartTestAgent("x")
+	_ = b.LoadSession(dir)
+	b.RecoverInterrupted(nil, time.Now())
+	b.Begin("two")
+	_ = b.SaveSession(dir)
+	c := newRestartTestAgent("x")
+	_ = c.LoadSession(dir)
+	if c.ResumePending() {
+		t.Fatal("pending resume should be cleared by a new message")
+	}
+}

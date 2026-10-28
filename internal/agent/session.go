@@ -26,6 +26,10 @@ type SessionState struct {
 	// turn (the app restarted before it finished).
 	RunInProgress  bool `json:"run_in_progress,omitempty"`
 	ResumeAttempts int  `json:"resume_attempts,omitempty"`
+	// ResumePending is true when startup recovery decided to resume the
+	// interrupted turn but it has not run yet. Persisted so the decision
+	// survives the agent being rebuilt (e.g. when MCP tools become ready).
+	ResumePending bool `json:"resume_pending,omitempty"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions (without messages).
@@ -56,6 +60,7 @@ func (a *Agent) SaveSession(configDir string) error {
 
 		RunInProgress:  a.runInProgress,
 		ResumeAttempts: a.resumeAttempts,
+		ResumePending:  a.resumePending,
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -114,6 +119,7 @@ func (a *Agent) loadSessionFrom(path string) error {
 	}
 	a.runInProgress = state.RunInProgress
 	a.resumeAttempts = state.ResumeAttempts
+	a.resumePending = state.ResumePending
 	logger.Info("Session restored: %d messages from %s", len(a.messages), path)
 	return nil
 }
