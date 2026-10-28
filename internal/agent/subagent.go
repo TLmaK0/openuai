@@ -145,6 +145,8 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	switch {
 	case errors.Is(err, ErrMaxTurns):
 		result.Partial = true
+		// With no text answer yet, report the tool work done so far.
+		result.Output = ag.PartialWork()
 		logger.Info("[sub-agent:%s] Stopped at maxTurns=%d (partial): output_len=%d", task.ID, task.MaxTurns, len(result.Output))
 	case err != nil:
 		result.Error = err.Error()
