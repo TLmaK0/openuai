@@ -283,7 +283,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			logger.Info("Tool call: %s id=%s args=%v", tc.Name, tc.ID, tc.Arguments)
 			a.emit(StepResult{Type: "tool_call", Content: commandDesc, ToolName: tc.Name})
 
-			if !a.permissions.Check(def.Name, def.RequiresPermission, commandDesc) {
+			if !a.permissions.Check(ctx, def.Name, def.RequiresPermission, commandDesc) {
 				errMsg := "Permission denied for: " + tc.Name
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,

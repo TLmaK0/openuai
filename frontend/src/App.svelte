@@ -761,6 +761,9 @@
       showPermDialog = true;
     });
 
+    // The request was cancelled (Stop / Esc): close its dialog.
+    EventsOn('permission_cancelled', () => { showPermDialog = false; });
+
     // Focus textarea when window gains focus
     window.addEventListener('focus', () => {
       if (textareaEl && !showPermDialog) textareaEl.focus();
