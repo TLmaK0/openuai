@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"os"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -22,6 +23,11 @@ var appIcon []byte
 var whisperVersion string
 
 func main() {
+	// `openuai mcp`: serve the running app as an MCP server over stdio.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Exit(runMCPCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
+
 	// Create an instance of the app structure
 	app := NewApp()
 	app.whisperVersion = strings.TrimSpace(whisperVersion)
