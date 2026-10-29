@@ -2711,16 +2711,17 @@
     gap: 0.35rem;
     background: none;
     border: none;
-    color: #666;
-    font-size: 11px;
+    border-left: 2px solid #2a3b55;
+    color: #8a9bb3;
+    font-size: 12px;
     cursor: pointer;
-    padding: 0.2rem 0.5rem;
+    padding: 0.25rem 0.5rem;
     width: 100%;
     text-align: left;
     font-family: inherit;
   }
 
-  .tool-group-header:hover { color: #999; }
+  .tool-group-header:hover { color: #c5d3e8; border-left-color: #4a6a95; }
 
   .tool-group-arrow {
     font-size: 8px;
