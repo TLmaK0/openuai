@@ -80,6 +80,7 @@ type settings struct {
 	APIEnabled           bool              `json:"api_enabled,omitempty"`
 	APIPort              int               `json:"api_port,omitempty"`
 	VoiceEnabled         *bool             `json:"voice_enabled,omitempty"`
+	WindowPosition       []int             `json:"window_position,omitempty"` // [x, y], absolute screen coordinates
 	TTSVoice             string            `json:"tts_voice,omitempty"`
 	STTModel             string            `json:"stt_model,omitempty"`
 	STTLanguage          string            `json:"stt_language,omitempty"`
@@ -470,6 +471,24 @@ func (c *Config) VoiceEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.data.VoiceEnabled == nil || *c.data.VoiceEnabled
+}
+
+// WindowPosition returns the saved window position (absolute screen
+// coordinates), if any.
+func (c *Config) WindowPosition() (int, int, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.data.WindowPosition) != 2 {
+		return 0, 0, false
+	}
+	return c.data.WindowPosition[0], c.data.WindowPosition[1], true
+}
+
+// SetWindowPosition saves the window position.
+func (c *Config) SetWindowPosition(x, y int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data.WindowPosition = []int{x, y}
 }
 
 func (c *Config) SetVoiceEnabled(enabled bool) {

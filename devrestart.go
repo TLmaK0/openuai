@@ -22,7 +22,10 @@ const relaunchFileEnv = "OPENUAI_RELAUNCH_FILE"
 // started any other way (e.g. ./dev.sh --once) it first starts a detached
 // relaunch loop that waits for this process to exit and then launches the
 // app again, so a restart always brings the app back.
-func (a *App) RequestRestart(worktree string) (map[string]any, error) {
+func (a *App) RequestRestart(worktree string, window []int) (map[string]any, error) {
+	if window != nil && len(window) != 2 {
+		return nil, fmt.Errorf("window must be [x, y]")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -46,6 +49,13 @@ func (a *App) RequestRestart(worktree string) (map[string]any, error) {
 		logger.Info("Started detached relaunch loop (log: %s)", logPath)
 	}
 
+	// The window reopens where it is now, or where the request asks.
+	if window != nil && a.cfg != nil {
+		a.cfg.SetWindowPosition(window[0], window[1])
+		_ = a.cfg.Save()
+	} else {
+		a.saveWindowPosition()
+	}
 	logger.Info("Restart requested in %s", target)
 	go func() {
 		time.Sleep(200 * time.Millisecond)

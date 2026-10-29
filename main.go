@@ -7,7 +7,6 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-
 )
 
 // Version is set at build time via -ldflags "-X main.Version=vX.Y.Z"
@@ -36,10 +35,11 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour:   &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		HideWindowOnClose:  true,
-		OnStartup:          app.startup,
-		OnShutdown:         app.shutdown,
+		BackgroundColour:  &options.RGBA{R: 27, G: 38, B: 54, A: 1},
+		HideWindowOnClose: true,
+		OnStartup:         app.startup,
+		OnDomReady:        app.domReady,
+		OnShutdown:        app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

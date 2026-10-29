@@ -200,6 +200,9 @@ func (s *Server) handleSetNotifications(c echo.Context) error {
 type devRestartRequest struct {
 	// Worktree is the directory to relaunch in (optional; default: same one).
 	Worktree string `json:"worktree"`
+	// Window optionally moves the window to [x, y] (absolute screen
+	// coordinates) after the restart, e.g. onto another monitor.
+	Window []int `json:"window"`
 }
 
 func (s *Server) handleDevRestart(c echo.Context) error {
@@ -210,7 +213,7 @@ func (s *Server) handleDevRestart(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
-	result, err := s.handlers.RequestRestart(req.Worktree)
+	result, err := s.handlers.RequestRestart(req.Worktree, req.Window)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}

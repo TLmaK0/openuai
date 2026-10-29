@@ -39,7 +39,8 @@ type Handlers struct {
 	GetNotifications  func() any
 	SetNotifications  func(enabled bool)
 	// RequestRestart relaunches the app (dev mode); worktree may be empty.
-	RequestRestart func(worktree string) (any, error)
+	// window, when [x, y], is where the window opens after the restart.
+	RequestRestart func(worktree string, window []int) (any, error)
 }
 
 // Server is the REST API + WebSocket server.
