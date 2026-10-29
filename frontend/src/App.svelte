@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -1014,9 +1014,29 @@
       .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
       .map((it) => it.getAsFile())
       .filter(Boolean);
-    if (!files.length) return; // plain text paste goes on as usual
-    e.preventDefault();
-    addImageFiles(files);
+    if (files.length) {
+      e.preventDefault();
+      addImageFiles(files);
+      return;
+    }
+    // Some webviews (WebKitGTK) give a paste of an image no data at all:
+    // when there is no text either, ask the system clipboard directly.
+    const types = [...(e.clipboardData?.types || [])];
+    if (types.some((t) => t.startsWith('text/'))) return; // plain text paste goes on as usual
+    pasteFromSystemClipboard();
+  }
+
+  async function pasteFromSystemClipboard() {
+    try {
+      const b64 = await ClipboardImage();
+      if (!b64) return;
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+      await addImageFiles([new File([bytes], 'clipboard.png', { type: 'image/png' })]);
+    } catch (err) {
+      attachError = 'Could not paste the image: ' + (err?.message || err);
+    }
   }
   let dragOver = false;
   function handleDragOver(e) {
