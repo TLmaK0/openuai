@@ -642,6 +642,9 @@
           // Keep active — still show this tool until a new tool_call or text/done arrives
           messages = [...messages.slice(0, li), { ...last }, ...messages.slice(li + 1)];
         }
+      } else if (step.type === 'notice') {
+        // Hook status messages and systemMessage: a notice, not an error.
+        messages = [...messages, { role: 'notice', content: step.content }];
       } else if (step.type === 'error') {
         const last = messages[messages.length - 1];
         if (last && last.role === 'tools' && last.steps.length > 0) {
@@ -1851,8 +1854,10 @@
         <div class="settings-group-title">Hooks</div>
         {#if hookList.entries?.length}
           {#each hookList.entries as h}
-            <div class="setting-row hook-row"><label>{h.event}{h.matcher ? ' · ' + h.matcher : ''}</label><code class="hook-cmd" title={h.command}>{h.command}</code><span class="hook-src">{h.source}</span></div>
+            <div class="setting-row hook-row"><label>{h.event}{h.matcher ? ' · ' + h.matcher : ''}</label><span class="hook-type">{h.type || 'command'}</span><code class="hook-cmd" title={h.command}>{h.command}</code><span class="hook-src">{h.source}{h.once ? ' · once' : ''}</span></div>
           {/each}
+        {:else if hookList.disabled}
+          <div class="setting-row"><label></label><span class="voice-status">All hooks are disabled ("disableAllHooks": true in a hooks file).</span></div>
         {:else}
           <div class="setting-row"><label></label><span class="voice-status">No hooks. Add them in ~/.config/openuai/hooks.json or .openuai/hooks.json of the project.</span></div>
         {/if}
@@ -2435,6 +2440,7 @@
   .slash-hint { color: #8a9bb3; font-family: monospace; font-size: 0.75rem; white-space: nowrap; }
   .slash-badge { color: #c9a2ff; font-size: 0.7rem; border: 1px solid #4b3a6e; border-radius: 6px; padding: 0 0.3rem; white-space: nowrap; }
   .slash-desc { color: #8a9bb3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .hook-type { color: #9fd3a8; font-size: 0.7rem; margin-right: 0.4rem; text-transform: uppercase; letter-spacing: 0.03em; }
   .file-chip { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 260px; padding: 0.25rem 0.5rem; border: 1px solid #2a3b55; border-radius: 8px; background: #101a2a; color: #c5d3e8; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.file-chip { cursor: pointer; }
   button.file-chip:hover { border-color: #4a6a95; color: #fff; }

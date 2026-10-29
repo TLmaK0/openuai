@@ -54,6 +54,8 @@ type SubAgentConfig struct {
 	// Hooks returns the user/project hooks; WorkDir is where hooks run.
 	Hooks   func() *hooks.Set
 	WorkDir string
+	// SessionID identifies the main conversation to hooks.
+	SessionID string
 }
 
 // SubAgentTask is a single task to assign to a sub-agent.
@@ -219,13 +221,28 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 	// SubagentStart hooks can add context to the sub-agent's prompt.
 	if hs := hookFn(); hs.Has(hooks.SubagentStart) {
-		r := hs.Run(runCtx, hooks.SubagentStart, agentType, map[string]any{"session_id": "openuai", "agent_id": agentID, "agent_type": agentType}, workDir)
+		step := func(st StepResult) {
+			if cfg.OnStep != nil {
+				cfg.OnStep(task.ID, st)
+			}
+		}
+		sid := cfg.SessionID
+		if sid == "" {
+			sid = "openuai"
+		}
+		hctx := hooks.WithStatus(runCtx, func(m string) { step(StepResult{Type: "notice", Content: m}) })
+		r := hs.Run(hctx, hooks.SubagentStart, agentType, map[string]any{"session_id": sid, "agent_id": agentID, "agent_type": agentType}, workDir)
 		logger.Info("[sub-agent:%s] SubagentStart hooks: ran=%d context=%d errors=%d", task.ID, r.Ran, len(r.Context), len(r.Errors))
 		for _, e := range r.Errors {
 			logger.Error("[sub-agent:%s] Hook error: %s", task.ID, e)
-			if cfg.OnStep != nil {
-				cfg.OnStep(task.ID, StepResult{Type: "error", Content: "Hook error: " + e})
-			}
+			step(StepResult{Type: "error", Content: "Hook error: " + e})
+		}
+		// Exit code 2 on SubagentStart only shows stderr (in the sub-agent's view).
+		for _, e := range r.Notices {
+			step(StepResult{Type: "error", Content: "SubagentStart hook error: " + e})
+		}
+		for _, m := range r.Messages {
+			step(StepResult{Type: "notice", Content: "Hook: " + m})
 		}
 		if notes := hookNotes(r); len(notes) > 0 {
 			prompt += "\n\n## Context from hooks\n" + strings.Join(notes, "\n")
@@ -257,6 +274,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		AgentType:       agentType,
 		AgentID:         agentID,
 		Allow:           task.Allow,
+		SessionID:       cfg.SessionID,
 	})
 	if history != nil {
 		ag.SetHistory(history)

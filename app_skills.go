@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,16 +12,13 @@ import (
 	"sync"
 
 	"openuai/internal/agent"
+	"openuai/internal/hooks"
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/skills"
 	"openuai/internal/subagents"
 	"openuai/internal/tools"
 )
-
-// skillSessionID is ${OPENUAI_SESSION_ID}: the same stable id hooks get as
-// session_id, so a skill's output can be correlated with them.
-const skillSessionID = "openuai"
 
 // defaultSkillEffort is ${OPENUAI_EFFORT} when no effort level is set.
 const defaultSkillEffort = "high"
@@ -41,6 +39,9 @@ type skillState struct {
 	usage      map[string]int
 	permitted  map[string]bool
 	forks      map[string]int
+	// hooked maps a skill to the session id its frontmatter hooks were
+	// registered in (once per session).
+	hooked     map[string]string
 	overLogged bool
 }
 
@@ -158,6 +159,85 @@ func (s *skillState) touch(rels, nestedDirs []string) bool {
 	return changed
 }
 
+// claimHooks reports whether the hooks of skill name still have to be
+// registered in session sid, and records that they are.
+func (s *skillState) claimHooks(name, sid string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hooked == nil {
+		s.hooked = map[string]string{}
+	}
+	if s.hooked[name] == sid {
+		return false
+	}
+	s.hooked[name] = sid
+	return true
+}
+
+// registerSkillHooks registers the frontmatter hooks of an invoked skill
+// for the rest of the session (Claude Code's skill hooks): they keep
+// running on later turns, and those with once: true are removed after
+// their first successful run. A skill's hooks are registered once per
+// session, however often it is invoked.
+func (a *App) registerSkillHooks(sk skills.Skill) {
+	if len(sk.Hooks) == 0 || !a.skills.claimHooks(sk.Name, a.sessionID()) {
+		return
+	}
+	cfg, err := skillHookConfig(sk)
+	if err != nil {
+		logger.Error("Skill %s: hooks: %v", sk.Name, err)
+		return
+	}
+	a.registerSessionHooks(cfg, "skill:"+sk.Name)
+	logger.Info("Skill %s: hooks registered for the rest of the session (%d events)", sk.Name, len(cfg))
+}
+
+// skillHookConfig turns a skill's frontmatter hooks into a hooks config.
+func skillHookConfig(sk skills.Skill) (hooks.Config, error) {
+	data, err := json.Marshal(sk.Hooks)
+	if err != nil {
+		return nil, err
+	}
+	var cfg hooks.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// promptHooks are the hooks that see a user message (nil config in tests:
+// only the session hooks).
+func (a *App) promptHooks() *hooks.Set {
+	if a.cfg == nil {
+		return a.hk.session.Set()
+	}
+	return a.loadHooks()
+}
+
+// expansionHook fires UserPromptExpansion for /name typed by the user,
+// before the skill expands (so a block keeps its injected commands from
+// running). It returns the context the hooks add, or an error to refuse
+// the message.
+func (a *App) expansionHook(ctx context.Context, sk skills.Skill, args, prompt string) ([]string, error) {
+	hs := a.promptHooks()
+	if !hs.Has(hooks.UserPromptExpansion) {
+		return nil, nil
+	}
+	r := a.runHookOn(ctx, hs, hooks.UserPromptExpansion, sk.Name, map[string]any{
+		"expansion_type": "slash_command", "command_name": sk.Name, "command_args": args,
+		"command_source": sk.Source, "prompt": prompt,
+	})
+	if r.Decision == "block" || r.StopAll {
+		reason := r.Reason
+		if r.StopAll && r.StopReason != "" {
+			reason = r.StopReason
+		}
+		logger.Info("Skill /%s blocked by a UserPromptExpansion hook: %s", sk.Name, reason)
+		return nil, fmt.Errorf("Blocked by a hook: %s", reason)
+	}
+	return hookNotesOf(r), nil
+}
+
 // loadSkills reads the user, project and active nested skills. It runs on
 // every use, so edits to a skill apply without restarting.
 func (a *App) loadSkills() *skills.Set {
@@ -272,8 +352,10 @@ func (a *App) renderOptions(sk skills.Skill, turn *tools.Turn) skills.RenderOpti
 	}
 	o := skills.RenderOptions{
 		ProjectDir: work,
-		SessionID:  skillSessionID,
-		Effort:     effort,
+		// The id hooks get as session_id, so a skill's output can be
+		// correlated with them.
+		SessionID: a.sessionID(),
+		Effort:    effort,
 		CanRun: func(cmd string) bool {
 			if skills.AnyMatch(rules, "bash", cmd) {
 				return true
@@ -346,6 +428,7 @@ func (a *App) invokeSkill(ctx context.Context, name, args string) tools.Result {
 		logger.Error("Skill %s: %s", sk.Name, err.Error())
 		return tools.Result{Error: err.Error()}
 	}
+	a.registerSkillHooks(sk)
 	if sk.Forked() {
 		logger.Info("Skill %s runs in a sub-agent (invoked by the assistant)", sk.Name)
 		return a.runSkillFork(ctx, sk, rendered)
@@ -417,6 +500,7 @@ func (a *App) forkAgentName(name string) string {
 type skillPlan struct {
 	content      string
 	changes      []tools.TurnChange
+	notes        []string // context from UserPromptExpansion hooks
 	fork         *skills.Skill
 	forkRendered string
 }
@@ -465,20 +549,34 @@ func (a *App) planSkillInvocation(ctx context.Context, content string) (skillPla
 			rest = r2
 		}
 	}
+	// UserPromptExpansion runs for each skill before anything expands: a
+	// block refuses the message and no injected command runs.
 	for _, s := range stack {
-		rendered, err := skills.Render(s, rest, a.renderOptions(s, nil))
+		notes, err := a.expansionHook(ctx, s, rest, content)
+		if err != nil {
+			return skillPlan{content: content}, err
+		}
+		plan.notes = append(plan.notes, notes...)
+	}
+	rendered := make([]string, len(stack))
+	for i, s := range stack {
+		r, err := skills.Render(s, rest, a.renderOptions(s, nil))
 		if err != nil {
 			logger.Error("Skill /%s: %s", s.Name, err.Error())
 			return skillPlan{content: content}, fmt.Errorf("skill /%s: %v", s.Name, err)
 		}
+		rendered[i] = r
+	}
+	for i, s := range stack {
 		a.skills.used(s.Name)
+		a.registerSkillHooks(s)
 		logger.Info("Skill /%s invoked by the user", s.Name)
 		if s.Forked() {
 			sc := s
-			plan.fork, plan.forkRendered = &sc, rendered
+			plan.fork, plan.forkRendered = &sc, rendered[i]
 			return plan, nil
 		}
-		plan.content = agent.WithSkill(plan.content, rendered)
+		plan.content = agent.WithSkill(plan.content, rendered[i])
 		plan.changes = append(plan.changes, a.skillTurnChange(ctx, s))
 	}
 	return plan, nil

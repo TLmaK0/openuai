@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"openuai/internal/hooks"
 	"openuai/internal/llm"
@@ -115,7 +116,13 @@ type Agent struct {
 	workDir    string
 	agentType  string // set for sub-agents
 	agentID    string
-	stopBlocks int // Stop hook continuations in a row
+	stopBlocks int    // Stop hook continuations in a row
+	halt       string // set when a hook stopped the turn (continue: false)
+	title      string // session title set by a hook
+	sessionID  string
+	transcript string
+	// backgroundTasks lists running background work for Stop hooks.
+	backgroundTasks func() []map[string]any
 
 	// Skills (see skillturn.go): what invoked skills changed for this turn,
 	// a grant for the agent's whole life, and a callback after each tool use.
@@ -174,6 +181,11 @@ type Config struct {
 	// it returns is added to the tool result (e.g. skills that became
 	// available for the files the tool touched).
 	OnToolUse func(tool string, args map[string]string) string
+	// SessionID and TranscriptPath identify the conversation to hooks.
+	SessionID      string
+	TranscriptPath string
+	// BackgroundTasks lists running background work (Stop hook input).
+	BackgroundTasks func() []map[string]any
 }
 
 func New(cfg Config) *Agent {
@@ -225,7 +237,11 @@ func New(cfg Config) *Agent {
 		agentID:     cfg.AgentID,
 		allow:       cfg.Allow,
 		onToolUse:   cfg.OnToolUse,
-		toolDefs:    toolDefs,
+		sessionID:   cfg.SessionID,
+		transcript:  cfg.TranscriptPath,
+
+		backgroundTasks: cfg.BackgroundTasks,
+		toolDefs:        toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
 		},
@@ -248,6 +264,7 @@ func (a *Agent) loop(ctx context.Context) error {
 	if a.registry != nil {
 		a.toolDefs = convertToolDefs(a.registry)
 	}
+	a.halt = ""
 	logger.Debug("System prompt length: %d", len(a.messages[0].Content))
 
 	// Check if provider supports native tool calling
@@ -268,6 +285,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+		if a.halt != "" {
+			return a.haltTurn()
+		}
 		logger.Info("Agent iteration %d/%d, messages=%d", i+1, limit, len(a.messages))
 
 		// MicroCompact: prune old tool results to keep context manageable.
@@ -279,6 +299,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		if err != nil {
 			logger.Error("LLM call failed: %s", err.Error())
 			a.emit(StepResult{Type: "error", Content: err.Error()})
+			a.stopFailure(ctx, err)
 			return err
 		}
 		logger.Info("LLM response: model=%s tokens_in=%d tokens_out=%d content_len=%d tool_calls=%d",
@@ -331,134 +352,24 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.consecutiveErr = 0
 		}
 
-		// Process each tool call
+		// Process each tool call. A hook that stops the turn leaves the rest
+		// unrun (each still gets a result, as the API requires).
+		batch := make([]map[string]any, 0, len(toolCalls))
 		for _, tc := range toolCalls {
-			tool, ok := a.registry.Get(tc.Name)
-			if skill, gone := a.turn.disallow[tc.Name]; gone && ok {
-				errMsg := fmt.Sprintf("Tool %s is not available while skill %s is active", tc.Name, skill)
-				logger.Info("%s", errMsg)
-				a.messages = append(a.messages, llm.Message{Role: llm.RoleToolResult, ToolCallID: tc.ID, Content: "Error: " + errMsg})
-				a.emit(StepResult{Type: "error", Content: errMsg})
-				continue
-			}
-			if !ok {
-				errMsg := fmt.Sprintf("Unknown tool: %s", tc.Name)
-				logger.Error("%s", errMsg)
+			if a.halt != "" {
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,
 					ToolCallID: tc.ID,
-					Content:    "Error: " + errMsg,
+					Content:    "Error: not run: the turn was stopped by a hook: " + a.halt,
 				})
-				a.emit(StepResult{Type: "error", Content: errMsg})
 				continue
 			}
-
-			def := tool.Definition()
-			commandDesc := formatNativeToolCallDesc(tc)
-
-			logger.Info("Tool call: %s id=%s args=%v", tc.Name, tc.ID, tc.Arguments)
-			a.emit(StepResult{Type: "tool_call", Content: commandDesc, ToolName: tc.Name})
-			a.stopBlocks = 0
-
-			// PreToolUse hooks can block the call, approve it or change its input.
-			args := tc.Arguments
-			pre := a.runHook(ctx, hooks.PreToolUse, tc.Name, map[string]any{"tool_name": tc.Name, "tool_input": argsAny(args), "tool_use_id": tc.ID})
-			notes := hookNotes(pre)
-			if pre.Decision == "deny" {
-				logger.Info("Tool %s blocked by a hook: %s", tc.Name, pre.Reason)
-				a.messages = append(a.messages, llm.Message{
-					Role:       llm.RoleToolResult,
-					ToolCallID: tc.ID,
-					Content:    withNotes("Error: blocked by a hook: "+pre.Reason, notes),
-				})
-				a.emit(StepResult{Type: "error", Content: "Blocked by a hook: " + pre.Reason})
-				a.saveCheckpoint()
-				continue
-			}
-			if pre.UpdatedInput != nil {
-				args = argsString(pre.UpdatedInput)
-				commandDesc = formatNativeToolCallDesc(llm.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: args})
-				logger.Info("Tool %s input changed by a hook: %v", tc.Name, args)
-			}
-
-			if a.preApproved(def.Name, commandDesc) {
-				logger.Info("Tool %s pre-approved by an active skill", tc.Name)
-			} else if ok, why := a.toolAllowed(ctx, pre, def.Name, def.RequiresPermission, commandDesc); !ok {
-				errMsg := "Permission denied for: " + tc.Name
-				a.messages = append(a.messages, llm.Message{
-					Role:       llm.RoleToolResult,
-					ToolCallID: tc.ID,
-					Content:    "Error: " + errMsg + ". " + why,
-				})
-				a.emit(StepResult{Type: "error", Content: errMsg})
-				continue
-			}
-
-			// Execute tool
-			logger.Info("Executing tool: %s", tc.Name)
-			result := tool.Execute(a.toolContext(ctx), args)
-			logger.Info("Tool result: output_len=%d error=%q", len(result.Output), result.Error)
-
-			var resultContent string
-			if result.Error != "" {
-				resultContent = fmt.Sprintf("Error: %s", result.Error)
-				if result.Output != "" {
-					resultContent += "\nOutput: " + result.Output
-				}
-				// Track consecutive errors for the same tool
-				if tc.Name == a.lastErrorTool && result.Error == a.lastErrorMsg {
-					a.consecutiveErr++
-				} else {
-					a.lastErrorTool = tc.Name
-					a.lastErrorMsg = result.Error
-					a.consecutiveErr = 1
-				}
-			} else {
-				resultContent = result.Output
-				// Successful call resets tracking for this tool
-				if tc.Name == a.lastErrorTool {
-					a.consecutiveErr = 0
-					a.lastErrorTool = ""
-					a.lastErrorMsg = ""
-				}
-			}
-
-			// Truncate oversized tool results to prevent context overflow
-			if len(resultContent) > maxToolResultBytes {
-				truncated := resultContent[:maxToolResultBytes]
-				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes. Do NOT assume the content ended here â for web_fetch call it again with offset set to the number of bytes already shown; for bash, narrow the command.]", len(resultContent), maxToolResultBytes)
-			}
-
-			if a.onToolUse != nil && result.Error == "" {
-				if note := a.onToolUse(tc.Name, args); note != "" {
-					resultContent += "\n\n" + note
-				}
-			}
-
-			resultContent = a.postToolHooks(ctx, tc, args, result.Output, result.Error, resultContent, notes)
-
-			a.messages = append(a.messages, llm.Message{
-				Role:       llm.RoleToolResult,
-				ToolCallID: tc.ID,
-				Content:    resultContent,
-				Images:     result.Images,
+			args, content := a.execToolCall(ctx, tc)
+			batch = append(batch, map[string]any{
+				"tool_name": tc.Name, "tool_input": argsAny(args), "tool_use_id": tc.ID, "tool_response": content,
 			})
-
-			a.emit(StepResult{Type: "tool_result", Content: fmt.Sprintf("Tool %s result:\n%s", tc.Name, resultContent), ToolName: tc.Name})
-			a.saveCheckpoint()
-
-			// If we hit the consecutive error limit, inject a system message to break the loop
-			if a.consecutiveErr >= maxConsecutiveErrors {
-				loopMsg := fmt.Sprintf("STOP: tool %q has failed %d times in a row with the same error: %q. Do NOT call it again with the same arguments. Try different arguments, use a different tool, or work around the issue. Do NOT ask the user for permission — just act.", tc.Name, a.consecutiveErr, a.lastErrorMsg)
-				logger.Info("Loop detected: %s", loopMsg)
-				a.messages = append(a.messages, llm.Message{
-					Role:    llm.RoleUser,
-					Content: loopMsg,
-				})
-				a.emit(StepResult{Type: "error", Content: fmt.Sprintf("Loop detected: %s failed %d times with: %s", tc.Name, a.consecutiveErr, a.lastErrorMsg)})
-				a.consecutiveErr = 0
-			}
 		}
+		a.postToolBatch(ctx, batch)
 	}
 
 	if limit < maxIterations {
@@ -467,6 +378,157 @@ func (a *Agent) loop(ctx context.Context) error {
 	}
 	a.emit(StepResult{Type: "error", Content: "Agent reached maximum iterations"})
 	return fmt.Errorf("agent reached maximum iterations (%d)", maxIterations)
+}
+
+// execToolCall runs one tool call through its hooks and the permission flow
+// and adds its result to the conversation. It returns the input it ran with
+// and the result the model sees.
+func (a *Agent) execToolCall(ctx context.Context, tc llm.ToolCall) (map[string]string, string) {
+	addResult := func(content string, images []string) {
+		a.messages = append(a.messages, llm.Message{
+			Role:       llm.RoleToolResult,
+			ToolCallID: tc.ID,
+			Content:    content,
+			Images:     images,
+		})
+	}
+	tool, ok := a.registry.Get(tc.Name)
+	if skill, gone := a.turn.disallow[tc.Name]; gone && ok {
+		errMsg := fmt.Sprintf("Tool %s is not available while skill %s is active", tc.Name, skill)
+		logger.Info("%s", errMsg)
+		addResult("Error: "+errMsg, nil)
+		a.emit(StepResult{Type: "error", Content: errMsg})
+		return tc.Arguments, "Error: " + errMsg
+	}
+	if !ok {
+		errMsg := fmt.Sprintf("Unknown tool: %s", tc.Name)
+		logger.Error("%s", errMsg)
+		addResult("Error: "+errMsg, nil)
+		a.emit(StepResult{Type: "error", Content: errMsg})
+		return tc.Arguments, "Error: " + errMsg
+	}
+
+	def := tool.Definition()
+	commandDesc := formatNativeToolCallDesc(tc)
+
+	logger.Info("Tool call: %s id=%s args=%v", tc.Name, tc.ID, tc.Arguments)
+	a.emit(StepResult{Type: "tool_call", Content: commandDesc, ToolName: tc.Name})
+	a.stopBlocks = 0
+
+	// PreToolUse hooks can block the call, approve it or change its input.
+	args := tc.Arguments
+	pre := a.runHook(ctx, hooks.PreToolUse, tc.Name, map[string]any{"tool_name": tc.Name, "tool_input": argsAny(args), "tool_use_id": tc.ID})
+	notes := hookNotes(pre)
+	if pre.Decision == "deny" {
+		logger.Info("Tool %s blocked by a hook: %s", tc.Name, pre.Reason)
+		content := withNotes("Error: blocked by a hook: "+pre.Reason, notes)
+		addResult(content, nil)
+		a.emit(StepResult{Type: "error", Content: "Blocked by a hook: " + pre.Reason})
+		a.saveCheckpoint()
+		return args, content
+	}
+	if a.halt != "" {
+		content := "Error: not run: the turn was stopped by a hook: " + a.halt
+		addResult(content, nil)
+		return args, content
+	}
+	if pre.UpdatedInput != nil {
+		args = argsString(pre.UpdatedInput)
+		commandDesc = formatNativeToolCallDesc(llm.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: args})
+		logger.Info("Tool %s input changed by a hook: %v", tc.Name, args)
+	}
+
+	var perm permDecision
+	if pre.Decision != "ask" && a.preApproved(def.Name, commandDesc) {
+		// An invoked skill's allowed-tools (a PreToolUse deny already
+		// returned above; an "ask" still asks).
+		logger.Info("Tool %s pre-approved by an active skill", tc.Name)
+		perm = permDecision{ok: true}
+	} else {
+		perm = a.toolAllowed(ctx, pre, def.Name, def.RequiresPermission, commandDesc, args)
+	}
+	if perm.args != nil {
+		args = perm.args
+		logger.Info("Tool %s input changed by a PermissionRequest hook: %v", tc.Name, args)
+	}
+	if !perm.ok {
+		errMsg := "Permission denied for: " + tc.Name
+		content := "Error: " + errMsg + ". " + perm.why
+		if !perm.byHook && a.halt == "" {
+			// PermissionDenied hooks can tell the model it may retry.
+			d := a.runHook(ctx, hooks.PermissionDenied, tc.Name, map[string]any{
+				"tool_name": tc.Name, "tool_input": argsAny(args), "tool_use_id": tc.ID, "reason": perm.why,
+			})
+			if d.Retry {
+				content += "\nA PermissionDenied hook says you may retry this tool call."
+			}
+		}
+		addResult(content, nil)
+		a.emit(StepResult{Type: "error", Content: errMsg})
+		return args, content
+	}
+
+	// Execute tool
+	logger.Info("Executing tool: %s", tc.Name)
+	started := time.Now()
+	result := tool.Execute(a.toolContext(ctx), args)
+	elapsed := time.Since(started)
+	logger.Info("Tool result: output_len=%d error=%q", len(result.Output), result.Error)
+
+	var resultContent string
+	if result.Error != "" {
+		resultContent = fmt.Sprintf("Error: %s", result.Error)
+		if result.Output != "" {
+			resultContent += "\nOutput: " + result.Output
+		}
+		// Track consecutive errors for the same tool
+		if tc.Name == a.lastErrorTool && result.Error == a.lastErrorMsg {
+			a.consecutiveErr++
+		} else {
+			a.lastErrorTool = tc.Name
+			a.lastErrorMsg = result.Error
+			a.consecutiveErr = 1
+		}
+	} else {
+		resultContent = result.Output
+		// Successful call resets tracking for this tool
+		if tc.Name == a.lastErrorTool {
+			a.consecutiveErr = 0
+			a.lastErrorTool = ""
+			a.lastErrorMsg = ""
+		}
+	}
+
+	// Truncate oversized tool results to prevent context overflow
+	if len(resultContent) > maxToolResultBytes {
+		truncated := resultContent[:maxToolResultBytes]
+		resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes. Do NOT assume the content ended here — for web_fetch call it again with offset set to the number of bytes already shown; for bash, narrow the command.]", len(resultContent), maxToolResultBytes)
+	}
+
+	if a.onToolUse != nil && result.Error == "" {
+		if note := a.onToolUse(tc.Name, args); note != "" {
+			resultContent += "\n\n" + note
+		}
+	}
+
+	resultContent = a.postToolHooks(ctx, tc, args, result.Output, result.Error, resultContent, notes, elapsed)
+
+	addResult(resultContent, result.Images)
+	a.emit(StepResult{Type: "tool_result", Content: fmt.Sprintf("Tool %s result:\n%s", tc.Name, resultContent), ToolName: tc.Name})
+	a.saveCheckpoint()
+
+	// If we hit the consecutive error limit, inject a system message to break the loop
+	if a.consecutiveErr >= maxConsecutiveErrors {
+		loopMsg := fmt.Sprintf("STOP: tool %q has failed %d times in a row with the same error: %q. Do NOT call it again with the same arguments. Try different arguments, use a different tool, or work around the issue. Do NOT ask the user for permission — just act.", tc.Name, a.consecutiveErr, a.lastErrorMsg)
+		logger.Info("Loop detected: %s", loopMsg)
+		a.messages = append(a.messages, llm.Message{
+			Role:    llm.RoleUser,
+			Content: loopMsg,
+		})
+		a.emit(StepResult{Type: "error", Content: fmt.Sprintf("Loop detected: %s failed %d times with: %s", tc.Name, a.consecutiveErr, a.lastErrorMsg)})
+		a.consecutiveErr = 0
+	}
+	return args, resultContent
 }
 
 // saveCheckpoint lets the caller persist the history mid-turn.
