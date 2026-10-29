@@ -208,8 +208,10 @@ func (p *Provider) turn(ctx context.Context, mode string, messages []llm.Message
 		in.sessionID, in.resume = s.id, resume
 		if resume {
 			in.prompt = renderDelta(messages[len(s.sent):])
+			in.images = runImages(messages[len(s.sent):])
 		} else {
 			in.prompt = renderPrompt(messages, toolDefs)
+			in.images = runImages(messages)
 		}
 		return in.run(ctx)
 	}
@@ -276,3 +278,6 @@ var (
 	_ interface{ Ready() bool }            = (*Provider)(nil)
 	_ interface{ SetSecret(string) error } = (*Provider)(nil)
 )
+
+// SupportsImages: images go to the CLI as image blocks (stream-json input).
+func (p *Provider) SupportsImages() bool { return true }

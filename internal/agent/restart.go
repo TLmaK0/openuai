@@ -30,7 +30,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 // without calling the model yet. Callers save the session right after, so
 // the message survives a restart that happens during the turn.
 func (a *Agent) Begin(userMessage string) {
-	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: userMessage})
+	a.BeginWithImages(userMessage, nil)
+}
+
+// BeginWithImages is Begin with images attached to the user's message
+// (base64-encoded). They are saved with the conversation.
+func (a *Agent) BeginWithImages(userMessage string, images []string) {
+	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: userMessage, Images: images})
 	a.runInProgress = true
 	a.resumePending = false
 }

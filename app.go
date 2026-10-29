@@ -717,6 +717,9 @@ type ChatResponse struct {
 	CostUSD      float64 `json:"cost_usd"`
 	Model        string  `json:"model"`
 	Error        string  `json:"error,omitempty"`
+	// Refused is set when the message was not sent at all (e.g. images the
+	// provider cannot see), so the UI can give it back to the user.
+	Refused bool `json:"refused,omitempty"`
 }
 
 func (a *App) ensureAgent() *agent.Agent {
@@ -754,7 +757,34 @@ func (a *App) ensureAgent() *agent.Agent {
 }
 
 func (a *App) SendMessage(content string) ChatResponse {
-	logger.Info("SendMessage: %s", content)
+	return a.SendMessageWithImages(content, nil)
+}
+
+// maxImagesPerMessage and maxImageBytes bound what a single message carries.
+const (
+	maxImagesPerMessage = 10
+	maxImageBytes       = 8 << 20 // base64 length of one image
+)
+
+// SendMessageWithImages sends a user message with pasted or dropped images
+// (base64, PNG or JPEG). It refuses, before anything runs, when the active
+// provider cannot pass images, so they are never dropped silently.
+func (a *App) SendMessageWithImages(content string, images []string) ChatResponse {
+	logger.Info("SendMessage: %s (%d images)", content, len(images))
+	if len(images) > 0 {
+		if len(images) > maxImagesPerMessage {
+			return ChatResponse{Refused: true, Error: fmt.Sprintf("Too many images: at most %d per message.", maxImagesPerMessage)}
+		}
+		for _, img := range images {
+			if len(img) > maxImageBytes {
+				return ChatResponse{Refused: true, Error: "An image is too large to send."}
+			}
+		}
+		if p := a.activeProvider(); p == nil || !llm.SupportsImages(p) {
+			name := a.cfg.Provider()
+			return ChatResponse{Refused: true, Error: "The selected provider (" + name + ") cannot see images. Remove the images or switch to a provider that supports them (Claude, Claude Code, OpenAI)."}
+		}
+	}
 
 	a.agentMu.Lock()
 	defer a.agentMu.Unlock()
@@ -765,7 +795,7 @@ func (a *App) SendMessage(content string) ChatResponse {
 
 	ag := a.ensureAgent()
 	// Saved before running, so the message survives a restart mid-turn.
-	ag.Begin(content)
+	ag.BeginWithImages(content, images)
 	a.saveSession(ag)
 	err := ag.Continue(ctx)
 
@@ -805,8 +835,9 @@ func (a *App) EditMessage(index int, content string) ChatResponse {
 	defer func() { a.agentCancel = nil }()
 
 	ag := a.ensureAgent()
+	images := ag.UserMessageImages(index)
 	ag.RewindToUserMessage(index)
-	ag.Begin(content)
+	ag.BeginWithImages(content, images)
 	a.saveSession(ag)
 	err := ag.Continue(ctx)
 
@@ -1521,6 +1552,8 @@ func (a *App) GetSessions() []agent.SessionInfo {
 type ChatHistoryMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Images are the base64 images attached to a user message.
+	Images []string `json:"images,omitempty"`
 	// Steps is set for role "tools": the tool calls of that part of the
 	// conversation, so they are still visible after a restart.
 	Steps []ChatHistoryStep `json:"steps,omitempty"`
@@ -1556,7 +1589,7 @@ func buildChatHistory(msgs []llm.Message) []ChatHistoryMessage {
 	for _, m := range msgs {
 		switch m.Role {
 		case llm.RoleUser:
-			if m.Content == "" {
+			if m.Content == "" && len(m.Images) == 0 {
 				continue
 			}
 			role := "user"
@@ -1564,7 +1597,7 @@ func buildChatHistory(msgs []llm.Message) []ChatHistoryMessage {
 			if strings.HasPrefix(m.Content, agent.RestartNotePrefix) {
 				role = "notice"
 			}
-			out = append(out, ChatHistoryMessage{Role: role, Content: m.Content})
+			out = append(out, ChatHistoryMessage{Role: role, Content: m.Content, Images: m.Images})
 		case llm.RoleAssistant:
 			if m.Content != "" {
 				out = append(out, ChatHistoryMessage{Role: "assistant", Content: m.Content})

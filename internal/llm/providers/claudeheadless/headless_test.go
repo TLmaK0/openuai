@@ -249,15 +249,15 @@ func TestPromptTiesToolResultsToTheirCalls(t *testing.T) {
 	}
 }
 
-// Images cannot cross this boundary — a headless run takes a prompt, not image
-// inputs — and computer-use turns depend on them, so the loss is stated in the
-// prompt rather than passing unnoticed.
-func TestOmittedImagesAreDeclaredInThePrompt(t *testing.T) {
-	prompt := renderPrompt([]llm.Message{
+// Images now travel with the run as image blocks; the prompt points at them
+// so the model knows which message each one belongs to.
+func TestImagesAreDeclaredInThePrompt(t *testing.T) {
+	msgs := []llm.Message{
 		{Role: llm.RoleUser, Content: "what is on screen?", Images: []string{"iVBOR", "iVBOR"}},
-	}, nil)
-	if !strings.Contains(prompt, "2 image(s) omitted") {
-		t.Errorf("prompt does not declare the omitted images:\n%s", prompt)
+	}
+	prompt := renderPrompt(msgs, nil)
+	if !strings.Contains(prompt, "image #1") || !strings.Contains(prompt, "image #2") || len(runImages(msgs)) != 2 {
+		t.Errorf("prompt does not declare the attached images:\n%s", prompt)
 	}
 }
 
