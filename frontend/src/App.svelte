@@ -688,22 +688,6 @@
       }
     });
 
-    // After a restart: finish the interrupted turn and the background
-    // messages that were waiting, showing the agent as busy meanwhile.
-    // Must run after the agent_step / proc_start listeners are registered,
-    // otherwise the resumed work (tools, text) never shows up on screen.
-    try {
-      if (await HasInterruptedWork()) {
-        loading = true;
-        stickToBottom = true;
-        const resp = await ResumeInterrupted();
-        loading = false;
-        aborting = false;
-        totalCost = resp.cost_usd || 0;
-        totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
-      }
-    } catch (e) { loading = false; }
-    drainQueue();
 
     // Listen for event bus events
     EventsOn('event_received', (event) => {
@@ -777,6 +761,24 @@
       wakeListening = true;
       await toggleWakeListening();
     }
+
+    // After a restart: finish the interrupted turn and the background
+    // messages that were waiting, showing the agent as busy meanwhile.
+    // Must run after EVERY listener is registered (agent_step, proc_start,
+    // permission_request...): the resumed work may ask for permission, and a
+    // request emitted before its listener exists is never shown.
+    try {
+      if (await HasInterruptedWork()) {
+        loading = true;
+        stickToBottom = true;
+        const resp = await ResumeInterrupted();
+        loading = false;
+        aborting = false;
+        totalCost = resp.cost_usd || 0;
+        totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+      }
+    } catch (e) { loading = false; }
+    drainQueue();
   });
 
   // Auto-scroll to the bottom only when the user is already there. If they've
