@@ -39,16 +39,34 @@ func TestImagesStreamJSON(t *testing.T) {
 }
 
 func TestImageCap(t *testing.T) {
+	// Several earlier user messages with images, then one tool turn with 8
+	// screenshots: only the current turn travels, capped at maxImages.
 	var msgs []llm.Message
-	for i := 0; i < 8; i++ {
-		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "x", Images: []string{string(rune('a' + i))}})
+	for i := 0; i < 3; i++ {
+		msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "old", Images: []string{"old"}}, llm.Message{Role: llm.RoleAssistant, Content: "ok"})
+	}
+	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "now", Images: []string{"a"}})
+	for i := 1; i < 8; i++ {
+		msgs = append(msgs, llm.Message{Role: llm.RoleToolResult, Content: "shot", Images: []string{string(rune('a' + i))}})
 	}
 	imgs := runImages(msgs)
 	if len(imgs) != maxImages || imgs[0] != "c" {
 		t.Fatalf("got %v", imgs)
 	}
 	p := renderPrompt(msgs, nil)
-	if strings.Count(p, "omitted") != 2 || !strings.Contains(p, "image #6") {
+	if strings.Count(p, "omitted") != 5 || !strings.Contains(p, "image #6") {
 		t.Fatalf("prompt numbering wrong:\n%s", p)
+	}
+}
+
+// A screenshot from an earlier turn is never sent again as if it were new.
+func TestOldImagesNotResent(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "look", Images: []string{"OLD"}},
+		{Role: llm.RoleAssistant, Content: "seen"},
+		{Role: llm.RoleUser, Content: "next question"},
+	}
+	if imgs := runImages(msgs); len(imgs) != 0 {
+		t.Fatalf("old image resent: %v", imgs)
 	}
 }

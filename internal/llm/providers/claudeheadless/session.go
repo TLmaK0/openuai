@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -58,7 +59,9 @@ func newSessionID() string {
 func conversationKey(mode, model string, messages []llm.Message, tools []llm.ToolDefinition) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00", mode, model)
-	tj, _ := json.Marshal(tools)
+	sorted := append([]llm.ToolDefinition(nil), tools...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	tj, _ := json.Marshal(sorted)
 	h.Write(tj)
 	for i, m := range messages {
 		if i == 0 || m.Role == llm.RoleUser {

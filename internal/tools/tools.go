@@ -1,6 +1,9 @@
 package tools
 
-import "context"
+import (
+	"context"
+	"sort"
+)
 
 type Parameter struct {
 	Name        string `json:"name"`
@@ -54,6 +57,9 @@ func (r *Registry) All() []Tool {
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	// Stable order: tool lists are sent to the model and hashed to reuse its
+	// session, so a random map order would look like a different tool set.
+	sort.Slice(out, func(i, j int) bool { return out[i].Definition().Name < out[j].Definition().Name })
 	return out
 }
 
@@ -62,6 +68,7 @@ func (r *Registry) Definitions() []Definition {
 	for _, t := range r.tools {
 		out = append(out, t.Definition())
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

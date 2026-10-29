@@ -165,14 +165,27 @@ const maxImages = 6
 
 // imageKeepFrom is the index of the first image of messages that is passed.
 func imageKeepFrom(messages []llm.Message) int {
-	total := 0
-	for _, m := range messages {
+	total, beforeTurn := 0, 0
+	lastUser := -1
+	for i, m := range messages {
+		if m.Role == llm.RoleUser {
+			lastUser = i
+		}
+	}
+	for i, m := range messages {
+		if i < lastUser {
+			beforeTurn += len(m.Images)
+		}
 		total += len(m.Images)
 	}
-	if total > maxImages {
-		return total - maxImages
+	// Only images of the current turn (the last user message and what came
+	// after it) travel again: older ones were already answered, and resending
+	// them makes the model treat them as new.
+	keep := beforeTurn
+	if total-keep > maxImages {
+		keep = total - maxImages
 	}
-	return 0
+	return keep
 }
 
 // runImages returns the images passed with a prompt rendered from messages,
