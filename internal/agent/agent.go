@@ -228,6 +228,11 @@ func (a *Agent) InjectEvent(notification string) {
 
 // loop runs the agent on the current conversation until the turn ends.
 func (a *Agent) loop(ctx context.Context) error {
+	// Refresh tool descriptions: some list things read from disk (skills,
+	// agent definitions), so edits apply on the next turn without restarting.
+	if a.registry != nil {
+		a.toolDefs = convertToolDefs(a.registry)
+	}
 	logger.Debug("System prompt length: %d", len(a.messages[0].Content))
 
 	// Check if provider supports native tool calling

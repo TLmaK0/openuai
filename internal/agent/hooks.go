@@ -163,3 +163,12 @@ func (a *Agent) stopHook(ctx context.Context, last string) (bool, string) {
 	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: "[A Stop hook asks you to continue before finishing]\n" + note})
 	return true, note
 }
+
+// SkillMarker separates what the user wrote from the instructions of a skill
+// the user invoked with /name (only the model needs to read them).
+const SkillMarker = "\n\n[Skill invoked by the user]\n"
+
+// WithSkill appends a rendered skill to a user message.
+func WithSkill(text, rendered string) string {
+	return text + SkillMarker + rendered
+}
