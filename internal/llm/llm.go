@@ -22,6 +22,17 @@ type Message struct {
 	// Images holds base64-encoded PNG screenshots attached to this message
 	// (used by computer-use: the model sees them as image inputs).
 	Images []string `json:"images,omitempty"`
+	// Attachments are files the user attached to this message (saved locally;
+	// Content already describes them for the model).
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment is a file attached to a user message.
+type Attachment struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Mime string `json:"mime"`
 }
 
 type Response struct {
