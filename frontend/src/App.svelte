@@ -489,6 +489,8 @@
   let voiceDownloadError = '';
   let sttLanguage = 'auto';
   let wakeWord = '';            // name that triggers hands-free listening
+  // The assistant's name in the agent map: the wake word, capitalised.
+  $: assistantName = (wakeWord || '').trim() ? wakeWord.trim().charAt(0).toUpperCase() + wakeWord.trim().slice(1) : '';
   let wakeListening = false;    // continuous wake-word listening on/off (session only)
   let wakeAwaitingCmd = false;  // wake word fired, capturing the command utterance
   let wakeStatus = '';          // wake model download / status message
@@ -2188,7 +2190,7 @@
   {/if}
 
   {#if liveSubAgents.length}
-    <SubAgentMap agents={liveSubAgents} links={Object.values(saLinks)} mainBusy={loading} on:select={(e) => scrollToSubAgent(e.detail)} />
+    <SubAgentMap agents={liveSubAgents} links={Object.values(saLinks)} mainBusy={loading} mainName={assistantName} on:select={(e) => scrollToSubAgent(e.detail)} />
   {/if}
 
   <div class="chat" class:with-sa-column={liveSubAgents.length > 0} bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>

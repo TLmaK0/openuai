@@ -3,14 +3,16 @@
   // one tile each, in a scrollable column. Arrows on the left join two agents
   // that have talked, pointing in the direction of their last message
   // (delegation goes parent -> child, the result comes back child -> parent).
-  // Only the last exchange per pair is drawn; the newest stands out and older
-  // ones fade.
+  // Only the last exchange per pair is drawn. Every arrow touching a sub-agent
+  // that is still running moves; the newest one also stands out; arrows of
+  // finished sub-agents stop and fade.
   import { afterUpdate, onMount, onDestroy, createEventDispatcher } from 'svelte';
   import SubAgentOrb from './SubAgentOrb.svelte';
 
   export let agents = [];   // live sub-agents (running or just finished)
   export let links = [];    // [{ from, to, at }], one per pair of agents
   export let mainBusy = false;
+  export let mainName = '';  // the assistant's name (wake word)
 
   const dispatch = createEventDispatcher();
   const MAIN_COLOR = '#2f9eff';
@@ -20,7 +22,8 @@
   let pos = {};
   let height = 0;
 
-  $: mainSa = { key: 'main', nick: 'Principal', agent: 'main agent', id: 'main', color: MAIN_COLOR, steps: [], busy: mainBusy, status: 'running' };
+  $: mainSa = { key: 'main', nick: mainName || 'Assistant', agent: 'main agent', id: 'main', color: MAIN_COLOR, steps: [], busy: mainBusy, status: 'running' };
+  $: running = new Set(agents.filter((a) => a.status === 'running').map((a) => a.key));
   $: colors = Object.fromEntries([['main', MAIN_COLOR], ...agents.map((a) => [a.key, a.color])]);
 
   function measure() {
@@ -47,11 +50,14 @@
       const y2 = pos[l.to];
       const bend = 10 + Math.min(18, Math.abs(y2 - y1) / 10);
       const newest = i === arr.length - 1;
+      // Active while the sub-agent(s) at its ends are still running.
+      const active = [l.from, l.to].every((k) => k === 'main' || running.has(k));
       return {
         ...l,
         newest,
+        active,
         color: colors[l.from] || MAIN_COLOR,
-        op: newest ? 1 : Math.max(0.18, 0.55 - 0.1 * (arr.length - 2 - i)),
+        op: newest ? 1 : active ? 0.85 : Math.max(0.18, 0.55 - 0.1 * (arr.length - 2 - i)),
         d: `M ${X0} ${y1} C ${X0 - bend} ${y1}, ${X0 - bend} ${y2}, ${X0} ${y2}`,
         head: `${X0},${y2} ${X0 - 6},${y2 - 4} ${X0 - 6},${y2 + 4}`,
       };
@@ -62,7 +68,7 @@
   <div class="sa-inner" bind:this={inner}>
     <svg class="sa-links" width="{X0 + 2}" height={height} aria-hidden="true">
       {#each shown as l (l.from + '>' + l.to)}
-        <g style="opacity:{l.op}" class:newest={l.newest}>
+        <g style="opacity:{l.op}" class:newest={l.newest} class:active={l.active}>
           <path d={l.d} fill="none" stroke={l.color} stroke-width={l.newest ? 2 : 1.4} class="link" />
           <polygon points={l.head} fill={l.color} />
         </g>
@@ -103,9 +109,10 @@
     overflow: visible;
   }
   g { transition: opacity 0.6s ease; }
-  .newest .link { stroke-dasharray: 5 4; animation: flow 0.9s linear infinite; }
+  .active .link { stroke-dasharray: 5 4; animation: flow 0.9s linear infinite; }
+  .newest:not(.active) .link { stroke-dasharray: 5 4; }
   @keyframes flow { to { stroke-dashoffset: -9; } }
   @media (prefers-reduced-motion: reduce) {
-    .newest .link { animation: none; }
+    .active .link { animation: none; }
   }
 </style>
