@@ -63,6 +63,8 @@ type SubAgentTask struct {
 	Registry     *tools.Registry
 	SystemPrompt string
 	MaxTurns     int
+	// PermissionMode is the permission mode from the definition (PermMode*).
+	PermissionMode string
 	// Notice is passed through to the result (e.g. a model fallback).
 	Notice string
 	// SetupError fails the task without running it.
@@ -204,6 +206,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		MaxTurns:     task.MaxTurns,
 		// A long run compacts its own context instead of dying when it fills up.
 		CompactAtTokens: DefaultSubAgentCompactTokens,
+		PermissionMode:  task.PermissionMode,
 	})
 	if history != nil {
 		ag.SetHistory(history)
