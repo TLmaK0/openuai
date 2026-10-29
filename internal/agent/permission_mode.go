@@ -1,6 +1,10 @@
 package agent
 
-import "openuai/internal/logger"
+import (
+	"context"
+
+	"openuai/internal/logger"
+)
 
 // Permission modes a sub-agent can run in (from its definition's
 // permissionMode). The empty mode is the normal one: ask the user as usual.
@@ -34,7 +38,7 @@ func (pm *PermissionManager) Allowed(toolName, requiredPerm string) bool {
 
 // allowTool decides whether a tool call may run under the agent's permission
 // mode. When it may not, the reason is returned for the tool result.
-func (a *Agent) allowTool(name, required, desc string) (bool, string) {
+func (a *Agent) allowTool(ctx context.Context, name, required, desc string) (bool, string) {
 	switch a.permMode {
 	case PermModePlan:
 		if required != "none" && required != "" {
@@ -53,7 +57,7 @@ func (a *Agent) allowTool(name, required, desc string) (bool, string) {
 			return true, ""
 		}
 	}
-	if a.permissions.Check(name, required, desc) {
+	if a.permissions.Check(ctx, name, required, desc) {
 		return true, ""
 	}
 	return false, "The user denied this action."
