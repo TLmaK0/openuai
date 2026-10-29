@@ -68,6 +68,7 @@ type Definition struct {
 	PermissionMode  string          // "", acceptEdits, dontAsk or plan
 	Background      bool            // always run detached from the turn that launches it
 	Hooks           hooks.Config    // hooks active only while this sub-agent runs
+	Skills          []string        // skills preloaded into the sub-agent\'s prompt
 	Prompt          string
 	Path            string
 	Scope           string
@@ -122,6 +123,7 @@ type frontmatter struct {
 	PermissionMode  string       `yaml:"permissionMode"`
 	Background      bool         `yaml:"background"`
 	Hooks           hooks.Config `yaml:"hooks"`
+	Skills          StringList   `yaml:"skills"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -204,6 +206,7 @@ func Parse(data []byte) (*Definition, error) {
 		PermissionMode:  permMode,
 		Background:      fm.Background,
 		Hooks:           defHooks,
+		Skills:          []string(fm.Skills),
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {

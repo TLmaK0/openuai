@@ -224,6 +224,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.ProcKill{M: a.procs})
 	a.registry.Register(tools.ProcList{M: a.procs})
 	a.registry.Register(tools.Bash{Procs: a.procs})
+	a.registry.Register(tools.Skill{Load: a.loadSkills, ProjectDir: a.GetWorkDir})
 	a.registry.Register(tools.GitStatus{})
 	a.registry.Register(tools.GitDiff{})
 	a.registry.Register(tools.GitLog{})
@@ -802,6 +803,9 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 		}
 	}
 
+	// /<skill> at the start of the message loads that skill for this turn.
+	content = a.expandSkillInvocation(content)
+
 	// UserPromptSubmit hooks can block the message or add context to it.
 	if hs := a.loadHooks(); hs.Has(hooks.UserPromptSubmit) {
 		r := hs.Run(a.ctx, hooks.UserPromptSubmit, "", map[string]any{"session_id": "openuai", "prompt": content}, a.GetWorkDir())
@@ -1116,6 +1120,12 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			at.Effort = def.Effort
 		}
 		at.Hooks = subagents.HookSet(def)
+		if section, notice := a.preloadSkills(def, workDir); section != "" || notice != "" {
+			at.SystemPrompt += section
+			if notice != "" {
+				at.Notice = strings.TrimSpace(at.Notice + " " + notice)
+			}
+		}
 		at.WorkDir = workDir
 		if wt := worktrees[t.ID]; wt != nil {
 			at.WorkDir = wt.Dir
