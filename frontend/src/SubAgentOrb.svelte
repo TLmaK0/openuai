@@ -5,6 +5,7 @@
   import { createEventDispatcher } from 'svelte';
   import { CancelSubAgent } from '../wailsjs/go/main/App';
   export let sa;
+  export let main = false;   // the main agent: no cancel, shows busy/idle
 
   const dispatch = createEventDispatcher();
   let cancelling = false;
@@ -20,11 +21,17 @@
   }
 </script>
 
-<button class="sa-tile" class:cancelling style="--sa-color:{color}"
+<button class="sa-tile" class:cancelling data-sa-key={sa.key}
+  class:done={sa.status === 'finished' && !sa.error && !sa.cancelled}
+  class:failed={sa.status === 'finished' && (sa.error || sa.cancelled)}
+  class:idle={main && !sa.busy}
+  style="--sa-color:{color}"
   title="{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent} · {sa.id}{sa.model ? ' · ' + sa.model : ''}\n{sa.description || ''}"
   on:click={() => dispatch('select')}>
-  <span class="sa-x" role="button" tabindex="0" title="Cancel this sub-agent"
-    on:click={cancel} on:keydown={(e) => e.key === 'Enter' && cancel(e)}>×</span>
+  {#if !main && sa.status !== 'finished'}
+    <span class="sa-x" role="button" tabindex="0" title="Cancel this sub-agent"
+      on:click={cancel} on:keydown={(e) => e.key === 'Enter' && cancel(e)}>×</span>
+  {/if}
   <span class="sa-orb" aria-hidden="true">
     <span class="blob b1"></span>
     <span class="blob b2"></span>
@@ -32,7 +39,7 @@
     <span class="core"></span>
   </span>
   <span class="sa-name">{sa.nick || sa.agent}</span>
-  <span class="sa-doing">{cancelling ? 'cancelling…' : lastTool ? lastTool.tool : 'thinking…'}</span>
+  <span class="sa-doing">{main ? (sa.busy ? 'working…' : 'idle') : sa.status === 'finished' ? (sa.cancelled ? 'cancelled' : sa.error ? 'failed' : 'done ✓') : cancelling ? 'cancelling…' : lastTool ? lastTool.tool : 'thinking…'}</span>
 </button>
 
 <style>
@@ -103,6 +110,12 @@
   }
   .sa-tile:hover .sa-x, .sa-x:focus { opacity: 1; }
   .sa-x:hover { color: #ff8fa3; }
+  .sa-tile.done, .sa-tile.idle { opacity: 0.7; }
+  .sa-tile.done .blob, .sa-tile.done .core, .sa-tile.failed .blob, .sa-tile.failed .core,
+  .sa-tile.idle .blob, .sa-tile.idle .core { animation-play-state: paused; }
+  .sa-tile.failed { border-color: #ff5c7a; }
+  .sa-tile.failed .sa-doing { color: #ff8fa3; }
+  .sa-tile.done .sa-doing { color: #5ee6a8; }
   @keyframes morph {
     0%, 100% { border-radius: 42% 58% 55% 45% / 48% 42% 58% 52%; }
     33% { border-radius: 58% 42% 46% 54% / 40% 60% 40% 60%; }
