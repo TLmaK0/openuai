@@ -104,6 +104,7 @@ type Agent struct {
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
 	maxTurns    int
+	effort      string // effort level for this agent's model calls ("": default)
 
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
@@ -131,6 +132,8 @@ type Config struct {
 	// MaxTurns caps the model calls of one Run; 0 means the default limit.
 	// Reaching it returns an error wrapping ErrMaxTurns.
 	MaxTurns int
+	// Effort is the effort level for this agent's model calls (llm.Efforts).
+	Effort string
 }
 
 func New(cfg Config) *Agent {
@@ -172,6 +175,7 @@ func New(cfg Config) *Agent {
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
 		maxTurns:    cfg.MaxTurns,
+		effort:      cfg.Effort,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -216,7 +220,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		// Keep the last 6 tool results intact, replace older ones with a stub.
 		a.pruneOldToolResults(6)
 
-		resp, toolCalls, err := toolProvider.ChatWithTools(ctx, a.messages, a.model, a.toolDefs)
+		resp, toolCalls, err := toolProvider.ChatWithTools(llm.WithEffort(ctx, a.effort), a.messages, a.model, a.toolDefs)
 		if err != nil {
 			logger.Error("LLM call failed: %s", err.Error())
 			a.emit(StepResult{Type: "error", Content: err.Error()})
@@ -362,7 +366,7 @@ func (a *Agent) loop(ctx context.Context) error {
 
 // runSimpleChat handles providers without native tool calling (fallback)
 func (a *Agent) runSimpleChat(ctx context.Context) error {
-	resp, err := a.provider.Chat(ctx, a.messages, a.model)
+	resp, err := a.provider.Chat(llm.WithEffort(ctx, a.effort), a.messages, a.model)
 	if err != nil {
 		a.emit(StepResult{Type: "error", Content: err.Error()})
 		return err

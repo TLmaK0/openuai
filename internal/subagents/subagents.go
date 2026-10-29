@@ -22,6 +22,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"openuai/internal/tools"
+
+	"openuai/internal/llm"
 )
 
 const (
@@ -56,6 +58,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	Effort          string // low, medium, high, xhigh, max; empty: the session default
 	Prompt          string
 	Path            string
 	Scope           string
@@ -102,6 +105,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	Effort          string      `yaml:"effort"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -141,6 +145,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	effort := strings.ToLower(strings.TrimSpace(fm.Effort))
+	if effort != "" && !llm.ValidEffort(effort) {
+		return nil, fmt.Errorf("invalid effort %q: use one of %s", fm.Effort, strings.Join(llm.Efforts, ", "))
+	}
 	d := &Definition{
 		Name:            name,
 		Description:     strings.TrimSpace(fm.Description),
@@ -148,6 +156,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		Effort:          effort,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {

@@ -58,6 +58,8 @@ type SubAgentTask struct {
 	Registry     *tools.Registry
 	SystemPrompt string
 	MaxTurns     int
+	// Effort is the effort level (definition or per-task parameter).
+	Effort string
 	// Notice is passed through to the result (e.g. a model fallback).
 	Notice string
 	// SetupError fails the task without running it.
@@ -173,6 +175,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		OnStep:       onStep,
 		SystemPrompt: prompt,
 		MaxTurns:     task.MaxTurns,
+		Effort:       task.Effort,
 	})
 
 	err := ag.Run(runCtx, task.Description)

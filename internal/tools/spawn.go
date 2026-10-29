@@ -15,6 +15,8 @@ type SubTask struct {
 	Agent string `json:"agent,omitempty"`
 	// Model optionally overrides the model (alias, full ID or "inherit").
 	Model string `json:"model,omitempty"`
+	// Effort optionally sets the effort level for this run.
+	Effort string `json:"effort,omitempty"`
 }
 
 // SubTaskResult holds the outcome of a sub-agent task.
@@ -87,7 +89,7 @@ func (s SpawnAgents) Definition() Definition {
 			{
 				Name:        "tasks",
 				Type:        "string",
-				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (one of the available models listed in the tool description). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
+				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (one of the available models listed in the tool description), and optionally "effort" (low, medium, high, xhigh or max; overrides the agent definition). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
 				Required:    true,
 			},
 		},
