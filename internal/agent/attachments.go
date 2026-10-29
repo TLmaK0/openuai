@@ -53,13 +53,16 @@ func ComposeWithAttachments(text string, files []llm.Attachment) string {
 
 // DisplayContent is what the user wrote in m, without the attached-files part.
 func DisplayContent(m llm.Message) string {
-	if len(m.Attachments) == 0 {
-		return m.Content
+	c := m.Content
+	if i := strings.Index(c, HookContextMarker); i >= 0 {
+		c = c[:i]
 	}
-	if i := strings.Index(m.Content, AttachedFilesMarker); i >= 0 {
-		return m.Content[:i]
+	if len(m.Attachments) > 0 {
+		if i := strings.Index(c, AttachedFilesMarker); i >= 0 {
+			c = c[:i]
+		}
 	}
-	return m.Content
+	return c
 }
 
 // BeginWithAttachments is Begin with images and files attached to the user's

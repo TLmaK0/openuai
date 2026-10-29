@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"openuai/internal/hooks"
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 	"openuai/internal/tools"
@@ -109,6 +110,13 @@ type Agent struct {
 	permMode    string // permission mode (sub-agents); "" is the normal one
 	compactAt   int    // estimated tokens that trigger compaction (0: never)
 
+	// Hooks (see hooks.go): loaded on each event so edits apply at once.
+	hooks      func() *hooks.Set
+	workDir    string
+	agentType  string // set for sub-agents
+	agentID    string
+	stopBlocks int // Stop hook continuations in a row
+
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
 	lastErrorMsg   string
@@ -146,6 +154,13 @@ type Config struct {
 	// CompactAtTokens, when > 0, makes the agent summarize its older history
 	// once the context grows past that estimated size, instead of failing.
 	CompactAtTokens int
+	// Hooks returns the active hooks; nil means none.
+	Hooks func() *hooks.Set
+	// WorkDir is where hooks run.
+	WorkDir string
+	// AgentType and AgentID identify a sub-agent to its hooks.
+	AgentType string
+	AgentID   string
 }
 
 func New(cfg Config) *Agent {
@@ -191,6 +206,10 @@ func New(cfg Config) *Agent {
 		effort:      cfg.Effort,
 		permMode:    cfg.PermissionMode,
 		compactAt:   cfg.CompactAtTokens,
+		hooks:       cfg.Hooks,
+		workDir:     cfg.WorkDir,
+		agentType:   cfg.AgentType,
+		agentID:     cfg.AgentID,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -257,6 +276,13 @@ func (a *Agent) loop(ctx context.Context) error {
 					Role:    llm.RoleAssistant,
 					Content: resp.Content,
 				})
+				// A Stop hook may ask the agent to keep going.
+				if more, note := a.stopHook(ctx, resp.Content); more {
+					a.emit(StepResult{Type: "text", Content: resp.Content})
+					a.emit(StepResult{Type: "error", Content: "Stop hook: " + note})
+					a.saveCheckpoint()
+					continue
+				}
 				a.emit(StepResult{Type: "done", Content: resp.Content})
 				return nil
 			}
@@ -305,8 +331,30 @@ func (a *Agent) loop(ctx context.Context) error {
 
 			logger.Info("Tool call: %s id=%s args=%v", tc.Name, tc.ID, tc.Arguments)
 			a.emit(StepResult{Type: "tool_call", Content: commandDesc, ToolName: tc.Name})
+			a.stopBlocks = 0
 
-			if ok, why := a.allowTool(ctx, def.Name, def.RequiresPermission, commandDesc); !ok {
+			// PreToolUse hooks can block the call, approve it or change its input.
+			args := tc.Arguments
+			pre := a.runHook(ctx, hooks.PreToolUse, tc.Name, map[string]any{"tool_name": tc.Name, "tool_input": argsAny(args), "tool_use_id": tc.ID})
+			notes := hookNotes(pre)
+			if pre.Decision == "deny" {
+				logger.Info("Tool %s blocked by a hook: %s", tc.Name, pre.Reason)
+				a.messages = append(a.messages, llm.Message{
+					Role:       llm.RoleToolResult,
+					ToolCallID: tc.ID,
+					Content:    withNotes("Error: blocked by a hook: "+pre.Reason, notes),
+				})
+				a.emit(StepResult{Type: "error", Content: "Blocked by a hook: " + pre.Reason})
+				a.saveCheckpoint()
+				continue
+			}
+			if pre.UpdatedInput != nil {
+				args = argsString(pre.UpdatedInput)
+				commandDesc = formatNativeToolCallDesc(llm.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: args})
+				logger.Info("Tool %s input changed by a hook: %v", tc.Name, args)
+			}
+
+			if ok, why := a.toolAllowed(ctx, pre, def.Name, def.RequiresPermission, commandDesc); !ok {
 				errMsg := "Permission denied for: " + tc.Name
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,
@@ -319,7 +367,7 @@ func (a *Agent) loop(ctx context.Context) error {
 
 			// Execute tool
 			logger.Info("Executing tool: %s", tc.Name)
-			result := tool.Execute(ctx, tc.Arguments)
+			result := tool.Execute(ctx, args)
 			logger.Info("Tool result: output_len=%d error=%q", len(result.Output), result.Error)
 
 			var resultContent string
@@ -351,6 +399,8 @@ func (a *Agent) loop(ctx context.Context) error {
 				truncated := resultContent[:maxToolResultBytes]
 				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes. Do NOT assume the content ended here â for web_fetch call it again with offset set to the number of bytes already shown; for bash, narrow the command.]", len(resultContent), maxToolResultBytes)
 			}
+
+			resultContent = a.postToolHooks(ctx, tc, args, result.Output, result.Error, resultContent, notes)
 
 			a.messages = append(a.messages, llm.Message{
 				Role:       llm.RoleToolResult,

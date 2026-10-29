@@ -18,6 +18,7 @@ import (
 	"openuai/internal/computeruse"
 	"openuai/internal/config"
 	"openuai/internal/eventbus"
+	"openuai/internal/hooks"
 	"openuai/internal/lipreading"
 	"openuai/internal/llm"
 	// Registers the providers that ship in the binary. This blank import is
@@ -734,6 +735,8 @@ func (a *App) ensureAgent() *agent.Agent {
 			Permissions: a.permissions,
 			CostTracker: a.costTracker,
 			MemoryText:  a.memoryStore.LoadIndex(),
+			Hooks:       a.loadHooks,
+			WorkDir:     a.GetWorkDir(),
 			// Save after every tool call and result, not only at the end of the
 			// turn: a restart mid-turn must not lose the work already shown.
 			OnCheckpoint: func(ag *agent.Agent) { a.saveSession(ag) },
@@ -797,6 +800,28 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 			name := a.cfg.Provider()
 			return ChatResponse{Refused: true, Error: "The selected provider (" + name + ") cannot see images. Remove the images or switch to a provider that supports them (Claude, Claude Code, OpenAI)."}
 		}
+	}
+
+	// UserPromptSubmit hooks can block the message or add context to it.
+	if hs := a.loadHooks(); hs.Has(hooks.UserPromptSubmit) {
+		r := hs.Run(a.ctx, hooks.UserPromptSubmit, "", map[string]any{"session_id": "openuai", "prompt": content}, a.GetWorkDir())
+		logger.Info("UserPromptSubmit hooks: ran=%d decision=%q context=%d errors=%d", r.Ran, r.Decision, len(r.Context), len(r.Errors))
+		for _, e := range r.Errors {
+			logger.Error("Hook error: %s", e)
+			a.emitHookError(e)
+		}
+		if r.Decision == "block" || r.StopAll {
+			reason := r.Reason
+			if reason == "" {
+				reason = r.StopReason
+			}
+			return ChatResponse{Refused: true, Error: "Blocked by a hook: " + reason}
+		}
+		notes := append([]string(nil), r.Context...)
+		for _, e := range r.Errors {
+			notes = append(notes, "Hook error: "+e)
+		}
+		content = agent.WithHookContext(content, notes)
 	}
 
 	a.agentMu.Lock()
@@ -1090,6 +1115,11 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		if at.Effort == "" && def != nil {
 			at.Effort = def.Effort
 		}
+		at.Hooks = subagents.HookSet(def)
+		at.WorkDir = workDir
+		if wt := worktrees[t.ID]; wt != nil {
+			at.WorkDir = wt.Dir
+		}
 		if def != nil {
 			at.PermissionMode = def.PermissionMode
 		}
@@ -1104,6 +1134,8 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
 		TranscriptDir: transcriptDir,
+		Hooks:         a.loadHooks,
+		WorkDir:       workDir,
 		// One limit for the whole tree: top-level tasks wait for a free slot,
 		// nested ones fail at once (waiting while the parent holds its slot
 		// could deadlock).

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"openuai/internal/hooks"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,9 @@ type SubAgentConfig struct {
 	// TranscriptDir, when set, is where each sub-agent's work is saved so it
 	// can be resumed later (see Transcript).
 	TranscriptDir string
+	// Hooks returns the user/project hooks; WorkDir is where hooks run.
+	Hooks   func() *hooks.Set
+	WorkDir string
 }
 
 // SubAgentTask is a single task to assign to a sub-agent.
@@ -74,6 +79,10 @@ type SubAgentTask struct {
 	// ResumeID continues a previous sub-agent (its agent_id) with its full
 	// history; Description is then the new message for it.
 	ResumeID string
+	// Hooks are the hooks of the sub-agent's definition, active only while
+	// it runs; WorkDir overrides SubAgentConfig.WorkDir (isolated worktree).
+	Hooks   *hooks.Set
+	WorkDir string
 }
 
 // SubAgentResult holds the outcome of a single sub-agent run.
@@ -190,6 +199,36 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 
 	tracker := llm.NewCostTracker()
 
+	agentType := task.Agent
+	if agentType == "" {
+		agentType = "general-purpose"
+	}
+	workDir := cfg.WorkDir
+	if task.WorkDir != "" {
+		workDir = task.WorkDir
+	}
+	hookFn := func() *hooks.Set {
+		var base *hooks.Set
+		if cfg.Hooks != nil {
+			base = cfg.Hooks()
+		}
+		return base.Merge(task.Hooks)
+	}
+	// SubagentStart hooks can add context to the sub-agent's prompt.
+	if hs := hookFn(); hs.Has(hooks.SubagentStart) {
+		r := hs.Run(runCtx, hooks.SubagentStart, agentType, map[string]any{"session_id": "openuai", "agent_id": agentID, "agent_type": agentType}, workDir)
+		logger.Info("[sub-agent:%s] SubagentStart hooks: ran=%d context=%d errors=%d", task.ID, r.Ran, len(r.Context), len(r.Errors))
+		for _, e := range r.Errors {
+			logger.Error("[sub-agent:%s] Hook error: %s", task.ID, e)
+			if cfg.OnStep != nil {
+				cfg.OnStep(task.ID, StepResult{Type: "error", Content: "Hook error: " + e})
+			}
+		}
+		if notes := hookNotes(r); len(notes) > 0 {
+			prompt += "\n\n## Context from hooks\n" + strings.Join(notes, "\n")
+		}
+	}
+
 	var onStep func(StepResult)
 	if cfg.OnStep != nil {
 		onStep = func(step StepResult) {
@@ -210,6 +249,10 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		// A long run compacts its own context instead of dying when it fills up.
 		CompactAtTokens: DefaultSubAgentCompactTokens,
 		PermissionMode:  task.PermissionMode,
+		Hooks:           hookFn,
+		WorkDir:         workDir,
+		AgentType:       agentType,
+		AgentID:         agentID,
 	})
 	if history != nil {
 		ag.SetHistory(history)
