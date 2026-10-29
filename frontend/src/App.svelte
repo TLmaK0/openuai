@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -383,6 +383,8 @@
   let loggingIn = false;
   let secret = '';
   let showSettings = false;
+  let hookList = { entries: [], warnings: [] };
+  async function refreshHooks() { try { hookList = (await GetHooks()) || { entries: [] }; } catch (e) { hookList = { entries: [], warnings: [String(e)] }; } }
   let models = [];
   let selectedModel = '';
   let totalCost = 0;
@@ -1740,7 +1742,7 @@
       </span>
       <button class="icon-btn" class:icon-btn-active={showSessions} on:click={toggleSessions}>Sessions</button>
       <button class="icon-btn" class:icon-btn-active={showEvents} on:click={toggleEvents}>Events{eventLog.length > 0 ? ` (${eventLog.length})` : ''}</button>
-      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) await refreshMCPServers(); }}>Settings</button>
+      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) { refreshHooks(); await refreshMCPServers(); } }}>Settings</button>
     </div>
   </header>
 
@@ -1793,6 +1795,19 @@
         </div>
       </div>
 
+      <div class="settings-group">
+        <div class="settings-group-title">Hooks</div>
+        {#if hookList.entries?.length}
+          {#each hookList.entries as h}
+            <div class="setting-row hook-row"><label>{h.event}{h.matcher ? ' · ' + h.matcher : ''}</label><code class="hook-cmd" title={h.command}>{h.command}</code><span class="hook-src">{h.source}</span></div>
+          {/each}
+        {:else}
+          <div class="setting-row"><label></label><span class="voice-status">No hooks. Add them in ~/.config/openuai/hooks.json or .openuai/hooks.json of the project.</span></div>
+        {/if}
+        {#each hookList.warnings || [] as w}
+          <div class="setting-row"><label></label><span class="voice-status voice-status-err">{w}</span></div>
+        {/each}
+      </div>
       <div class="settings-group">
         <div class="settings-group-title">Voice</div>
         <div class="setting-row">
@@ -2348,6 +2363,8 @@
   .attach-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
   .attach-x { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px; padding: 0; border-radius: 50%; border: none; background: rgba(0,0,0,0.7); color: #fff; cursor: pointer; font-size: 13px; }
   .attach-error { color: #ff8fa3; font-size: 0.8rem; }
+  .hook-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: #c5d3e8; }
+  .hook-src { color: #8a9bb3; font-size: 0.72rem; margin-left: 0.4rem; }
   .file-chip { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 260px; padding: 0.25rem 0.5rem; border: 1px solid #2a3b55; border-radius: 8px; background: #101a2a; color: #c5d3e8; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.file-chip { cursor: pointer; }
   button.file-chip:hover { border-color: #4a6a95; color: #fff; }

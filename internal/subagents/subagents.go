@@ -24,6 +24,8 @@ import (
 	"openuai/internal/tools"
 
 	"openuai/internal/llm"
+
+	"openuai/internal/hooks"
 )
 
 const (
@@ -65,6 +67,7 @@ type Definition struct {
 	Color           string          // display colour name (see Colors); empty: automatic
 	PermissionMode  string          // "", acceptEdits, dontAsk or plan
 	Background      bool            // always run detached from the turn that launches it
+	Hooks           hooks.Config    // hooks active only while this sub-agent runs
 	Prompt          string
 	Path            string
 	Scope           string
@@ -104,20 +107,21 @@ func splitList(s string) []string {
 
 // frontmatter holds the supported fields. Unknown fields are ignored.
 type frontmatter struct {
-	Name            string      `yaml:"name"`
-	Description     string      `yaml:"description"`
-	Tools           *StringList `yaml:"tools"`
-	DisallowedTools StringList  `yaml:"disallowedTools"`
-	Model           string      `yaml:"model"`
-	MaxTurns        int         `yaml:"maxTurns"`
-	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
-	Isolation       string      `yaml:"isolation"`
-	MCPServers      []yaml.Node `yaml:"mcpServers"`
-	Memory          string      `yaml:"memory"`
-	Effort          string      `yaml:"effort"`
-	Color           string      `yaml:"color"`
-	PermissionMode  string      `yaml:"permissionMode"`
-	Background      bool        `yaml:"background"`
+	Name            string       `yaml:"name"`
+	Description     string       `yaml:"description"`
+	Tools           *StringList  `yaml:"tools"`
+	DisallowedTools StringList   `yaml:"disallowedTools"`
+	Model           string       `yaml:"model"`
+	MaxTurns        int          `yaml:"maxTurns"`
+	OmitAgentsMd    bool         `yaml:"omitAgentsMd"`
+	Isolation       string       `yaml:"isolation"`
+	MCPServers      []yaml.Node  `yaml:"mcpServers"`
+	Memory          string       `yaml:"memory"`
+	Effort          string       `yaml:"effort"`
+	Color           string       `yaml:"color"`
+	PermissionMode  string       `yaml:"permissionMode"`
+	Background      bool         `yaml:"background"`
+	Hooks           hooks.Config `yaml:"hooks"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -157,6 +161,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	defHooks, err := parseHooks(fm.Hooks)
+	if err != nil {
+		return nil, err
+	}
 	isolation := strings.ToLower(strings.TrimSpace(fm.Isolation))
 	if isolation != "" && isolation != IsolationWorktree {
 		return nil, fmt.Errorf("invalid isolation %q: the only value is worktree", fm.Isolation)
@@ -195,6 +203,7 @@ func Parse(data []byte) (*Definition, error) {
 		Color:           color,
 		PermissionMode:  permMode,
 		Background:      fm.Background,
+		Hooks:           defHooks,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {

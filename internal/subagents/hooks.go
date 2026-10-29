@@ -1,0 +1,51 @@
+package subagents
+
+import (
+	"fmt"
+	"strings"
+
+	"openuai/internal/hooks"
+)
+
+// parseHooks validates a definition's hooks. As in Claude Code, a Stop hook
+// in a sub-agent definition becomes SubagentStop (the event a sub-agent
+// fires when it finishes).
+func parseHooks(cfg hooks.Config) (hooks.Config, error) {
+	if len(cfg) == 0 {
+		return nil, nil
+	}
+	out := hooks.Config{}
+	for ev, groups := range cfg {
+		if ev == hooks.Stop {
+			ev = hooks.SubagentStop
+		}
+		ok := false
+		for _, k := range hooks.Events {
+			if ev == k {
+				ok = true
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("hooks: event %q is not supported (use %s)", ev, strings.Join(hooks.Events, ", "))
+		}
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if h.Type != "command" || strings.TrimSpace(h.Command) == "" {
+					return nil, fmt.Errorf("hooks: %s needs type: command and a command", ev)
+				}
+			}
+		}
+		out[ev] = append(out[ev], groups...)
+	}
+	return out, nil
+}
+
+// HookSet returns the hooks of d as a set (nil when it has none).
+func HookSet(d *Definition) *hooks.Set {
+	if d == nil || len(d.Hooks) == 0 {
+		return nil
+	}
+	s := &hooks.Set{}
+	s.Add(d.Hooks, "agent:"+d.Name)
+	return s
+}
