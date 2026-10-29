@@ -249,7 +249,12 @@ func (a *App) startup(ctx context.Context) {
 	// Permissions
 	a.permissions = agent.NewPermissionManager(
 		cfg.ConfigDir(),
-		func(tool, command string) (agent.PermissionLevel, bool) {
+		func(ctx context.Context, tool, command string) (agent.PermissionLevel, bool) {
+			// Drop an answer left over from a request that was cancelled.
+			select {
+			case <-a.permResponse:
+			default:
+			}
 			logger.Info("Permission request: tool=%s command=%s", tool, command)
 			wailsRuntime.EventsEmit(a.ctx, "permission_request", map[string]string{
 				"tool":    tool,
@@ -261,9 +266,19 @@ func (a *App) startup(ctx context.Context) {
 					"command": command,
 				})
 			}
-			answer := <-a.permResponse
-			logger.Info("Permission response: approved=%v level=%v", answer.approved, answer.level)
-			return answer.level, answer.approved
+			select {
+			case answer := <-a.permResponse:
+				logger.Info("Permission response: approved=%v level=%v", answer.approved, answer.level)
+				return answer.level, answer.approved
+			case <-ctx.Done():
+				// Stop / Esc: close the dialog and deny.
+				logger.Info("Permission request cancelled: tool=%s", tool)
+				wailsRuntime.EventsEmit(a.ctx, "permission_cancelled", map[string]string{"tool": tool})
+				if a.apiServer != nil {
+					a.apiServer.Broadcast("permission_cancelled", "", map[string]string{"tool": tool})
+				}
+				return agent.PermAlways, false
+			}
 		},
 	)
 
