@@ -64,6 +64,7 @@ type Definition struct {
 	Effort          string          // low, medium, high, xhigh, max; empty: the session default
 	Color           string          // display colour name (see Colors); empty: automatic
 	PermissionMode  string          // "", acceptEdits, dontAsk or plan
+	Background      bool            // always run detached from the turn that launches it
 	Prompt          string
 	Path            string
 	Scope           string
@@ -116,6 +117,7 @@ type frontmatter struct {
 	Effort          string      `yaml:"effort"`
 	Color           string      `yaml:"color"`
 	PermissionMode  string      `yaml:"permissionMode"`
+	Background      bool        `yaml:"background"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -192,6 +194,7 @@ func Parse(data []byte) (*Definition, error) {
 		Effort:          effort,
 		Color:           color,
 		PermissionMode:  permMode,
+		Background:      fm.Background,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {

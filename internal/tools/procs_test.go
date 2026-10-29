@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"openuai/internal/procs"
 )
@@ -25,9 +26,19 @@ func TestProcToolsFlow(t *testing.T) {
 	if r := (ProcWrite{m}).Execute(ctx, map[string]string{"id": "p1", "input": "y", "keys": "enter"}); r.Error != "" {
 		t.Fatal(r.Error)
 	}
-	r := ProcRead{m}.Execute(ctx, map[string]string{"id": "p1", "wait": "5"})
-	if r.Error != "" || !strings.Contains(r.Output, "answer=y") {
-		t.Fatalf("read: %+v", r)
+	// A read returns as soon as there is new output (e.g. the echo of "y"),
+	// so keep reading until the answer shows up.
+	var out strings.Builder
+	deadline := time.Now().Add(8 * time.Second)
+	for !strings.Contains(out.String(), "answer=y") && time.Now().Before(deadline) {
+		r := ProcRead{m}.Execute(ctx, map[string]string{"id": "p1", "wait": "2"})
+		if r.Error != "" {
+			t.Fatalf("read: %+v", r)
+		}
+		out.WriteString(r.Output)
+	}
+	if !strings.Contains(out.String(), "answer=y") {
+		t.Fatalf("read: answer missing in %q", out.String())
 	}
 	if !strings.Contains(ProcList{m}.Execute(ctx, nil).Output, "p1") {
 		t.Fatal("list misses p1")

@@ -911,6 +911,25 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		}
 		return out
 	}
+	// Background sub-agents (task "background" or definition background: true)
+	// run detached from this turn; only the main conversation launches them.
+	if scope.depth == 0 && !inBackgroundRun(ctx) {
+		var fg, bg []tools.SubTask
+		for _, t := range tasks {
+			name := t.Agent
+			if name == "" {
+				name = subagents.BuiltinGeneral
+			}
+			if d := defs.Defs[name]; t.Background || (d != nil && d.Background) {
+				bg = append(bg, t)
+			} else {
+				fg = append(fg, t)
+			}
+		}
+		if len(bg) > 0 {
+			return a.spawnWithBackground(ctx, fg, bg)
+		}
+	}
 	baseRegistry := a.registry
 	if scope.registry != nil {
 		baseRegistry = scope.registry
