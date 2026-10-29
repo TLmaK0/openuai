@@ -9,7 +9,8 @@ import (
 
 // parseHooks validates a definition's hooks. As in Claude Code, a Stop hook
 // in a sub-agent definition becomes SubagentStop (the event a sub-agent
-// fires when it finishes).
+// fires when it finishes). Claude Code events OpenUAI has no counterpart for
+// are accepted and ignored.
 func parseHooks(cfg hooks.Config) (hooks.Config, error) {
 	if len(cfg) == 0 {
 		return nil, nil
@@ -19,19 +20,16 @@ func parseHooks(cfg hooks.Config) (hooks.Config, error) {
 		if ev == hooks.Stop {
 			ev = hooks.SubagentStop
 		}
-		ok := false
-		for _, k := range hooks.Events {
-			if ev == k {
-				ok = true
-			}
+		if hooks.SkippedEvent(ev) {
+			continue
 		}
-		if !ok {
+		if !hooks.ValidEvent(ev) {
 			return nil, fmt.Errorf("hooks: event %q is not supported (use %s)", ev, strings.Join(hooks.Events, ", "))
 		}
 		for _, g := range groups {
 			for _, h := range g.Hooks {
-				if h.Type != "command" || strings.TrimSpace(h.Command) == "" {
-					return nil, fmt.Errorf("hooks: %s needs type: command and a command", ev)
+				if err := h.Check(ev); err != nil {
+					return nil, fmt.Errorf("hooks: %s: %v", ev, err)
 				}
 			}
 		}

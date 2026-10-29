@@ -55,7 +55,12 @@ func NewPermissionManager(configDir string, requestApproval func(ctx context.Con
 // tools that need no permission) keep working while a dialog is open, and
 // cancelling ctx (Stop / Esc) ends the wait at once with a denial.
 func (pm *PermissionManager) Check(ctx context.Context, toolName string, requiredPerm string, commandDesc string) bool {
-	if pm.allowedNow(toolName, requiredPerm) {
+	return pm.check(ctx, toolName, requiredPerm, commandDesc, false)
+}
+
+// check is Check; force asks the user even when the tool is already allowed.
+func (pm *PermissionManager) check(ctx context.Context, toolName string, requiredPerm string, commandDesc string, force bool) bool {
+	if !force && pm.allowedNow(toolName, requiredPerm) {
 		return true
 	}
 	if pm.requestApproval == nil {
@@ -68,7 +73,7 @@ func (pm *PermissionManager) Check(ctx context.Context, toolName string, require
 	}
 	defer func() { <-pm.ask }()
 	// Another agent may have been allowed it while we waited for the dialog.
-	if pm.allowedNow(toolName, requiredPerm) {
+	if !force && pm.allowedNow(toolName, requiredPerm) {
 		return true
 	}
 	if ctx.Err() != nil {

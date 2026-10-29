@@ -102,7 +102,7 @@ func TestMatcherRules(t *testing.T) {
 		"^mcp_github_.*":   {"mcp_github_get": true, "bash": false},
 		"file\\b":          {"write_file": true},
 	} {
-		f, err := compileMatcher(m)
+		f, err := compileMatcher(PreToolUse, m)
 		if err != nil {
 			t.Fatal(err)
 		}

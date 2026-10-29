@@ -35,7 +35,7 @@ func (m *mockProvider) Chat(ctx context.Context, _ []llm.Message, _ string) (*ll
 	}, nil
 }
 
-func (m *mockProvider) Name() string    { return "mock" }
+func (m *mockProvider) Name() string     { return "mock" }
 func (m *mockProvider) Models() []string { return []string{"mock"} }
 
 // mockToolProvider implements llm.ToolCallProvider — simulates an LLM that
