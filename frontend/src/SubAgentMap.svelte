@@ -109,9 +109,10 @@
     overflow: visible;
   }
   g { transition: opacity 0.6s ease; }
-  .active .link, .newest .link { stroke-dasharray: 5 4; animation: flow 0.9s linear infinite; }
+  .active .link { stroke-dasharray: 5 4; animation: flow 0.9s linear infinite; }
+  .newest:not(.active) .link { stroke-dasharray: 5 4; }
   @keyframes flow { to { stroke-dashoffset: -9; } }
   @media (prefers-reduced-motion: reduce) {
-    .active .link, .newest .link { animation: none; }
+    .active .link { animation: none; }
   }
 </style>
