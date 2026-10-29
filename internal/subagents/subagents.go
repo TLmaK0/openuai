@@ -58,6 +58,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	Isolation       string          // "worktree": run in a temporary git worktree
 	MCPServers      []MCPServerSpec // mcpServers: references and inline servers
 	Memory          string          // persistent memory scope: user, project, local; empty: none
 	Effort          string          // low, medium, high, xhigh, max; empty: the session default
@@ -109,6 +110,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	Isolation       string      `yaml:"isolation"`
 	MCPServers      []yaml.Node `yaml:"mcpServers"`
 	Memory          string      `yaml:"memory"`
 	Effort          string      `yaml:"effort"`
@@ -153,6 +155,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	isolation := strings.ToLower(strings.TrimSpace(fm.Isolation))
+	if isolation != "" && isolation != IsolationWorktree {
+		return nil, fmt.Errorf("invalid isolation %q: the only value is worktree", fm.Isolation)
+	}
 	mcpServers, err := parseMCPServers(fm.MCPServers)
 	if err != nil {
 		return nil, err
@@ -180,6 +186,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		Isolation:       isolation,
 		MCPServers:      mcpServers,
 		Memory:          mem,
 		Effort:          effort,
