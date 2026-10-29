@@ -936,6 +936,9 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
 		taskRegistries[t.ID] = registry
 		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		if def != nil {
+			at.PermissionMode = def.PermissionMode
+		}
 		agentTasks[i] = at
 	}
 

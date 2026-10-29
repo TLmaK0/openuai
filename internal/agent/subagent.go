@@ -58,6 +58,8 @@ type SubAgentTask struct {
 	Registry     *tools.Registry
 	SystemPrompt string
 	MaxTurns     int
+	// PermissionMode is the permission mode from the definition (PermMode*).
+	PermissionMode string
 	// Notice is passed through to the result (e.g. a model fallback).
 	Notice string
 	// SetupError fails the task without running it.
@@ -165,14 +167,15 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 
 	ag := New(Config{
-		Provider:     cfg.Provider,
-		Model:        model,
-		Registry:     registry,
-		Permissions:  cfg.Permissions,
-		CostTracker:  tracker,
-		OnStep:       onStep,
-		SystemPrompt: prompt,
-		MaxTurns:     task.MaxTurns,
+		Provider:       cfg.Provider,
+		Model:          model,
+		Registry:       registry,
+		Permissions:    cfg.Permissions,
+		CostTracker:    tracker,
+		OnStep:         onStep,
+		SystemPrompt:   prompt,
+		MaxTurns:       task.MaxTurns,
+		PermissionMode: task.PermissionMode,
 	})
 
 	err := ag.Run(runCtx, task.Description)

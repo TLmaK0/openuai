@@ -56,6 +56,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	PermissionMode  string // "", acceptEdits, dontAsk or plan
 	Prompt          string
 	Path            string
 	Scope           string
@@ -102,6 +103,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	PermissionMode  string      `yaml:"permissionMode"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -141,6 +143,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	permMode, okMode := permissionModes[strings.ToLower(strings.TrimSpace(fm.PermissionMode))]
+	if strings.TrimSpace(fm.PermissionMode) != "" && !okMode {
+		return nil, fmt.Errorf("invalid permissionMode %q: use default, acceptEdits, auto, dontAsk, bypassPermissions or plan", fm.PermissionMode)
+	}
 	d := &Definition{
 		Name:            name,
 		Description:     strings.TrimSpace(fm.Description),
@@ -148,6 +154,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		PermissionMode:  permMode,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {
@@ -155,6 +162,16 @@ func Parse(data []byte) (*Definition, error) {
 		d.Tools = []string(*fm.Tools)
 	}
 	return d, nil
+}
+
+// permissionModes maps the accepted permissionMode values (Claude Code names,
+// any case) to the mode the sub-agent runs in. OpenUAI's main conversation
+// always runs in the default mode, so, as Claude Code does in that case,
+// bypassPermissions keeps the default mode, and auto (not available here)
+// falls back to it too.
+var permissionModes = map[string]string{
+	"": "", "default": "", "manual": "", "auto": "", "bypasspermissions": "",
+	"acceptedits": "acceptEdits", "dontask": "dontAsk", "plan": "plan",
 }
 
 // Set is the result of loading every definition directory.
