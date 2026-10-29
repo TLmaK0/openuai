@@ -27,14 +27,16 @@ type CatalogEntry struct {
 	Category    Category          `json:"category"`
 	Command     string            `json:"command"`
 	Args        []string          `json:"args"`
-	Env         map[string]string `json:"env,omitempty"`   // values may contain {{PLACEHOLDER}}
-	AuthType    AuthType          `json:"auth_type"`       // none, api_key, oauth
-	AuthLabel   string            `json:"auth_label"`      // UI label, e.g. "GitHub Personal Access Token"
-	AuthEnvVar  string            `json:"auth_env_var"`    // env var name where the secret goes
+	Env         map[string]string `json:"env,omitempty"` // values may contain {{PLACEHOLDER}}
+	AuthType    AuthType          `json:"auth_type"`     // none, api_key, oauth
+	AuthLabel   string            `json:"auth_label"`    // UI label, e.g. "GitHub Personal Access Token"
+	AuthEnvVar  string            `json:"auth_env_var"`  // env var name where the secret goes
 	Subscribe   []string          `json:"subscribe,omitempty"`
 }
 
-// Catalog is the built-in curated list of MCP servers.
+// Catalog is the built-in curated list of MCP servers, the offline fallback
+// for the registry. Keep it in step with registry/marketplace.json (a test
+// checks that both hold the same entries).
 var Catalog = []CatalogEntry{
 	{
 		Name:        "Google Drive",
@@ -114,17 +116,9 @@ var Catalog = []CatalogEntry{
 	},
 }
 
-// GetCatalog returns all catalog entries.
-func GetCatalog() []CatalogEntry {
-	return Catalog
-}
-
-// GetByName returns a catalog entry by name, or nil if not found.
-func GetByName(name string) *CatalogEntry {
-	for i := range Catalog {
-		if Catalog[i].Name == name {
-			return &Catalog[i]
-		}
-	}
-	return nil
+// Builtin returns a copy of the catalog compiled into the app. It is the
+// fallback shown when the registry cannot be reached and nothing is cached;
+// registry/marketplace.json is the catalog that is normally shown.
+func Builtin() []CatalogEntry {
+	return append([]CatalogEntry(nil), Catalog...)
 }

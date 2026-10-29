@@ -93,6 +93,10 @@ type settings struct {
 	ComputerUseMonitor   *int              `json:"computer_use_monitor,omitempty"` // monitor index (xrandr); nil = primary (0), -1 = whole desktop
 	ComputerUseProfile   string            `json:"computer_use_profile,omitempty"` // chrome user-data-dir; empty = the user's own profile/session
 
+	// MarketplaceURL is the registry the marketplace catalog is read from;
+	// empty means marketplace.DefaultRegistryURL.
+	MarketplaceURL string `json:"marketplace_url,omitempty"`
+
 	// Skills (Claude Code's skillOverrides, disableSkillShellExecution,
 	// skill listing budget and per-entry cap).
 	SkillOverrides             map[string]string `json:"skill_overrides,omitempty"`
@@ -582,6 +586,16 @@ func (c *Config) SetBetaLipReading(enabled bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data.BetaLipReading = enabled
+}
+
+// --- Marketplace ---
+
+// MarketplaceURL returns the configured marketplace registry URL, or "" for
+// the default one.
+func (c *Config) MarketplaceURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data.MarketplaceURL
 }
 
 // --- Computer use ---

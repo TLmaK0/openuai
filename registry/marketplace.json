@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "servers": [
+    {
+      "name": "Google Drive",
+      "description": "List, read and search Google Drive files",
+      "icon": "GD",
+      "category": "Office",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-gdrive"
+      ],
+      "auth_type": "oauth",
+      "auth_label": "Google OAuth (configured in server)",
+      "auth_env_var": ""
+    },
+    {
+      "name": "GitHub",
+      "description": "Repos, issues, pull requests, code search",
+      "icon": "GH",
+      "category": "Dev",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{{SECRET}}"
+      },
+      "auth_type": "api_key",
+      "auth_label": "GitHub Personal Access Token",
+      "auth_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"
+    },
+    {
+      "name": "Slack",
+      "description": "Channels, messages, users, search",
+      "icon": "SL",
+      "category": "Office",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-slack"
+      ],
+      "env": {
+        "SLACK_BOT_TOKEN": "{{SECRET}}"
+      },
+      "auth_type": "api_key",
+      "auth_label": "Slack Bot Token (xoxb-...)",
+      "auth_env_var": "SLACK_BOT_TOKEN"
+    },
+    {
+      "name": "PostgreSQL",
+      "description": "Query tables, inspect schema, run SQL",
+      "icon": "PG",
+      "category": "Dev",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "{{SECRET}}"
+      ],
+      "auth_type": "api_key",
+      "auth_label": "PostgreSQL connection string",
+      "auth_env_var": "_ARG_SECRET"
+    },
+    {
+      "name": "Git",
+      "description": "Read, search and manage git repositories",
+      "icon": "GT",
+      "category": "Dev",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-git"
+      ],
+      "auth_type": "none",
+      "auth_label": "",
+      "auth_env_var": ""
+    },
+    {
+      "name": "Puppeteer",
+      "description": "Browser automation, screenshots, scraping",
+      "icon": "PP",
+      "category": "Search",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer"
+      ],
+      "env": {
+        "ALLOW_DANGEROUS": "true",
+        "PUPPETEER_LAUNCH_OPTIONS": "{\"args\":[\"--no-sandbox\",\"--disable-setuid-sandbox\"]}"
+      },
+      "auth_type": "none",
+      "auth_label": "",
+      "auth_env_var": ""
+    },
+    {
+      "name": "Playwright",
+      "description": "Browser automation, can connect to existing browsers",
+      "icon": "PW",
+      "category": "Search",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--cdp-endpoint",
+        "http://127.0.0.1:9222"
+      ],
+      "auth_type": "none",
+      "auth_label": "",
+      "auth_env_var": ""
+    }
+  ]
+}

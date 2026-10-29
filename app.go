@@ -46,6 +46,7 @@ type App struct {
 	skills     skillState      // files worked on, skill usage, forks running (app_skills.go)
 	ctx        context.Context
 	cfg        *config.Config
+	market     marketplaceState // marketplace registry store (app_marketplace.go)
 	// providers is written while the app runs — a plugin can be added or
 	// removed from the settings screen — and read from the goroutines that
 	// run agent turns, so it is guarded.
@@ -1536,8 +1537,16 @@ func (a *App) GetCostSummary() llm.CostSummary {
 
 // --- Marketplace ---
 
-func (a *App) GetMarketplace() []marketplace.CatalogEntry {
-	return marketplace.GetCatalog()
+// GetMarketplace returns the marketplace catalog: from the registry (cached
+// for a day), or, when it cannot be reached, from the last download or the
+// built-in list, with a notice saying so.
+func (a *App) GetMarketplace() marketplace.Listing {
+	return logMarketplace(a.marketplaceStore().Get(a.marketplaceCtx()))
+}
+
+// RefreshMarketplace downloads the catalog from the registry now.
+func (a *App) RefreshMarketplace() marketplace.Listing {
+	return logMarketplace(a.marketplaceStore().Refresh(a.marketplaceCtx()))
 }
 
 func (a *App) GetInstalledNames() []string {
@@ -1553,7 +1562,7 @@ func (a *App) CheckNpx() bool {
 }
 
 func (a *App) InstallMarketplace(name, secret string) string {
-	entry := marketplace.GetByName(name)
+	entry := a.marketplaceStore().Lookup(a.marketplaceCtx(), name)
 	if entry == nil {
 		return "unknown marketplace entry: " + name
 	}
