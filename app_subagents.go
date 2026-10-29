@@ -73,6 +73,9 @@ type subAgentScope struct {
 	depth    int    // 0: main conversation
 	key      string // key of the sub-agent that is delegating ("" for main)
 	registry *tools.Registry
+	// dir is the directory the delegating sub-agent works in when it is not
+	// the app's (spawn_agents cwd); its children inherit it.
+	dir string
 }
 
 type subAgentScopeKey struct{}
