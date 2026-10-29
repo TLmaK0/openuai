@@ -85,6 +85,9 @@ type SubAgentTask struct {
 	// it runs; WorkDir overrides SubAgentConfig.WorkDir (isolated worktree).
 	Hooks   *hooks.Set
 	WorkDir string
+	// Allow pre-approves tool calls for the whole run (a skill's
+	// allowed-tools when the skill runs in a sub-agent).
+	Allow func(tool, arg string) bool
 }
 
 // SubAgentResult holds the outcome of a single sub-agent run.
@@ -270,6 +273,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		WorkDir:         workDir,
 		AgentType:       agentType,
 		AgentID:         agentID,
+		Allow:           task.Allow,
 		SessionID:       cfg.SessionID,
 	})
 	if history != nil {

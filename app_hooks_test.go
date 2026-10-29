@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,12 +54,12 @@ func TestUserPromptExpansionHook(t *testing.T) {
 		_ = os.MkdirAll(d, 0o755)
 		_ = os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("---\nname: "+n+"\ndescription: test\n---\nDo "+n), 0o644)
 	}
-	if _, _, err := a.expandSkillInvocation("/deploy staging"); err == nil || !strings.Contains(err.Error(), "staging|slash_command") {
+	if _, err := a.planSkillInvocation(context.Background(), "/deploy staging"); err == nil || !strings.Contains(err.Error(), "staging|slash_command") {
 		t.Fatalf("deploy must be blocked with the hook's stderr: %v", err)
 	}
-	out, notes, err := a.expandSkillInvocation("/review now")
-	if err != nil || !strings.Contains(out, "Do review") || len(notes) != 1 || notes[0] != "CHECKLIST68" {
-		t.Fatalf("review: %q %v %v", out, notes, err)
+	plan, err := a.planSkillInvocation(context.Background(), "/review now")
+	if err != nil || !strings.Contains(plan.content, "Do review") || len(plan.notes) != 1 || plan.notes[0] != "CHECKLIST68" {
+		t.Fatalf("review: %q %v %v", plan.content, plan.notes, err)
 	}
 }
 

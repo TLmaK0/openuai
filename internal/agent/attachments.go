@@ -75,6 +75,7 @@ func (a *Agent) BeginWithAttachments(userMessage string, images []string, files 
 	})
 	a.runInProgress = true
 	a.resumePending = false
+	a.clearTurn() // skill grants and overrides last until the next message
 }
 
 // UserMessageAttachments returns the files of the n-th user message (0-based,

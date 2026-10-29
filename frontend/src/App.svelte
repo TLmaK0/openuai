@@ -386,6 +386,24 @@
   let hookList = { entries: [], warnings: [] };
   let skillList = { skills: [], warnings: [] };
   async function refreshSkills() { try { skillList = (await GetSkills()) || { skills: [] }; } catch (e) { skillList = { skills: [], warnings: [String(e)] }; } }
+  // "/" at the start of the message: suggest the skills the user can run.
+  let slashIndex = 0;
+  let slashDismissed = false;
+  $: if (input === '/') { slashDismissed = false; refreshSkills(); }
+  $: slashMatches = slashSuggestions(input, skillList, slashDismissed);
+  $: if (slashIndex >= slashMatches.length) slashIndex = 0;
+  function slashSuggestions(text, list, dismissed) {
+    if (dismissed || !text.startsWith('/') || /\s/.test(text)) return [];
+    const q = text.slice(1).toLowerCase();
+    return (list.skills || [])
+      .filter((s) => s.user_invocable && s.visibility !== 'off' && s.name.toLowerCase().startsWith(q))
+      .slice(0, 8);
+  }
+  function pickSlash(s) {
+    input = '/' + s.name + ' ';
+    slashIndex = 0;
+    textareaEl?.focus();
+  }
   async function refreshHooks() { try { hookList = (await GetHooks()) || { entries: [] }; } catch (e) { hookList = { entries: [], warnings: [String(e)] }; } }
   let models = [];
   let selectedModel = '';
@@ -1691,6 +1709,25 @@
   }
 
   function handleKeydown(e) {
+    if (slashMatches.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const n = slashMatches.length;
+        slashIndex = (slashIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && input !== '/' + slashMatches[slashIndex].name)) {
+        e.preventDefault();
+        pickSlash(slashMatches[slashIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        slashDismissed = true;
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();
@@ -1804,7 +1841,7 @@
         <div class="settings-group-title">Skills</div>
         {#if skillList.skills?.length}
           {#each skillList.skills as s}
-            <div class="setting-row hook-row"><label>/{s.name}</label><span class="hook-cmd" title={s.description}>{s.description}</span><span class="hook-src">{s.source}{s.disable_model_invocation ? ' · manual' : ''}</span></div>
+            <div class="setting-row hook-row"><label>/{s.name}</label><span class="hook-cmd" title={s.description}>{s.description}</span><span class="hook-src">{#if s.argument_hint}{s.argument_hint} · {/if}{s.source}{s.disable_model_invocation ? ' · manual' : ''}{s.user_invocable ? '' : ' · assistant only'}{s.context === 'fork' ? ` · fork (${s.agent || 'general-purpose'}${s.background ? ', background' : ''})` : ''}{s.paths?.length ? ' · paths: ' + s.paths.join(', ') : ''}{s.model ? ' · model: ' + s.model : ''}{s.visibility && s.visibility !== 'on' ? ' · ' + s.visibility : ''}</span></div>
           {/each}
         {:else}
           <div class="setting-row"><label></label><span class="voice-status">No skills. Add folders with a SKILL.md in ~/.config/openuai/skills/ or .openuai/skills/ of the project.</span></div>
@@ -2355,6 +2392,16 @@
     {:else if sttError}
       <div class="transcribing-indicator stt-error">{sttError}</div>
     {/if}
+    {#if slashMatches.length > 0}
+      <div class="slash-menu" role="listbox">
+        {#each slashMatches as s, i}
+          <button class="slash-item" class:active={i === slashIndex} role="option" aria-selected={i === slashIndex} on:mousedown|preventDefault={() => pickSlash(s)}>
+            <span class="slash-name">/{s.name}</span>{#if s.argument_hint}<span class="slash-hint">{s.argument_hint}</span>{/if}{#if s.context === 'fork'}<span class="slash-badge">sub-agent</span>{/if}
+            <span class="slash-desc">{s.description}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
     <textarea
       bind:this={textareaEl}
       bind:value={input}
@@ -2385,6 +2432,14 @@
   .attach-error { color: #ff8fa3; font-size: 0.8rem; }
   .hook-cmd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; color: #c5d3e8; }
   .hook-src { color: #8a9bb3; font-size: 0.72rem; margin-left: 0.4rem; }
+  .input-area { position: relative; }
+  .slash-menu { position: absolute; left: 1rem; right: 1rem; bottom: 100%; margin-bottom: 0.3rem; max-height: 260px; overflow-y: auto; background: #0c1422; border: 1px solid #1c3a5e; border-radius: 10px; padding: 0.25rem; z-index: 20; box-shadow: 0 -6px 18px rgba(0,0,0,0.35); }
+  .slash-item { display: flex; align-items: baseline; gap: 0.5rem; width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: 0.35rem 0.5rem; color: #c5d3e8; cursor: pointer; font-size: 0.82rem; }
+  .slash-item.active, .slash-item:hover { background: #15263d; }
+  .slash-name { color: #7cc4ff; font-weight: 600; white-space: nowrap; }
+  .slash-hint { color: #8a9bb3; font-family: monospace; font-size: 0.75rem; white-space: nowrap; }
+  .slash-badge { color: #c9a2ff; font-size: 0.7rem; border: 1px solid #4b3a6e; border-radius: 6px; padding: 0 0.3rem; white-space: nowrap; }
+  .slash-desc { color: #8a9bb3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
   .hook-type { color: #9fd3a8; font-size: 0.7rem; margin-right: 0.4rem; text-transform: uppercase; letter-spacing: 0.03em; }
   .file-chip { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 260px; padding: 0.25rem 0.5rem; border: 1px solid #2a3b55; border-radius: 8px; background: #101a2a; color: #c5d3e8; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   button.file-chip { cursor: pointer; }
