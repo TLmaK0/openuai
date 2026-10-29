@@ -109,33 +109,46 @@ func renderPrompt(messages []llm.Message, tools []llm.ToolDefinition) string {
 	}
 
 	b.WriteString("Conversation:\n\n")
+	renderMessages(&b, messages)
+	return b.String()
+}
+
+// renderDelta renders only the messages added since the last call of a
+// resumed CLI session, which already holds the rest.
+func renderDelta(messages []llm.Message) string {
+	var b strings.Builder
+	b.WriteString("Conversation continues (messages added since your last answer):\n\n")
+	renderMessages(&b, messages)
+	return b.String()
+}
+
+func renderMessages(b *strings.Builder, messages []llm.Message) {
 	for _, m := range messages {
 		switch m.Role {
 		case llm.RoleSystem:
-			fmt.Fprintf(&b, "[instructions]\n%s\n\n", m.Content)
+			fmt.Fprintf(b, "[instructions]\n%s\n\n", m.Content)
 		case llm.RoleUser:
-			fmt.Fprintf(&b, "[user]\n%s\n\n", m.Content)
+			fmt.Fprintf(b, "[user]\n%s\n\n", m.Content)
 		case llm.RoleAssistant:
 			if len(m.ToolCalls) > 0 {
 				for _, c := range m.ToolCalls {
 					args, _ := json.Marshal(c.Arguments)
-					fmt.Fprintf(&b, "[assistant called %s id=%s]\n%s\n\n", c.Name, c.ID, args)
+					fmt.Fprintf(b, "[assistant called %s id=%s]\n%s\n\n", c.Name, c.ID, args)
 				}
 			}
 			if m.Content != "" {
-				fmt.Fprintf(&b, "[assistant]\n%s\n\n", m.Content)
+				fmt.Fprintf(b, "[assistant]\n%s\n\n", m.Content)
 			}
 		case llm.RoleToolResult:
-			fmt.Fprintf(&b, "[result of call id=%s]\n%s\n\n", m.ToolCallID, m.Content)
+			fmt.Fprintf(b, "[result of call id=%s]\n%s\n\n", m.ToolCallID, m.Content)
 		default:
-			fmt.Fprintf(&b, "[%s]\n%s\n\n", m.Role, m.Content)
+			fmt.Fprintf(b, "[%s]\n%s\n\n", m.Role, m.Content)
 		}
 		if len(m.Images) > 0 {
 			// Images cannot cross this boundary: a headless run takes a
 			// prompt, not image inputs. Saying so is better than dropping
 			// them silently, because computer-use turns depend on them.
-			fmt.Fprintf(&b, "[%d image(s) omitted: this provider cannot pass images]\n\n", len(m.Images))
+			fmt.Fprintf(b, "[%d image(s) omitted: this provider cannot pass images]\n\n", len(m.Images))
 		}
 	}
-	return b.String()
 }

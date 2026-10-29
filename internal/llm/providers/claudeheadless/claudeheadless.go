@@ -28,6 +28,7 @@ import (
 	"sync"
 
 	"openuai/internal/llm"
+	"openuai/internal/logger"
 )
 
 // secretKey is where the optional API key lives in the provider's own store.
@@ -96,11 +97,13 @@ type Provider struct {
 
 	mu     sync.RWMutex
 	apiKey string
+
+	sessions *sessionStore
 }
 
 // New builds the provider, taking its optional API key from store.
 func New(store llm.Store) *Provider {
-	return &Provider{store: store, apiKey: store.Get(secretKey)}
+	return &Provider{store: store, apiKey: store.Get(secretKey), sessions: newSessionStore()}
 }
 
 func (p *Provider) Name() string     { return name }
@@ -143,13 +146,12 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, model strin
 	if err := readiness(secret); err != nil {
 		return nil, err
 	}
-	out, err := invocation{
+	out, err := p.turn(ctx, "chat", messages, nil, invocation{
 		model:  model,
 		system: systemPrompt,
-		prompt: renderPrompt(messages, nil),
 		effort: llm.EffortFrom(ctx),
 		apiKey: secret,
-	}.run(ctx)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -172,14 +174,13 @@ func (p *Provider) ChatWithTools(ctx context.Context, messages []llm.Message, mo
 		return nil, nil, err
 	}
 
-	out, err := invocation{
+	out, err := p.turn(ctx, "tools", messages, toolDefs, invocation{
 		model:      model,
 		system:     toolSystemPrompt + " " + toolInstruction,
-		prompt:     renderPrompt(messages, toolDefs),
 		jsonSchema: toolSchema,
 		effort:     llm.EffortFrom(ctx),
 		apiKey:     secret,
-	}.run(ctx)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -191,6 +192,44 @@ func (p *Provider) ChatWithTools(ctx context.Context, messages []llm.Message, mo
 	resp := out.response(model)
 	resp.Content = answer.Reply
 	return resp, answer.toolCalls(), nil
+}
+
+// turn runs one call in the conversation's CLI session: resumed with only
+// the new messages when the history just grew, created afresh otherwise.
+// The returned cost is this call's, not the session's running total.
+func (p *Provider) turn(ctx context.Context, mode string, messages []llm.Message,
+	toolDefs []llm.ToolDefinition, in invocation) (*outcome, error) {
+
+	if p.sessions == nil {
+		p.sessions = newSessionStore()
+	}
+	s, resume := p.sessions.acquire(conversationKey(mode, in.model, messages, toolDefs), messages)
+	run := func(resume bool) (*outcome, error) {
+		in.sessionID, in.resume = s.id, resume
+		if resume {
+			in.prompt = renderDelta(messages[len(s.sent):])
+		} else {
+			in.prompt = renderPrompt(messages, toolDefs)
+		}
+		return in.run(ctx)
+	}
+	out, err := run(resume)
+	if err != nil && resume && ctx.Err() == nil {
+		// The saved session may be gone or unusable: fall back to a new one.
+		logger.Info("claude-headless: resuming session %s failed (%s); starting a new one", s.id, err.Error())
+		s.id, s.sent, s.lastTotal = newSessionID(), nil, 0
+		resume = false
+		out, err = run(false)
+	}
+	if err != nil {
+		p.sessions.release(s, nil, 0, false)
+		return nil, err
+	}
+	total := out.CostUSD
+	out.CostUSD = callCost(total, s.lastTotal, resume)
+	logger.Info("claude-headless: session %s resumed=%v sent=%d messages cost=$%.4f", s.id, resume, len(messages)-len(s.sent), out.CostUSD)
+	p.sessions.release(s, messages, total, true)
+	return out, nil
 }
 
 // readiness reports why a turn would fail, before one is attempted. It runs no

@@ -117,6 +117,10 @@ type invocation struct {
 	jsonSchema string
 	// effort is the --effort level ("": the CLI default).
 	effort string
+	// sessionID names the CLI session; resume continues it instead of
+	// creating it (see session.go).
+	sessionID string
+	resume    bool
 	// apiKey is empty on the prior-login path, which is the ordinary one: the
 	// user authenticated with their own agent before openuai ever ran.
 	apiKey string
@@ -166,6 +170,11 @@ func (in invocation) args() []string {
 	}
 	if in.effort != "" {
 		args = append(args, "--effort", in.effort)
+	}
+	if in.resume && in.sessionID != "" {
+		args = append(args, "--resume", in.sessionID)
+	} else if in.sessionID != "" {
+		args = append(args, "--session-id", in.sessionID)
 	}
 	return args
 }
