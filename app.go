@@ -249,7 +249,12 @@ func (a *App) startup(ctx context.Context) {
 	// Permissions
 	a.permissions = agent.NewPermissionManager(
 		cfg.ConfigDir(),
-		func(tool, command string) (agent.PermissionLevel, bool) {
+		func(ctx context.Context, tool, command string) (agent.PermissionLevel, bool) {
+			// Drop an answer left over from a request that was cancelled.
+			select {
+			case <-a.permResponse:
+			default:
+			}
 			logger.Info("Permission request: tool=%s command=%s", tool, command)
 			wailsRuntime.EventsEmit(a.ctx, "permission_request", map[string]string{
 				"tool":    tool,
@@ -261,9 +266,19 @@ func (a *App) startup(ctx context.Context) {
 					"command": command,
 				})
 			}
-			answer := <-a.permResponse
-			logger.Info("Permission response: approved=%v level=%v", answer.approved, answer.level)
-			return answer.level, answer.approved
+			select {
+			case answer := <-a.permResponse:
+				logger.Info("Permission response: approved=%v level=%v", answer.approved, answer.level)
+				return answer.level, answer.approved
+			case <-ctx.Done():
+				// Stop / Esc: close the dialog and deny.
+				logger.Info("Permission request cancelled: tool=%s", tool)
+				wailsRuntime.EventsEmit(a.ctx, "permission_cancelled", map[string]string{"tool": tool})
+				if a.apiServer != nil {
+					a.apiServer.Broadcast("permission_cancelled", "", map[string]string{"tool": tool})
+				}
+				return agent.PermAlways, false
+			}
 		},
 	)
 
@@ -869,6 +884,12 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	}
 
 	workDir := a.GetWorkDir()
+	// Each sub-agent's work is kept here (apart from the main conversation)
+	// so it can be resumed; old records are removed after the retention period.
+	transcriptDir := filepath.Join(a.cfg.ConfigDir(), "subagents")
+	if n := agent.PruneTranscripts(transcriptDir, agent.TranscriptRetention); n > 0 {
+		logger.Info("Removed %d expired sub-agent records", n)
+	}
 	defs := a.loadSubAgentDefs(workDir, true)
 	provider := a.activeProvider()
 	parentModel := a.cfg.DefaultModel()
@@ -900,10 +921,23 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	taskRegistries := map[string]*tools.Registry{}
 	// Sub-agents with isolation: worktree get their own temporary worktree.
 	worktrees := map[string]*subagents.Worktree{}
+	// Inline MCP servers of sub-agent definitions only live while this run lasts.
+	var scopedMCP []*mcpclient.Manager
+	defer func() {
+		for _, m := range scopedMCP {
+			_ = m.Stop()
+		}
+	}()
 
 	agentTasks := make([]agent.SubAgentTask, len(tasks))
 	for i, t := range tasks {
-		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent}
+		// A resumed sub-agent keeps its agent type unless the task names one.
+		if t.Resume != "" && t.Agent == "" {
+			if tr, err := agent.LoadTranscript(transcriptDir, t.Resume); err == nil {
+				t.Agent = tr.Agent
+			}
+		}
+		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent, ResumeID: t.Resume}
 		var def *subagents.Definition
 		if t.Agent == "" {
 			// No agent named: run as the general-purpose agent.
@@ -934,6 +968,14 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			registry = subagents.IsolateTools(registry, wt)
 			logger.Info("[sub-agent:%s] Isolated in worktree %s (branch %s)", t.ID, wt.Dir, wt.Branch)
 		}
+		var mcpNote string
+		if def != nil && len(def.MCPServers) > 0 {
+			var mgr *mcpclient.Manager
+			mgr, mcpNote = a.addSubAgentMCP(def, baseRegistry, registry)
+			if mgr != nil {
+				scopedMCP = append(scopedMCP, mgr)
+			}
+		}
 		defModel, maxTurns := "", 0
 		if def != nil {
 			defModel, maxTurns = def.Model, def.MaxTurns
@@ -947,11 +989,41 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] %s", t.ID, notice)
 		}
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
+		if mcpNote != "" {
+			logger.Info("[sub-agent:%s] %s", t.ID, mcpNote)
+			at.Notice = strings.TrimSpace(at.Notice + " " + mcpNote)
+		}
 		taskRegistries[t.ID] = registry
 		if wt := worktrees[t.ID]; wt != nil {
 			at.SystemPrompt = subagents.SystemPrompt(def, wt.Dir) + subagents.IsolationPrompt(wt)
 		} else {
 			at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		}
+		// Persistent memory: its contents go in the prompt and the agent always
+		// gets the file tools it needs to manage it.
+		if memDir := subagents.MemoryDir(def, workDir, filepath.Join(a.cfg.ConfigDir(), "agent-memory")); memDir != "" {
+			at.SystemPrompt += subagents.MemoryPrompt(memDir)
+			for _, tl := range baseRegistry.All() {
+				for _, n := range subagents.MemoryTools {
+					if tl.Definition().Name == n {
+						registry.Register(tl)
+					}
+				}
+			}
+		}
+		// Effort: the per-task parameter wins over the definition.
+		if e := strings.ToLower(strings.TrimSpace(t.Effort)); e != "" {
+			if llm.ValidEffort(e) {
+				at.Effort = e
+			} else {
+				at.Notice = strings.TrimSpace(at.Notice + " Ignored invalid effort \"" + t.Effort + "\".")
+			}
+		}
+		if at.Effort == "" && def != nil {
+			at.Effort = def.Effort
+		}
+		if def != nil {
+			at.PermissionMode = def.PermissionMode
 		}
 		agentTasks[i] = at
 	}
@@ -963,6 +1035,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		Registry:      baseRegistry.Without(subagents.AlwaysExcluded...),
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
+		TranscriptDir: transcriptDir,
 		// One limit for the whole tree: top-level tasks wait for a free slot,
 		// nested ones fail at once (waiting while the parent holds its slot
 		// could deadlock).
@@ -985,12 +1058,12 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] level=%d parent=%q", t.ID, childDepth, scope.key)
 			a.emitSubAgent("subagent_start", map[string]any{
 				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
-				"parent": scope.key, "depth": childDepth,
+				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID, "color": defs.Color(name),
 			})
 		},
 		OnDone: func(r agent.SubAgentResult) {
 			a.emitSubAgent("subagent_done", map[string]any{
-				"key": run + "/" + r.ID, "output": r.Output, "error": r.Error, "notice": r.Notice,
+				"key": run + "/" + r.ID, "agent_id": r.AgentID, "output": r.Output, "error": r.Error, "notice": r.Notice,
 				"partial": r.Partial, "cancelled": r.Cancelled, "cost_usd": r.CostUSD,
 				"input_tokens": r.InputTokens, "output_tokens": r.OutputTokens,
 			})
@@ -1039,6 +1112,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			CostUSD:      r.CostUSD,
 			InputTokens:  r.InputTokens,
 			OutputTokens: r.OutputTokens,
+			AgentID:      r.AgentID,
 		}
 	}
 	return toolResults

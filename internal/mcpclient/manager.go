@@ -82,6 +82,22 @@ func (m *Manager) Start(events chan<- eventbus.Event) error {
 }
 
 // Stop implements eventbus.EventSource.
+// StartScoped connects servers that belong to a single sub-agent run (inline
+// mcpServers of its definition) and returns a manager holding only them.
+// Servers that fail are reported and skipped. Stop closes all of them.
+func StartScoped(cfgs []config.MCPServerConfig) (*Manager, []error) {
+	m := NewManager(cfgs)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	var errs []error
+	for _, c := range cfgs {
+		if err := m.startServer(ctx, c); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c.Name, err))
+		}
+	}
+	return m, errs
+}
+
 func (m *Manager) Stop() error {
 	if m.cancel != nil {
 		m.cancel()
