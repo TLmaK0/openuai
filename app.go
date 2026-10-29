@@ -898,6 +898,13 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		baseRegistry = baseRegistry.Without("spawn_agents")
 	}
 	taskRegistries := map[string]*tools.Registry{}
+	// Inline MCP servers of sub-agent definitions only live while this run lasts.
+	var scopedMCP []*mcpclient.Manager
+	defer func() {
+		for _, m := range scopedMCP {
+			_ = m.Stop()
+		}
+	}()
 
 	agentTasks := make([]agent.SubAgentTask, len(tasks))
 	for i, t := range tasks {
@@ -921,6 +928,14 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			agentTasks[i] = at
 			continue
 		}
+		var mcpNote string
+		if def != nil && len(def.MCPServers) > 0 {
+			var mgr *mcpclient.Manager
+			mgr, mcpNote = a.addSubAgentMCP(def, baseRegistry, registry)
+			if mgr != nil {
+				scopedMCP = append(scopedMCP, mgr)
+			}
+		}
 		defModel, maxTurns := "", 0
 		if def != nil {
 			defModel, maxTurns = def.Model, def.MaxTurns
@@ -934,6 +949,10 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] %s", t.ID, notice)
 		}
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
+		if mcpNote != "" {
+			logger.Info("[sub-agent:%s] %s", t.ID, mcpNote)
+			at.Notice = strings.TrimSpace(at.Notice + " " + mcpNote)
+		}
 		taskRegistries[t.ID] = registry
 		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
 		agentTasks[i] = at

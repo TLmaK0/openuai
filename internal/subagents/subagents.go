@@ -56,6 +56,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	MCPServers      []MCPServerSpec // mcpServers: references and inline servers
 	Prompt          string
 	Path            string
 	Scope           string
@@ -102,6 +103,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	MCPServers      []yaml.Node `yaml:"mcpServers"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -141,6 +143,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	mcpServers, err := parseMCPServers(fm.MCPServers)
+	if err != nil {
+		return nil, err
+	}
 	d := &Definition{
 		Name:            name,
 		Description:     strings.TrimSpace(fm.Description),
@@ -148,6 +154,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		MCPServers:      mcpServers,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {
