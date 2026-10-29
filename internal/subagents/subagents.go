@@ -57,6 +57,7 @@ type Definition struct {
 	MaxTurns        int
 	OmitAgentsMd    bool
 	Color           string // display colour name (see Colors); empty: automatic
+	PermissionMode  string // "", acceptEdits, dontAsk or plan
 	Prompt          string
 	Path            string
 	Scope           string
@@ -104,6 +105,7 @@ type frontmatter struct {
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
 	Color           string      `yaml:"color"`
+	PermissionMode  string      `yaml:"permissionMode"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -147,6 +149,10 @@ func Parse(data []byte) (*Definition, error) {
 	if color != "" && !validColor(color) {
 		return nil, fmt.Errorf("invalid color %q: use one of %s", fm.Color, strings.Join(Colors, ", "))
 	}
+	permMode, okMode := permissionModes[strings.ToLower(strings.TrimSpace(fm.PermissionMode))]
+	if strings.TrimSpace(fm.PermissionMode) != "" && !okMode {
+		return nil, fmt.Errorf("invalid permissionMode %q: use default, acceptEdits, auto, dontAsk, bypassPermissions or plan", fm.PermissionMode)
+	}
 	d := &Definition{
 		Name:            name,
 		Description:     strings.TrimSpace(fm.Description),
@@ -155,6 +161,7 @@ func Parse(data []byte) (*Definition, error) {
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
 		Color:           color,
+		PermissionMode:  permMode,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {
@@ -183,6 +190,16 @@ func (s Set) Color(name string) string {
 		return d.Color
 	}
 	return ""
+}
+
+// permissionModes maps the accepted permissionMode values (Claude Code names,
+// any case) to the mode the sub-agent runs in. OpenUAI's main conversation
+// always runs in the default mode, so, as Claude Code does in that case,
+// bypassPermissions keeps the default mode, and auto (not available here)
+// falls back to it too.
+var permissionModes = map[string]string{
+	"": "", "default": "", "manual": "", "auto": "", "bypasspermissions": "",
+	"acceptedits": "acceptEdits", "dontask": "dontAsk", "plan": "plan",
 }
 
 // Set is the result of loading every definition directory.

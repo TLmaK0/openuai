@@ -104,6 +104,8 @@ type Agent struct {
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
 	maxTurns    int
+	permMode    string // permission mode (sub-agents); "" is the normal one
+	compactAt   int    // estimated tokens that trigger compaction (0: never)
 
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
@@ -131,6 +133,11 @@ type Config struct {
 	// MaxTurns caps the model calls of one Run; 0 means the default limit.
 	// Reaching it returns an error wrapping ErrMaxTurns.
 	MaxTurns int
+	// PermissionMode is the sub-agent permission mode (PermMode*).
+	PermissionMode string
+	// CompactAtTokens, when > 0, makes the agent summarize its older history
+	// once the context grows past that estimated size, instead of failing.
+	CompactAtTokens int
 }
 
 func New(cfg Config) *Agent {
@@ -172,6 +179,8 @@ func New(cfg Config) *Agent {
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
 		maxTurns:    cfg.MaxTurns,
+		permMode:    cfg.PermissionMode,
+		compactAt:   cfg.CompactAtTokens,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -215,6 +224,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		// MicroCompact: prune old tool results to keep context manageable.
 		// Keep the last 6 tool results intact, replace older ones with a stub.
 		a.pruneOldToolResults(6)
+		a.maybeCompact(ctx)
 
 		resp, toolCalls, err := toolProvider.ChatWithTools(ctx, a.messages, a.model, a.toolDefs)
 		if err != nil {
@@ -283,12 +293,12 @@ func (a *Agent) loop(ctx context.Context) error {
 			logger.Info("Tool call: %s id=%s args=%v", tc.Name, tc.ID, tc.Arguments)
 			a.emit(StepResult{Type: "tool_call", Content: commandDesc, ToolName: tc.Name})
 
-			if !a.permissions.Check(def.Name, def.RequiresPermission, commandDesc) {
+			if ok, why := a.allowTool(ctx, def.Name, def.RequiresPermission, commandDesc); !ok {
 				errMsg := "Permission denied for: " + tc.Name
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,
 					ToolCallID: tc.ID,
-					Content:    "Error: " + errMsg + ". The user denied this action.",
+					Content:    "Error: " + errMsg + ". " + why,
 				})
 				a.emit(StepResult{Type: "error", Content: errMsg})
 				continue
