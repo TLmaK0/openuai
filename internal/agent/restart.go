@@ -36,9 +36,7 @@ func (a *Agent) Begin(userMessage string) {
 // BeginWithImages is Begin with images attached to the user's message
 // (base64-encoded). They are saved with the conversation.
 func (a *Agent) BeginWithImages(userMessage string, images []string) {
-	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: userMessage, Images: images})
-	a.runInProgress = true
-	a.resumePending = false
+	a.BeginWithAttachments(userMessage, images, nil)
 }
 
 // Continue runs the agent loop on the current conversation.

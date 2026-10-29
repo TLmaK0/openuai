@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -551,7 +551,7 @@
       if (history?.length && !messages.length) {
         messages = history.map((m) => (m.role === 'tools'
           ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
-          : { role: m.role, content: m.content, images: m.images || [] }));
+          : { role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }));
       }
     } catch (e) { /* no history — start empty */ }
 
@@ -963,6 +963,55 @@
   const MAX_ATTACH = 10;
   const MAX_IMAGE_SIDE = 1568; // larger images are scaled down before sending
 
+  // Other files attached to the next message, already saved by the backend:
+  // { id, name, path, size, mime }.
+  let files = [];
+  const MAX_FILES = 10;
+  const MAX_FILE_BYTES = 50 * 1024 * 1024;
+  function fmtSize(n) {
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' B';
+  }
+  function readAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => { const s = String(r.result); resolve(s.slice(s.indexOf(',') + 1)); };
+      r.onerror = () => reject(r.error || new Error('could not read the file'));
+      r.readAsDataURL(file);
+    });
+  }
+  async function addOtherFiles(list) {
+    attachError = '';
+    for (const f of list) {
+      if (files.length >= MAX_FILES) { attachError = `At most ${MAX_FILES} files per message.`; break; }
+      if (f.size > MAX_FILE_BYTES) { attachError = `${f.name} is too large: at most 50 MB per file.`; continue; }
+      try {
+        const att = await SaveAttachment(f.name, await readAsBase64(f));
+        files = [...files, { id: ++attachSeq, ...att }];
+      } catch (e) {
+        attachError = `Could not attach ${f.name}: ${e?.message || e}`;
+      }
+    }
+  }
+  async function pickFiles() {
+    attachError = '';
+    let picked = [];
+    try {
+      picked = (await PickAttachments()) || [];
+    } catch (e) {
+      attachError = String(e?.message || e);
+    }
+    for (const att of picked) {
+      if (files.length >= MAX_FILES) { attachError = `At most ${MAX_FILES} files per message.`; break; }
+      files = [...files, { id: ++attachSeq, ...att }];
+    }
+  }
+  function removeFile(id) {
+    files = files.filter((f) => f.id !== id);
+    attachError = '';
+  }
+
   function imageMime(b64) {
     if (b64.startsWith('/9j/')) return 'image/jpeg';
     if (b64.startsWith('R0lGOD')) return 'image/gif';
@@ -1047,10 +1096,13 @@
   }
   function handleDrop(e) {
     dragOver = false;
-    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
-    if (!files.length) return;
+    const dropped = [...(e.dataTransfer?.files || [])];
+    if (!dropped.length) return;
     e.preventDefault();
-    addImageFiles(files);
+    const imgs = dropped.filter((f) => f.type.startsWith('image/'));
+    const others = dropped.filter((f) => !f.type.startsWith('image/'));
+    if (imgs.length) addImageFiles(imgs);
+    if (others.length) addOtherFiles(others);
   }
   function removeAttachment(id) {
     attachments = attachments.filter((a) => a.id !== id);
@@ -1060,7 +1112,8 @@
   async function send() {
     const content = input.trim();
     const images = attachments.map((a) => a.data);
-    if (!content && !images.length) return;
+    const sentFiles = files.map(({ name, path, size, mime }) => ({ name, path, size, mime }));
+    if (!content && !images.length && !sentFiles.length) return;
     if (content) {
       inputHistory = [...inputHistory, content];
       // Keep last 100 entries
@@ -1071,34 +1124,36 @@
     savedInput = '';
     input = '';
     attachments = [];
+    files = [];
     attachError = '';
-    submit(content, images);
+    submit(content, images, sentFiles);
   }
 
   // Sends now, or queues it when the assistant is busy.
-  function submit(content, images = []) {
+  function submit(content, images = [], atts = []) {
     content = (content || '').trim();
-    if (!content && !images.length) return;
+    if (!content && !images.length && !atts.length) return;
     stickToBottom = true; // sending a message jumps back to the latest
     if (loading) {
-      queue = [...queue, { id: ++queueSeq, content, images }];
+      queue = [...queue, { id: ++queueSeq, content, images, files: atts }];
       return;
     }
-    runMessage(content, images);
+    runMessage(content, images, atts);
   }
 
-  async function runMessage(content, images = []) {
-    messages = [...messages, { role: 'user', content, images }];
+  async function runMessage(content, images = [], atts = []) {
+    messages = [...messages, { role: 'user', content, images, files: atts }];
     const at = messages.length - 1;
     stickToBottom = true;
     loading = true;
     try {
-      const resp = await SendMessageWithImages(content, images);
+      const resp = await SendMessageWithAttachments(content, images, atts);
       if (resp.refused) {
         // Not sent at all: give the message and its images back to the user.
         messages = messages.filter((_, j) => j !== at);
         if (!input.trim()) input = content;
         attachments = [...images.map((data) => ({ id: ++attachSeq, data })), ...attachments];
+        files = [...atts.map((f) => ({ id: ++attachSeq, ...f })), ...files];
         attachError = resp.error;
       } else {
         totalCost = resp.cost_usd || 0;
@@ -1117,7 +1172,7 @@
     const next = queue.find((q) => q.id !== queueEditId);
     if (!next) return;
     queue = queue.filter((q) => q.id !== next.id);
-    runMessage(next.content, next.images || []);
+    runMessage(next.content, next.images || [], next.files || []);
   }
 
   function removeQueued(id) {
@@ -1163,7 +1218,7 @@
     let n = 0;
     for (let j = 0; j < i; j++) if (messages[j].role === 'user') n++;
     // drop this message and everything after, then re-add the edited question
-    messages = [...messages.slice(0, i), { role: 'user', content, images: messages[i].images || [] }];
+    messages = [...messages.slice(0, i), { role: 'user', content, images: messages[i].images || [], files: messages[i].files || [] }];
     editingIndex = -1;
     editText = '';
     loading = true;
@@ -1218,7 +1273,7 @@
     }
     const history = await GetChatHistory();
     messages = history?.length
-      ? history.map((m) => ({ role: m.role, content: m.content, images: m.images || [] }))
+      ? history.map((m) => ({ role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }))
       : [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
     showSessions = false;
     totalCost = 0;
@@ -2082,6 +2137,13 @@
                 {/each}
               </div>
             {/if}
+            {#if msg.files?.length}
+              <div class="msg-files">
+                {#each msg.files as f}
+                  <button class="file-chip" on:click={() => OpenPath(f.path)} title={'Open ' + f.path}>📎 {f.name} <span class="file-size">{fmtSize(f.size)}</span></button>
+                {/each}
+              </div>
+            {/if}
             {#if msg.content}<div class="message-content">{msg.content}</div>{/if}
             <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
@@ -2165,7 +2227,7 @@
             <button class="edit-save" on:click={() => saveQueueEdit(q.id)} disabled={!queueEditText.trim()}>Save</button>
           </div>
         {:else}
-          <div class="queued-badge">Pending · sent after the current response{#if q.images?.length} · {q.images.length} image{q.images.length > 1 ? 's' : ''}{/if}</div>
+          <div class="queued-badge">Pending · sent after the current response{#if q.images?.length} · {q.images.length} image{q.images.length > 1 ? 's' : ''}{/if}{#if q.files?.length} · {q.files.length} file{q.files.length > 1 ? 's' : ''}{/if}</div>
           <div class="message-content">{q.content}</div>
           <div class="queued-actions">
             <button class="queued-btn" on:click={() => startQueueEdit(q)} title="Edit before it is sent" aria-label="Edit queued message">
@@ -2180,12 +2242,18 @@
     {/each}
   </div>
 
-  {#if attachments.length || attachError}
+  {#if attachments.length || files.length || attachError}
     <div class="attach-strip">
       {#each attachments as a (a.id)}
         <div class="attach-thumb">
           <img src={imageURL(a.data)} alt="Attachment" on:click={() => (viewImage = imageURL(a.data))} />
           <button class="attach-x" on:click={() => removeAttachment(a.id)} title="Remove: it will not be sent" aria-label="Remove image">×</button>
+        </div>
+      {/each}
+      {#each files as f (f.id)}
+        <div class="file-chip pending" title={f.path}>
+          📎 {f.name} <span class="file-size">{fmtSize(f.size)}</span>
+          <button class="file-x" on:click={() => removeFile(f.id)} title="Remove: it will not be sent" aria-label={'Remove ' + f.name}>×</button>
         </div>
       {/each}
       {#if attachError}<div class="attach-error">{attachError}</div>{/if}
@@ -2208,6 +2276,9 @@
       {/if}
     </button>
     {/if}
+    <button class="attach-btn" on:click={pickFiles} title="Attach files (or drop them here)" aria-label="Attach files">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+    </button>
     <div class="voice-toggles">
       <label class="wake-toggle" class:wake-on={wakeListening} title={wakeWord ? `Hands-free: say "${wakeWord}, …"` : 'Set a wake word in Settings first'}>
         <input type="checkbox" bind:checked={wakeListening} on:change={toggleWakeListening} />
@@ -2263,8 +2334,8 @@
         {#if aborting && !speaking}Stopping...{:else}Stop{/if}
       </button>
     {/if}
-    {#if !(loading || speaking) || input.trim() || attachments.length}
-      <button on:click={send} disabled={!isReady || (!input.trim() && !attachments.length)} title={loading ? 'Queued: sent when the current response finishes' : 'Send'}>{loading ? 'Queue' : 'Send'}</button>
+    {#if !(loading || speaking) || input.trim() || attachments.length || files.length}
+      <button on:click={send} disabled={!isReady || (!input.trim() && !attachments.length && !files.length)} title={loading ? 'Queued: sent when the current response finishes' : 'Send'}>{loading ? 'Queue' : 'Send'}</button>
     {/if}
     <button class="clear-btn" on:click={clearChat}>Clear</button>
   </div>
@@ -2277,6 +2348,15 @@
   .attach-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
   .attach-x { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px; padding: 0; border-radius: 50%; border: none; background: rgba(0,0,0,0.7); color: #fff; cursor: pointer; font-size: 13px; }
   .attach-error { color: #ff8fa3; font-size: 0.8rem; }
+  .file-chip { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 260px; padding: 0.25rem 0.5rem; border: 1px solid #2a3b55; border-radius: 8px; background: #101a2a; color: #c5d3e8; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  button.file-chip { cursor: pointer; }
+  button.file-chip:hover { border-color: #4a6a95; color: #fff; }
+  .file-size { color: #8a9bb3; font-size: 0.72rem; }
+  .file-x { border: none; background: none; color: #9fb3cc; cursor: pointer; padding: 0 0.1rem; font-size: 14px; }
+  .file-x:hover { color: #fff; }
+  .msg-files { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.35rem; }
+  .attach-btn { background: transparent; border: 1px solid #2a3b55; color: #9fb3cc; border-radius: 8px; padding: 0.35rem 0.45rem; cursor: pointer; display: flex; align-items: center; }
+  .attach-btn:hover { color: #fff; border-color: #4a6a95; }
   .input-area.drag-over { outline: 2px dashed #2f9eff; outline-offset: -4px; }
   .msg-images { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.35rem; }
   .msg-image { padding: 0; border: 1px solid #2a3b55; border-radius: 8px; overflow: hidden; background: none; cursor: zoom-in; }

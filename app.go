@@ -770,7 +770,20 @@ const (
 // (base64, PNG or JPEG). It refuses, before anything runs, when the active
 // provider cannot pass images, so they are never dropped silently.
 func (a *App) SendMessageWithImages(content string, images []string) ChatResponse {
-	logger.Info("SendMessage: %s (%d images)", content, len(images))
+	return a.SendMessageWithAttachments(content, images, nil)
+}
+
+// SendMessageWithAttachments sends a user message with images and files.
+// Files must have been stored first with SaveAttachment or PickAttachments.
+func (a *App) SendMessageWithAttachments(content string, images []string, files []llm.Attachment) ChatResponse {
+	logger.Info("SendMessage: %s (%d images, %d files)", content, len(images), len(files))
+	if len(files) > 0 {
+		checked, err := a.checkAttachments(files)
+		if err != nil {
+			return ChatResponse{Refused: true, Error: err.Error()}
+		}
+		files = checked
+	}
 	if len(images) > 0 {
 		if len(images) > maxImagesPerMessage {
 			return ChatResponse{Refused: true, Error: fmt.Sprintf("Too many images: at most %d per message.", maxImagesPerMessage)}
@@ -795,7 +808,7 @@ func (a *App) SendMessageWithImages(content string, images []string) ChatRespons
 
 	ag := a.ensureAgent()
 	// Saved before running, so the message survives a restart mid-turn.
-	ag.BeginWithImages(content, images)
+	ag.BeginWithAttachments(content, images, files)
 	a.saveSession(ag)
 	err := ag.Continue(ctx)
 
@@ -836,8 +849,9 @@ func (a *App) EditMessage(index int, content string) ChatResponse {
 
 	ag := a.ensureAgent()
 	images := ag.UserMessageImages(index)
+	files := ag.UserMessageAttachments(index)
 	ag.RewindToUserMessage(index)
-	ag.BeginWithImages(content, images)
+	ag.BeginWithAttachments(content, images, files)
 	a.saveSession(ag)
 	err := ag.Continue(ctx)
 
@@ -1554,6 +1568,8 @@ type ChatHistoryMessage struct {
 	Content string `json:"content"`
 	// Images are the base64 images attached to a user message.
 	Images []string `json:"images,omitempty"`
+	// Attachments are the files attached to a user message.
+	Attachments []llm.Attachment `json:"attachments,omitempty"`
 	// Steps is set for role "tools": the tool calls of that part of the
 	// conversation, so they are still visible after a restart.
 	Steps []ChatHistoryStep `json:"steps,omitempty"`
@@ -1597,7 +1613,7 @@ func buildChatHistory(msgs []llm.Message) []ChatHistoryMessage {
 			if strings.HasPrefix(m.Content, agent.RestartNotePrefix) {
 				role = "notice"
 			}
-			out = append(out, ChatHistoryMessage{Role: role, Content: m.Content, Images: m.Images})
+			out = append(out, ChatHistoryMessage{Role: role, Content: agent.DisplayContent(m), Images: m.Images, Attachments: m.Attachments})
 		case llm.RoleAssistant:
 			if m.Content != "" {
 				out = append(out, ChatHistoryMessage{Role: "assistant", Content: m.Content})
