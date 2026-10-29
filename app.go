@@ -963,6 +963,17 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
 		taskRegistries[t.ID] = registry
 		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		// Effort: the per-task parameter wins over the definition.
+		if e := strings.ToLower(strings.TrimSpace(t.Effort)); e != "" {
+			if llm.ValidEffort(e) {
+				at.Effort = e
+			} else {
+				at.Notice = strings.TrimSpace(at.Notice + " Ignored invalid effort \"" + t.Effort + "\".")
+			}
+		}
+		if at.Effort == "" && def != nil {
+			at.Effort = def.Effort
+		}
 		if def != nil {
 			at.PermissionMode = def.PermissionMode
 		}

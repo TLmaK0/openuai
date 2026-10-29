@@ -104,6 +104,7 @@ type Agent struct {
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
 	maxTurns    int
+	effort      string // effort level for this agent's model calls ("": default)
 	permMode    string // permission mode (sub-agents); "" is the normal one
 	compactAt   int    // estimated tokens that trigger compaction (0: never)
 
@@ -133,6 +134,8 @@ type Config struct {
 	// MaxTurns caps the model calls of one Run; 0 means the default limit.
 	// Reaching it returns an error wrapping ErrMaxTurns.
 	MaxTurns int
+	// Effort is the effort level for this agent's model calls (llm.Efforts).
+	Effort string
 	// PermissionMode is the sub-agent permission mode (PermMode*).
 	PermissionMode string
 	// CompactAtTokens, when > 0, makes the agent summarize its older history
@@ -179,6 +182,7 @@ func New(cfg Config) *Agent {
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
 		maxTurns:    cfg.MaxTurns,
+		effort:      cfg.Effort,
 		permMode:    cfg.PermissionMode,
 		compactAt:   cfg.CompactAtTokens,
 		toolDefs:    toolDefs,
@@ -226,7 +230,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		a.pruneOldToolResults(6)
 		a.maybeCompact(ctx)
 
-		resp, toolCalls, err := toolProvider.ChatWithTools(ctx, a.messages, a.model, a.toolDefs)
+		resp, toolCalls, err := toolProvider.ChatWithTools(llm.WithEffort(ctx, a.effort), a.messages, a.model, a.toolDefs)
 		if err != nil {
 			logger.Error("LLM call failed: %s", err.Error())
 			a.emit(StepResult{Type: "error", Content: err.Error()})
@@ -372,7 +376,7 @@ func (a *Agent) loop(ctx context.Context) error {
 
 // runSimpleChat handles providers without native tool calling (fallback)
 func (a *Agent) runSimpleChat(ctx context.Context) error {
-	resp, err := a.provider.Chat(ctx, a.messages, a.model)
+	resp, err := a.provider.Chat(llm.WithEffort(ctx, a.effort), a.messages, a.model)
 	if err != nil {
 		a.emit(StepResult{Type: "error", Content: err.Error()})
 		return err

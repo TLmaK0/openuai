@@ -22,6 +22,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"openuai/internal/tools"
+
+	"openuai/internal/llm"
 )
 
 const (
@@ -56,6 +58,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	Effort          string // low, medium, high, xhigh, max; empty: the session default
 	Color           string // display colour name (see Colors); empty: automatic
 	PermissionMode  string // "", acceptEdits, dontAsk or plan
 	Prompt          string
@@ -104,6 +107,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	Effort          string      `yaml:"effort"`
 	Color           string      `yaml:"color"`
 	PermissionMode  string      `yaml:"permissionMode"`
 }
@@ -145,6 +149,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	effort := strings.ToLower(strings.TrimSpace(fm.Effort))
+	if effort != "" && !llm.ValidEffort(effort) {
+		return nil, fmt.Errorf("invalid effort %q: use one of %s", fm.Effort, strings.Join(llm.Efforts, ", "))
+	}
 	color := strings.ToLower(strings.TrimSpace(fm.Color))
 	if color != "" && !validColor(color) {
 		return nil, fmt.Errorf("invalid color %q: use one of %s", fm.Color, strings.Join(Colors, ", "))
@@ -160,6 +168,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		Effort:          effort,
 		Color:           color,
 		PermissionMode:  permMode,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),

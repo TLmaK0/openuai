@@ -63,6 +63,8 @@ type SubAgentTask struct {
 	Registry     *tools.Registry
 	SystemPrompt string
 	MaxTurns     int
+	// Effort is the effort level (definition or per-task parameter).
+	Effort string
 	// PermissionMode is the permission mode from the definition (PermMode*).
 	PermissionMode string
 	// Notice is passed through to the result (e.g. a model fallback).
@@ -204,6 +206,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		OnStep:       onStep,
 		SystemPrompt: prompt,
 		MaxTurns:     task.MaxTurns,
+		Effort:       task.Effort,
 		// A long run compacts its own context instead of dying when it fills up.
 		CompactAtTokens: DefaultSubAgentCompactTokens,
 		PermissionMode:  task.PermissionMode,

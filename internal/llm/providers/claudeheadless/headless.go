@@ -115,6 +115,8 @@ type invocation struct {
 	system     string
 	prompt     string
 	jsonSchema string
+	// effort is the --effort level ("": the CLI default).
+	effort string
 	// apiKey is empty on the prior-login path, which is the ordinary one: the
 	// user authenticated with their own agent before openuai ever ran.
 	apiKey string
@@ -161,6 +163,9 @@ func (in invocation) args() []string {
 	}
 	if in.jsonSchema != "" {
 		args = append(args, "--json-schema", in.jsonSchema)
+	}
+	if in.effort != "" {
+		args = append(args, "--effort", in.effort)
 	}
 	return args
 }
