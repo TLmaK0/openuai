@@ -1517,30 +1517,87 @@ func (a *App) GetSessions() []agent.SessionInfo {
 type ChatHistoryMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Steps is set for role "tools": the tool calls of that part of the
+	// conversation, so they are still visible after a restart.
+	Steps []ChatHistoryStep `json:"steps,omitempty"`
 }
 
-// GetChatHistory returns the agent's restored conversation (user/assistant
-// text only — no system prompt or tool plumbing) so the UI can show it on
-// startup and after resuming a session, instead of greeting the user with an
-// empty chat while the agent remembers everything.
+// ChatHistoryStep is one tool call shown in a restored tool group.
+type ChatHistoryStep struct {
+	Tool    string `json:"tool"`
+	Command string `json:"command"`
+	Result  string `json:"result"`
+	Status  string `json:"status"` // done, error, or interrupted (no result saved)
+}
+
+// GetChatHistory returns the agent's restored conversation for the UI:
+// user/assistant text and the tool calls with their results, grouped the same
+// way they are shown live. The system prompt and internal notes are left out.
 func (a *App) GetChatHistory() []ChatHistoryMessage {
 	ag := a.ensureAgent()
+	return buildChatHistory(ag.Messages())
+}
+
+func buildChatHistory(msgs []llm.Message) []ChatHistoryMessage {
 	out := []ChatHistoryMessage{}
-	for _, m := range ag.Messages() {
-		if m.Content == "" {
-			continue
+	stepAt := map[string][2]int{} // tool call id -> (message index, step index)
+	addTools := func(steps []ChatHistoryStep) [2]int {
+		if n := len(out); n > 0 && out[n-1].Role == "tools" {
+			out[n-1].Steps = append(out[n-1].Steps, steps...)
+			return [2]int{n - 1, len(out[n-1].Steps) - len(steps)}
 		}
+		out = append(out, ChatHistoryMessage{Role: "tools", Steps: steps})
+		return [2]int{len(out) - 1, 0}
+	}
+	for _, m := range msgs {
 		switch m.Role {
-		case llm.RoleUser, llm.RoleAssistant:
-			role := string(m.Role)
+		case llm.RoleUser:
+			if m.Content == "" {
+				continue
+			}
+			role := "user"
 			// Restart notes are shown as a notice, not as something the user said.
-			if m.Role == llm.RoleUser && strings.HasPrefix(m.Content, agent.RestartNotePrefix) {
+			if strings.HasPrefix(m.Content, agent.RestartNotePrefix) {
 				role = "notice"
 			}
 			out = append(out, ChatHistoryMessage{Role: role, Content: m.Content})
+		case llm.RoleAssistant:
+			if m.Content != "" {
+				out = append(out, ChatHistoryMessage{Role: "assistant", Content: m.Content})
+			}
+			if len(m.ToolCalls) > 0 {
+				steps := make([]ChatHistoryStep, len(m.ToolCalls))
+				for k, tc := range m.ToolCalls {
+					steps[k] = ChatHistoryStep{Tool: tc.Name, Command: agent.ToolCallDesc(tc), Status: "interrupted"}
+				}
+				at := addTools(steps)
+				for k, tc := range m.ToolCalls {
+					stepAt[tc.ID] = [2]int{at[0], at[1] + k}
+				}
+			}
+		case llm.RoleToolResult:
+			at, ok := stepAt[m.ToolCallID]
+			if !ok {
+				continue
+			}
+			st := &out[at[0]].Steps[at[1]]
+			st.Result = historyPreview(m.Content)
+			st.Status = "done"
+			if strings.HasPrefix(m.Content, "Error:") {
+				st.Status = "error"
+			}
 		}
 	}
 	return out
+}
+
+// historyPreview keeps the first lines of a tool result, like the live view.
+func historyPreview(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= 10 {
+		return s
+	}
+	return strings.Join(lines[:10], "\n") + fmt.Sprintf("\n... (%d lines)", len(lines))
 }
 
 // ResumeSession loads an archived session by ID.

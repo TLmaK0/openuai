@@ -549,7 +549,9 @@
     try {
       const history = await GetChatHistory();
       if (history?.length && !messages.length) {
-        messages = history.map((m) => ({ role: m.role, content: m.content }));
+        messages = history.map((m) => (m.role === 'tools'
+          ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
+          : { role: m.role, content: m.content }));
       }
     } catch (e) { /* no history — start empty */ }
 
@@ -2002,7 +2004,7 @@
               {#each msg.steps as step}
                 <div class="tool-step" class:tool-step-error={step.status === 'error'}>
                   <div class="tool-step-header">
-                    <span class="tool-step-icon">{step.status === 'done' ? '✓' : step.status === 'error' ? '✗' : '⋯'}</span>
+                    <span class="tool-step-icon">{step.status === 'done' ? '✓' : step.status === 'error' ? '✗' : step.status === 'interrupted' ? '↻' : '⋯'}</span>
                     <span class="tool-step-name">{step.tool}</span>
                     {#if step.command}
                       <span class="tool-step-cmd">{step.command}</span>

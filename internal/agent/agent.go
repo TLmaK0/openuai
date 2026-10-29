@@ -528,3 +528,6 @@ func formatNativeToolCallDesc(tc llm.ToolCall) string {
 	}
 	return ""
 }
+
+// ToolCallDesc is the short description of a tool call shown in the UI.
+func ToolCallDesc(tc llm.ToolCall) string { return formatNativeToolCallDesc(tc) }
