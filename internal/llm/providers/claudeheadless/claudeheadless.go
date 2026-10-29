@@ -147,6 +147,7 @@ func (p *Provider) Chat(ctx context.Context, messages []llm.Message, model strin
 		model:  model,
 		system: systemPrompt,
 		prompt: renderPrompt(messages, nil),
+		effort: llm.EffortFrom(ctx),
 		apiKey: secret,
 	}.run(ctx)
 	if err != nil {
@@ -176,6 +177,7 @@ func (p *Provider) ChatWithTools(ctx context.Context, messages []llm.Message, mo
 		system:     toolSystemPrompt + " " + toolInstruction,
 		prompt:     renderPrompt(messages, toolDefs),
 		jsonSchema: toolSchema,
+		effort:     llm.EffortFrom(ctx),
 		apiKey:     secret,
 	}.run(ctx)
 	if err != nil {
