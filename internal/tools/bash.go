@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"openuai/internal/procs"
 )
 
 // runWithCancel starts cmd in its own process group and waits for it, killing
@@ -34,6 +36,8 @@ func runWithCancel(ctx context.Context, cmd *exec.Cmd) error {
 // Bash executes a shell command
 type Bash struct {
 	WorkDir string
+	// Procs, when set, lets the command run in the background (run_in_background).
+	Procs *procs.Manager
 }
 
 func (t Bash) Definition() Definition {
@@ -43,6 +47,7 @@ func (t Bash) Definition() Definition {
 		Parameters: []Parameter{
 			{Name: "command", Type: "string", Description: "The shell command to execute", Required: true},
 			{Name: "timeout", Type: "string", Description: "Timeout in seconds (default: 30)", Required: false},
+			{Name: "run_in_background", Type: "string", Description: "Set to 'true' for builds, tests, installs or any command that may take long: it starts in the background, this call returns at once, and its result arrives later as a notification starting with \"[Background process\". Do not wait for it: answer the user or keep working.", Required: false},
 		},
 		RequiresPermission: "session",
 	}
@@ -52,6 +57,18 @@ func (t Bash) Execute(ctx context.Context, args map[string]string) Result {
 	command := args["command"]
 	if command == "" {
 		return Result{Error: "command is required"}
+	}
+	if strings.EqualFold(strings.TrimSpace(args["run_in_background"]), "true") {
+		if t.Procs == nil {
+			return Result{Error: "running in the background is not available here; run it without run_in_background"}
+		}
+		p, err := t.Procs.Start(command, t.WorkDir)
+		if err != nil {
+			return Result{Error: err.Error()}
+		}
+		return Result{Output: fmt.Sprintf("Started in the background as process %s. Do not wait for it: answer the user or continue with other work. "+
+			"When it ends you will get a notification starting with \"[Background process %s\" with its final output. "+
+			"Use proc_read to check progress and proc_kill to stop it.", p.ID(), p.ID())}
 	}
 
 	timeoutSec := 30

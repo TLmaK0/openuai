@@ -21,8 +21,21 @@
 
   $: status = info.status;
   $: label = status === 'exited'
-    ? `exited (${info.exit_code})`
+    ? (info.stopped_by_user ? 'stopped' : `exited (${info.exit_code})`)
     : status === 'waiting_for_input' ? 'waiting for input' : 'running';
+
+  // How long it has been running (or ran), updated every second.
+  let now = Date.now();
+  const tick = setInterval(() => { now = Date.now(); }, 1000);
+  onDestroy(() => clearInterval(tick));
+  $: startedMs = info.started_at ? Date.parse(info.started_at) : 0;
+  $: endedMs = info.ended_at ? Date.parse(info.ended_at) : 0;
+  $: elapsed = startedMs ? fmtDur(((endedMs || now) - startedMs) / 1000) : '';
+  function fmtDur(s) {
+    s = Math.max(0, Math.round(s));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+  }
 
   const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
@@ -89,6 +102,7 @@
   <div class="proc-head">
     <span class="proc-badge {status}">{label}</span>
     <span class="proc-cmd" title={info.command}>{info.command}</span>
+    {#if elapsed}<span class="proc-time" title="Running time">{elapsed}</span>{/if}
     {#if status !== 'exited'}
       <button class="proc-btn kill" on:click={() => KillProc(info.id)} title="Stop this process">Kill</button>
     {/if}
@@ -106,6 +120,7 @@
   .proc-badge.waiting_for_input { background: #d2992233; color: #e3b341; }
   .proc-badge.exited { background: #6e768133; color: #8b949e; }
   .proc-btn { background: transparent; border: 1px solid #30363d; color: #c9d1d9; border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer; }
+  .proc-time { color: #8b949e; font-family: monospace; font-size: 11px; }
   .proc-btn:hover { background: #21262d; }
   .proc-btn.kill { color: #f85149; }
   .proc-term { padding: 6px 8px; }
