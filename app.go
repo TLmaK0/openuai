@@ -999,7 +999,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] level=%d parent=%q", t.ID, childDepth, scope.key)
 			a.emitSubAgent("subagent_start", map[string]any{
 				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
-				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID,
+				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID, "color": defs.Color(name),
 			})
 		},
 		OnDone: func(r agent.SubAgentResult) {

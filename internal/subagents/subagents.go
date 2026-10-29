@@ -56,6 +56,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	Color           string // display colour name (see Colors); empty: automatic
 	PermissionMode  string // "", acceptEdits, dontAsk or plan
 	Prompt          string
 	Path            string
@@ -103,6 +104,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	Color           string      `yaml:"color"`
 	PermissionMode  string      `yaml:"permissionMode"`
 }
 
@@ -143,6 +145,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	color := strings.ToLower(strings.TrimSpace(fm.Color))
+	if color != "" && !validColor(color) {
+		return nil, fmt.Errorf("invalid color %q: use one of %s", fm.Color, strings.Join(Colors, ", "))
+	}
 	permMode, okMode := permissionModes[strings.ToLower(strings.TrimSpace(fm.PermissionMode))]
 	if strings.TrimSpace(fm.PermissionMode) != "" && !okMode {
 		return nil, fmt.Errorf("invalid permissionMode %q: use default, acceptEdits, auto, dontAsk, bypassPermissions or plan", fm.PermissionMode)
@@ -154,6 +160,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		Color:           color,
 		PermissionMode:  permMode,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
@@ -162,6 +169,27 @@ func Parse(data []byte) (*Definition, error) {
 		d.Tools = []string(*fm.Tools)
 	}
 	return d, nil
+}
+
+// Colors are the display colours a definition may choose (same names as
+// Claude Code).
+var Colors = []string{"red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"}
+
+func validColor(c string) bool {
+	for _, k := range Colors {
+		if c == k {
+			return true
+		}
+	}
+	return false
+}
+
+// Color returns the display colour of agent name, or "" for automatic.
+func (s Set) Color(name string) string {
+	if d, ok := s.Defs[name]; ok {
+		return d.Color
+	}
+	return ""
 }
 
 // permissionModes maps the accepted permissionMode values (Claude Code names,

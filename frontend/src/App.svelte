@@ -121,6 +121,10 @@
   // left out; each live sub-agent takes the first colour no other live one uses.
   const SA_COLORS = ['#f5b942', '#5ee6a8', '#ff7ab6', '#b48bff', '#ff8c5a', '#4fd8e8',
     '#d6e65e', '#ff5f6d', '#9be15d', '#e08cff', '#ffd166', '#7ef0d0'];
+  // Colours a definition can choose with `color:`. Blue is a different shade
+  // from the main agent's orb so they can still be told apart.
+  const SA_COLOR_NAMES = { red: '#ff5f6d', blue: '#6b7bff', green: '#5ee6a8', yellow: '#ffd166',
+    purple: '#b48bff', orange: '#ff8c5a', pink: '#ff7ab6', cyan: '#4fd8e8' };
   // Finished sub-agents stay a few seconds in the map so the arrow of their
   // result going back to the parent can be seen.
   let saLinger = {};
@@ -659,7 +663,7 @@
     EventsOn('subagent_start', (e) => {
       if (messages.some((m) => m.role === 'subagent' && m.sa.key === e.key)) return;
       const used = new Set(messages.filter((m) => m.role === 'subagent' && m.sa.status === 'running').map((m) => m.sa.color));
-      const color = SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
+      const color = SA_COLOR_NAMES[e.color] || SA_COLORS.find((c) => !used.has(c)) || `hsl(${Math.floor(Math.random() * 360)} 80% 62%)`;
       const nick = pickSubAgentName();
       const parentNick = e.parent ? messages.find((m) => m.role === 'subagent' && m.sa.key === e.parent)?.sa.nick : null;
       messages = [...messages, { role: 'subagent', sa: { ...e, nick, parentNick, color, status: 'running', steps: [] } }];
