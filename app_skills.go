@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"openuai/internal/agent"
+	"openuai/internal/hooks"
 	"openuai/internal/logger"
 	"openuai/internal/skills"
 	"openuai/internal/subagents"
@@ -22,17 +24,35 @@ func (a *App) GetSkills() *skills.Set {
 
 // expandSkillInvocation turns a message starting with /<skill> [args] into
 // the message plus the skill's instructions. Other messages are unchanged.
-func (a *App) expandSkillInvocation(content string) string {
+// UserPromptExpansion hooks run first: they can block the expansion (an
+// error) or add context for the model (the returned notes).
+func (a *App) expandSkillInvocation(content string) (string, []string, error) {
 	name, args, ok := skills.ParseInvocation(content)
 	if !ok {
-		return content
+		return content, nil, nil
 	}
 	sk, found := a.loadSkills().Get(name)
 	if !found || !sk.UserInvocable {
-		return content
+		return content, nil, nil
+	}
+	var notes []string
+	if hs := a.loadHooks(); hs.Has(hooks.UserPromptExpansion) {
+		r := a.runHookOn(a.ctx, hs, hooks.UserPromptExpansion, sk.Name, map[string]any{
+			"expansion_type": "slash_command", "command_name": sk.Name, "command_args": args,
+			"command_source": sk.Source, "prompt": content,
+		})
+		if r.Decision == "block" || r.StopAll {
+			reason := r.Reason
+			if r.StopAll && r.StopReason != "" {
+				reason = r.StopReason
+			}
+			logger.Info("Skill /%s blocked by a UserPromptExpansion hook: %s", sk.Name, reason)
+			return content, nil, fmt.Errorf("Blocked by a hook: %s", reason)
+		}
+		notes = hookNotesOf(r)
 	}
 	logger.Info("Skill /%s invoked by the user", sk.Name)
-	return agent.WithSkill(content, skills.Render(sk, args, a.GetWorkDir()))
+	return agent.WithSkill(content, skills.Render(sk, args, a.GetWorkDir())), notes, nil
 }
 
 // maxPreloadedSkills caps the skills a definition preloads (as Claude Code).

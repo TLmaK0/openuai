@@ -471,6 +471,19 @@ func ResolveModel(call, def, global, parent string, available []string) (string,
 	return parent, fmt.Sprintf("model %q is not available with the current provider; using the main agent's model %q", want, parent)
 }
 
+// ProjectInstructionFiles lists the AGENTS.md files ProjectInstructions
+// loads for workDir.
+func ProjectInstructionFiles(workDir string) []string {
+	var out []string
+	for _, d := range projectChain(workDir) {
+		p := filepath.Join(d, "AGENTS.md")
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // ProjectInstructions returns every AGENTS.md from the repository root down
 // to workDir, in that order.
 func ProjectInstructions(workDir string) string {

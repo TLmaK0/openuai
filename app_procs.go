@@ -10,7 +10,6 @@ import (
 
 	"openuai/internal/logger"
 	"openuai/internal/procs"
-	"openuai/internal/tray"
 )
 
 // procCallbacks forwards background-process activity to the UI (Wails events)
@@ -36,7 +35,7 @@ func (a *App) procCallbacks() procs.Callbacks {
 		OnStatus: func(i procs.Info) {
 			emit("proc_status", i)
 			if i.Status == procs.StatusWaiting {
-				tray.Notify("OpenUAI", fmt.Sprintf("%s is waiting for your input", i.Command))
+				a.notify("agent_needs_input", "OpenUAI", fmt.Sprintf("%s is waiting for your input", i.Command))
 			}
 		},
 		OnExit: func(i procs.Info) {

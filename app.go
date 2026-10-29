@@ -94,6 +94,8 @@ type App struct {
 	pending      *pendingStore
 	resumeOnce   sync.Once
 	shuttingDown atomic.Bool
+
+	hk hookState // hooks (app_hooks.go)
 }
 
 type permAnswer struct {
@@ -258,6 +260,7 @@ func (a *App) startup(ctx context.Context) {
 			default:
 			}
 			logger.Info("Permission request: tool=%s command=%s", tool, command)
+			a.notifyHook("permission_prompt", "Permission needed", "OpenUAI needs your permission to use "+tool+": "+command)
 			wailsRuntime.EventsEmit(a.ctx, "permission_request", map[string]string{
 				"tool":    tool,
 				"command": command,
@@ -347,7 +350,7 @@ func (a *App) startup(ctx context.Context) {
 		if len(preview) > 80 {
 			preview = preview[:80] + "..."
 		}
-		tray.Notify(fmt.Sprintf("%s — %s", event.Source, senderName), preview)
+		a.notify("message_received", fmt.Sprintf("%s — %s", event.Source, senderName), preview)
 		// Queued on disk first, so a restart before the agent handles it
 		// loses nothing, and a message delivered again is not processed twice.
 		key := event.Source + ":" + msgID
@@ -428,7 +431,7 @@ func (a *App) startup(ctx context.Context) {
 			GetCostSummary:    func() any { return a.GetCostSummary() },
 			GetModels:         func() any { return a.GetModels() },
 			GetModel:          func() any { return a.GetDefaultModel() },
-			SetModel:          func(model string) any { return a.SetDefaultModel(model) },
+			SetModel:          func(model string) any { return a.setModel(model, "sdk") },
 			GetProvider:       func() any { return a.GetProvider() },
 			SetProvider:       func(provider string) any { return a.SetProvider(provider) },
 			GetWatchedChats:   func() any { return a.GetWatchedChats() },
@@ -450,12 +453,22 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
+	a.initHooks()
 	a.recoverAfterRestart()
+	// SessionStart: "resume" when a conversation was restored.
+	source := "startup"
+	a.agentMu.Lock()
+	if ag := a.currentAgent; ag != nil && len(ag.Messages()) > 1 {
+		source = "resume"
+	}
+	a.agentMu.Unlock()
+	a.startSession(source, true)
 	logger.Info("Startup complete")
 }
 
 func (a *App) shutdown(ctx context.Context) {
 	logger.Info("Shutting down")
+	a.endSession("other")
 	a.saveWindowPosition()
 	// Keep the list of running processes: the next start reports them.
 	a.shuttingDown.Store(true)
@@ -614,10 +627,16 @@ func (a *App) SetProvider(provider string) error {
 	if !ok {
 		return fmt.Errorf("unknown provider: %s", provider)
 	}
+	from := a.cfg.DefaultModel()
+	if err := a.preModelSwitch(from, d.DefaultModel, "", "command"); err != nil {
+		return err
+	}
 	logger.Info("Provider changed to: %s", provider)
 	a.cfg.SetProviderAndModel(provider, d.DefaultModel)
 	a.currentAgent = nil // reset agent for new provider
-	return a.cfg.Save()
+	err := a.cfg.Save()
+	go a.postModelSwitch(from, d.DefaultModel, "", "command")
+	return err
 }
 
 // GetProviders names every registered provider, so the UI can list one it has
@@ -689,10 +708,22 @@ func (a *App) GetDefaultModel() string {
 }
 
 func (a *App) SetDefaultModel(model string) error {
+	return a.setModel(model, "picker")
+}
+
+// setModel switches the model; source is how the switch was requested
+// ("picker" from the UI, "sdk" from the REST API), for model-switch hooks.
+func (a *App) setModel(model, source string) error {
+	from := a.cfg.DefaultModel()
+	if err := a.preModelSwitch(from, model, model, source); err != nil {
+		return err
+	}
 	logger.Info("Model changed to: %s", model)
 	a.cfg.SetDefaultModel(model)
 	a.currentAgent = nil // reset agent for new model
-	return a.cfg.Save()
+	err := a.cfg.Save()
+	go a.postModelSwitch(from, model, model, source)
+	return err
 }
 
 // --- Permission response from UI ---
@@ -729,20 +760,29 @@ func (a *App) ensureAgent() *agent.Agent {
 		return ag
 	}
 	{
+		memoryText := a.memoryStore.LoadIndex()
+		if memoryText != "" {
+			a.instructionsLoaded(filepath.Join(a.cfg.ConfigDir(), "memory", "MEMORY.md"), "User", "session_start")
+		}
 		ag := agent.New(agent.Config{
-			Provider:    a.activeProvider(),
-			Model:       a.cfg.DefaultModel(),
-			Registry:    a.registry,
-			Permissions: a.permissions,
-			CostTracker: a.costTracker,
-			MemoryText:  a.memoryStore.LoadIndex(),
-			Hooks:       a.loadHooks,
-			WorkDir:     a.GetWorkDir(),
+			Provider:        a.activeProvider(),
+			Model:           a.cfg.DefaultModel(),
+			Registry:        a.registry,
+			Permissions:     a.permissions,
+			CostTracker:     a.costTracker,
+			MemoryText:      memoryText,
+			Hooks:           a.loadHooks,
+			WorkDir:         a.GetWorkDir(),
+			SessionID:       a.sessionID(),
+			TranscriptPath:  a.transcriptPath(),
+			BackgroundTasks: a.backgroundTasks,
 			// Save after every tool call and result, not only at the end of the
 			// turn: a restart mid-turn must not lose the work already shown.
 			OnCheckpoint: func(ag *agent.Agent) { a.saveSession(ag) },
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
+				// MessageDisplay hooks may change what is shown (never what is kept).
+				step = a.displayStep(step)
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)
 				if a.apiServer != nil {
 					a.apiServer.Broadcast("agent_step", "", step)
@@ -803,30 +843,38 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 		}
 	}
 
-	// /<skill> at the start of the message loads that skill for this turn.
-	content = a.expandSkillInvocation(content)
+	a.waitSessionStart(a.ctx)
+	a.checkCwd(a.loadHooks())
 
-	// UserPromptSubmit hooks can block the message or add context to it.
+	// UserPromptSubmit hooks see the message as typed (before a /skill
+	// expands) and can block it or add context to it.
+	var notes []string
 	if hs := a.loadHooks(); hs.Has(hooks.UserPromptSubmit) {
-		r := hs.Run(a.ctx, hooks.UserPromptSubmit, "", map[string]any{"session_id": "openuai", "prompt": content}, a.GetWorkDir())
-		logger.Info("UserPromptSubmit hooks: ran=%d decision=%q context=%d errors=%d", r.Ran, r.Decision, len(r.Context), len(r.Errors))
-		for _, e := range r.Errors {
-			logger.Error("Hook error: %s", e)
-			a.emitHookError(e)
-		}
+		r := a.runHookOn(a.ctx, hs, hooks.UserPromptSubmit, "", map[string]any{"prompt": content})
 		if r.Decision == "block" || r.StopAll {
 			reason := r.Reason
-			if reason == "" {
+			if r.StopAll && r.StopReason != "" {
 				reason = r.StopReason
 			}
-			return ChatResponse{Refused: true, Error: "Blocked by a hook: " + reason}
+			msg := "Blocked by a hook: " + reason
+			if !r.SuppressPrompt {
+				msg += "\nOriginal prompt: " + content
+			}
+			return ChatResponse{Refused: true, Error: msg}
 		}
-		notes := append([]string(nil), r.Context...)
-		for _, e := range r.Errors {
-			notes = append(notes, "Hook error: "+e)
-		}
-		content = agent.WithHookContext(content, notes)
+		a.setHookTitle(r.SessionTitle)
+		notes = hookNotesOf(r)
 	}
+
+	// /<skill> at the start of the message loads that skill for this turn
+	// (UserPromptExpansion hooks can block it or add context).
+	content, expNotes, err := a.expandSkillInvocation(content)
+	if err != nil {
+		return ChatResponse{Refused: true, Error: err.Error()}
+	}
+	// Context waiting from SessionStart, model switches and background hooks
+	// goes first, then the context for this prompt.
+	content = agent.WithHookContext(content, append(append(a.takeHookNotes(), notes...), expNotes...))
 
 	a.agentMu.Lock()
 	defer a.agentMu.Unlock()
@@ -836,10 +884,11 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 	defer func() { a.agentCancel = nil }()
 
 	ag := a.ensureAgent()
+	a.applyHookTitle(ag)
 	// Saved before running, so the message survives a restart mid-turn.
 	ag.BeginWithAttachments(content, images, files)
 	a.saveSession(ag)
-	err := ag.Continue(ctx)
+	err = ag.Continue(ctx)
 
 	// Save session after each interaction (success or failure)
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
@@ -937,8 +986,9 @@ func (a *App) runNotificationLocked(notification string, onBegin func()) {
 	}()
 
 	ag := a.ensureAgent()
+	a.applyHookTitle(ag)
 	logger.Info("Autonomous agent run starting: %s", notification)
-	ag.Begin(notification)
+	ag.Begin(agent.WithHookContext(notification, a.takeHookNotes()))
 	a.saveSession(ag)
 	if onBegin != nil {
 		onBegin()
@@ -947,7 +997,7 @@ func (a *App) runNotificationLocked(notification string, onBegin func()) {
 		logger.Error("Autonomous agent run error: %s", err.Error())
 	}
 	a.saveSession(ag)
-	tray.Notify("OpenUAI", "Agent completed autonomous run")
+	a.notify("agent_completed", "OpenUAI", "Agent completed autonomous run")
 	logger.Info("Autonomous agent run complete")
 }
 
@@ -1055,7 +1105,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			continue
 		}
 		if def != nil && def.Isolation == subagents.IsolationWorktree {
-			wt, err := subagents.CreateWorktree(workDir, t.ID)
+			wt, err := subagents.CreateWorktreeWithHooks(workDir, t.ID, a.loadHooks(), a.commonHookInput())
 			if err != nil {
 				at.SetupError = err.Error()
 				agentTasks[i] = at
@@ -1091,10 +1141,15 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			at.Notice = strings.TrimSpace(at.Notice + " " + mcpNote)
 		}
 		taskRegistries[t.ID] = registry
+		promptDir := workDir
 		if wt := worktrees[t.ID]; wt != nil {
+			promptDir = wt.Dir
 			at.SystemPrompt = subagents.SystemPrompt(def, wt.Dir) + subagents.IsolationPrompt(wt)
 		} else {
 			at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		}
+		for _, f := range instructionFilesFor(def, promptDir) {
+			a.instructionsLoaded(f, "Project", "session_start")
 		}
 		// Persistent memory: its contents go in the prompt and the agent always
 		// gets the file tools it needs to manage it.
@@ -1146,6 +1201,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		TranscriptDir: transcriptDir,
 		Hooks:         a.loadHooks,
 		WorkDir:       workDir,
+		SessionID:     a.sessionID(),
 		// One limit for the whole tree: top-level tasks wait for a free slot,
 		// nested ones fail at once (waiting while the parent holds its slot
 		// could deadlock).
@@ -1335,6 +1391,7 @@ func (a *App) GetWatchedChats() []string {
 
 func (a *App) ClearChat() {
 	logger.Info("Chat cleared")
+	a.endSession("clear")
 
 	// Capture messages before clearing for memory extraction
 	if a.currentAgent != nil {
@@ -1349,6 +1406,7 @@ func (a *App) ClearChat() {
 	a.currentAgent = nil
 	a.costTracker.Reset()
 	agent.ClearSession(a.cfg.ConfigDir())
+	a.startSession("clear", false)
 }
 
 // extractMemoriesFromSession sends a truncated transcript to the LLM to extract
@@ -1698,12 +1756,14 @@ func historyPreview(s string) string {
 // ResumeSession loads an archived session by ID.
 func (a *App) ResumeSession(id string) string {
 	logger.Info("Resuming session: %s", id)
+	a.endSession("resume")
 	a.currentAgent = nil
 	a.costTracker.Reset()
 	ag := a.ensureAgent()
 	if err := ag.LoadSessionByID(a.cfg.ConfigDir(), id); err != nil {
 		return err.Error()
 	}
+	a.startSession("resume", false)
 	return ""
 }
 

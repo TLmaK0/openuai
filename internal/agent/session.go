@@ -52,7 +52,7 @@ func (a *Agent) SaveSession(configDir string) error {
 
 	state := SessionState{
 		ID:        "current",
-		Title:     sessionTitle(a.messages),
+		Title:     a.Title(),
 		Model:     a.model,
 		Provider:  a.provider.Name(),
 		Messages:  a.messages,
@@ -116,6 +116,9 @@ func (a *Agent) loadSessionFrom(path string) error {
 	// Keep the freshly-built system prompt (messages[0]); restore only the conversation.
 	if len(state.Messages) > 1 {
 		a.messages = append(a.messages[:1], state.Messages[1:]...)
+	}
+	if state.Title != sessionTitle(state.Messages) {
+		a.title = state.Title // a title set by a hook
 	}
 	a.runInProgress = state.RunInProgress
 	a.resumeAttempts = state.ResumeAttempts
@@ -233,6 +236,18 @@ func DeleteSession(configDir, id string) error {
 // Messages returns the current conversation messages (for UI history restore)
 func (a *Agent) Messages() []llm.Message {
 	return a.messages
+}
+
+// SetTitle sets the session title (a hook's sessionTitle); "" goes back to
+// the title taken from the first message.
+func (a *Agent) SetTitle(t string) { a.title = strings.TrimSpace(t) }
+
+// Title is the session title.
+func (a *Agent) Title() string {
+	if a.title != "" {
+		return a.title
+	}
+	return sessionTitle(a.messages)
 }
 
 // sessionTitle extracts a title from the first user message.

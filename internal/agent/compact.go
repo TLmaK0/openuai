@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"openuai/internal/hooks"
 	"openuai/internal/llm"
 	"openuai/internal/logger"
 )
@@ -83,6 +84,11 @@ func (a *Agent) maybeCompact(ctx context.Context) {
 	if cut == 0 {
 		return
 	}
+	// PreCompact hooks can block the compaction.
+	if pre := a.runHook(ctx, hooks.PreCompact, "auto", map[string]any{"trigger": "auto", "custom_instructions": nil}); pre.Decision == "block" {
+		logger.Info("Context compaction blocked by a PreCompact hook: %s", pre.Reason)
+		return
+	}
 	var b strings.Builder
 	for _, m := range a.messages[1:cut] {
 		if m.Content != "" {
@@ -118,10 +124,20 @@ func (a *Agent) maybeCompact(ctx context.Context) {
 	if a.costTracker != nil {
 		a.costTracker.Track(resp)
 	}
-	summary := llm.Message{Role: llm.RoleUser, Content: CompactNotePrefix + "\n" + strings.TrimSpace(resp.Content)}
+	summaryText := strings.TrimSpace(resp.Content)
+	summary := llm.Message{Role: llm.RoleUser, Content: CompactNotePrefix + "\n" + summaryText}
+	// The main conversation starts again from the summary: SessionStart
+	// hooks with source "compact" can add context to it.
+	if a.agentType == "" {
+		ss := a.runHook(ctx, hooks.SessionStart, "compact", map[string]any{"source": "compact", "model": a.model})
+		if notes := hookNotes(ss); len(notes) > 0 {
+			summary.Content = WithHookContext(summary.Content, notes)
+		}
+	}
 	msgs := make([]llm.Message, 0, 2+len(a.messages)-cut)
 	msgs = append(msgs, a.messages[0], summary)
 	msgs = append(msgs, a.messages[cut:]...)
 	a.messages = msgs
 	logger.Info("Context compacted: ~%d -> ~%d tokens (%d messages summarized)", before, estimateTokens(a.messages), cut-1)
+	a.runHook(ctx, hooks.PostCompact, "auto", map[string]any{"trigger": "auto", "compact_summary": summaryText})
 }
