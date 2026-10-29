@@ -56,6 +56,7 @@ type Definition struct {
 	Model           string
 	MaxTurns        int
 	OmitAgentsMd    bool
+	Memory          string // persistent memory scope: user, project, local; empty: none
 	Prompt          string
 	Path            string
 	Scope           string
@@ -102,6 +103,7 @@ type frontmatter struct {
 	Model           string      `yaml:"model"`
 	MaxTurns        int         `yaml:"maxTurns"`
 	OmitAgentsMd    bool        `yaml:"omitAgentsMd"`
+	Memory          string      `yaml:"memory"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -141,6 +143,10 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
+	mem := strings.ToLower(strings.TrimSpace(fm.Memory))
+	if mem != "" && mem != MemoryUser && mem != MemoryProject && mem != MemoryLocal {
+		return nil, fmt.Errorf("invalid memory %q: use user, project or local", fm.Memory)
+	}
 	d := &Definition{
 		Name:            name,
 		Description:     strings.TrimSpace(fm.Description),
@@ -148,6 +154,7 @@ func Parse(data []byte) (*Definition, error) {
 		Model:           strings.TrimSpace(fm.Model),
 		MaxTurns:        fm.MaxTurns,
 		OmitAgentsMd:    fm.OmitAgentsMd,
+		Memory:          mem,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {

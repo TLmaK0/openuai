@@ -936,6 +936,18 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
 		taskRegistries[t.ID] = registry
 		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		// Persistent memory: its contents go in the prompt and the agent always
+		// gets the file tools it needs to manage it.
+		if memDir := subagents.MemoryDir(def, workDir, filepath.Join(a.cfg.ConfigDir(), "agent-memory")); memDir != "" {
+			at.SystemPrompt += subagents.MemoryPrompt(memDir)
+			for _, tl := range baseRegistry.All() {
+				for _, n := range subagents.MemoryTools {
+					if tl.Definition().Name == n {
+						registry.Register(tl)
+					}
+				}
+			}
+		}
 		agentTasks[i] = at
 	}
 
