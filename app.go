@@ -441,7 +441,7 @@ func (a *App) startup(ctx context.Context) {
 				return map[string]bool{"enabled": a.GetNotificationsEnabled()}
 			},
 			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
-			RequestRestart:   func(worktree string) (any, error) { return a.RequestRestart(worktree) },
+			RequestRestart:   func(worktree string, window []int) (any, error) { return a.RequestRestart(worktree, window) },
 		})
 		if err := a.apiServer.Start(); err != nil {
 			logger.Error("Failed to start API server: %s", err.Error())
@@ -454,6 +454,7 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	logger.Info("Shutting down")
+	a.saveWindowPosition()
 	// Keep the list of running processes: the next start reports them.
 	a.shuttingDown.Store(true)
 	if a.wake != nil {
