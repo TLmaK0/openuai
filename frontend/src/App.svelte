@@ -549,7 +549,9 @@
     try {
       const history = await GetChatHistory();
       if (history?.length && !messages.length) {
-        messages = history.map((m) => ({ role: m.role, content: m.content }));
+        messages = history.map((m) => (m.role === 'tools'
+          ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
+          : { role: m.role, content: m.content }));
       }
     } catch (e) { /* no history — start empty */ }
 
@@ -2002,7 +2004,7 @@
               {#each msg.steps as step}
                 <div class="tool-step" class:tool-step-error={step.status === 'error'}>
                   <div class="tool-step-header">
-                    <span class="tool-step-icon">{step.status === 'done' ? '✓' : step.status === 'error' ? '✗' : '⋯'}</span>
+                    <span class="tool-step-icon">{step.status === 'done' ? '✓' : step.status === 'error' ? '✗' : step.status === 'interrupted' ? '↻' : '⋯'}</span>
                     <span class="tool-step-name">{step.tool}</span>
                     {#if step.command}
                       <span class="tool-step-cmd">{step.command}</span>
@@ -2709,16 +2711,17 @@
     gap: 0.35rem;
     background: none;
     border: none;
-    color: #666;
-    font-size: 11px;
+    border-left: 2px solid #2a3b55;
+    color: #8a9bb3;
+    font-size: 12px;
     cursor: pointer;
-    padding: 0.2rem 0.5rem;
+    padding: 0.25rem 0.5rem;
     width: 100%;
     text-align: left;
     font-family: inherit;
   }
 
-  .tool-group-header:hover { color: #999; }
+  .tool-group-header:hover { color: #c5d3e8; border-left-color: #4a6a95; }
 
   .tool-group-arrow {
     font-size: 8px;
