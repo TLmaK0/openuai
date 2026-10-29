@@ -22,6 +22,15 @@ type SubTask struct {
 	// Background runs the task detached from this turn; its result arrives
 	// later as a notification.
 	Background bool `json:"background,omitempty"`
+
+	// Set only by OpenUAI itself (a skill with context: fork), never from
+	// the model's input.
+	// Allow pre-approves tool calls for the whole run (allowed-tools).
+	Allow func(tool, arg string) bool `json:"-"`
+	// Disallow removes tools from the sub-agent's pool (disallowed-tools).
+	Disallow []string `json:"-"`
+	// OnFinish is called once a background task has finished.
+	OnFinish func() `json:"-"`
 }
 
 // SubTaskResult holds the outcome of a sub-agent task.

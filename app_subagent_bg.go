@@ -41,6 +41,11 @@ func (a *App) spawnWithBackground(ctx context.Context, fg, bg []tools.SubTask) [
 	logger.Info("Sub-agents started in the background: %s", strings.Join(ids, ", "))
 	go func() {
 		results := a.spawnSubAgents(bgCtx, bg)
+		for _, t := range bg {
+			if t.OnFinish != nil {
+				t.OnFinish()
+			}
+		}
 		notification := "[Background sub-agents finished: " + strings.Join(ids, ", ") + "]\n\n" + tools.FormatResults(results)
 		key := fmt.Sprintf("subagents:%d", time.Now().UnixNano())
 		logger.Info("Background sub-agents finished: %s", strings.Join(ids, ", "))

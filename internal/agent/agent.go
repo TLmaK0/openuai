@@ -117,6 +117,12 @@ type Agent struct {
 	agentID    string
 	stopBlocks int // Stop hook continuations in a row
 
+	// Skills (see skillturn.go): what invoked skills changed for this turn,
+	// a grant for the agent's whole life, and a callback after each tool use.
+	turn      turnState
+	allow     func(tool, arg string) bool
+	onToolUse func(tool string, args map[string]string) string
+
 	// Loop detection: track consecutive errors per tool
 	lastErrorTool  string
 	lastErrorMsg   string
@@ -161,6 +167,13 @@ type Config struct {
 	// AgentType and AgentID identify a sub-agent to its hooks.
 	AgentType string
 	AgentID   string
+	// Allow pre-approves tool calls (no permission prompt) for the agent's
+	// whole life: a skill run in a sub-agent with allowed-tools.
+	Allow func(tool, arg string) bool
+	// OnToolUse, when set, is called after each successful tool call; what
+	// it returns is added to the tool result (e.g. skills that became
+	// available for the files the tool touched).
+	OnToolUse func(tool string, args map[string]string) string
 }
 
 func New(cfg Config) *Agent {
@@ -210,6 +223,8 @@ func New(cfg Config) *Agent {
 		workDir:     cfg.WorkDir,
 		agentType:   cfg.AgentType,
 		agentID:     cfg.AgentID,
+		allow:       cfg.Allow,
+		onToolUse:   cfg.OnToolUse,
 		toolDefs:    toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
@@ -260,7 +275,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		a.pruneOldToolResults(6)
 		a.maybeCompact(ctx)
 
-		resp, toolCalls, err := toolProvider.ChatWithTools(llm.WithEffort(ctx, a.effort), a.messages, a.model, a.toolDefs)
+		resp, toolCalls, err := toolProvider.ChatWithTools(llm.WithEffort(ctx, a.turnEffort()), a.messages, a.turnModel(), a.turnToolDefs())
 		if err != nil {
 			logger.Error("LLM call failed: %s", err.Error())
 			a.emit(StepResult{Type: "error", Content: err.Error()})
@@ -319,6 +334,13 @@ func (a *Agent) loop(ctx context.Context) error {
 		// Process each tool call
 		for _, tc := range toolCalls {
 			tool, ok := a.registry.Get(tc.Name)
+			if skill, gone := a.turn.disallow[tc.Name]; gone && ok {
+				errMsg := fmt.Sprintf("Tool %s is not available while skill %s is active", tc.Name, skill)
+				logger.Info("%s", errMsg)
+				a.messages = append(a.messages, llm.Message{Role: llm.RoleToolResult, ToolCallID: tc.ID, Content: "Error: " + errMsg})
+				a.emit(StepResult{Type: "error", Content: errMsg})
+				continue
+			}
 			if !ok {
 				errMsg := fmt.Sprintf("Unknown tool: %s", tc.Name)
 				logger.Error("%s", errMsg)
@@ -359,7 +381,9 @@ func (a *Agent) loop(ctx context.Context) error {
 				logger.Info("Tool %s input changed by a hook: %v", tc.Name, args)
 			}
 
-			if ok, why := a.toolAllowed(ctx, pre, def.Name, def.RequiresPermission, commandDesc); !ok {
+			if a.preApproved(def.Name, commandDesc) {
+				logger.Info("Tool %s pre-approved by an active skill", tc.Name)
+			} else if ok, why := a.toolAllowed(ctx, pre, def.Name, def.RequiresPermission, commandDesc); !ok {
 				errMsg := "Permission denied for: " + tc.Name
 				a.messages = append(a.messages, llm.Message{
 					Role:       llm.RoleToolResult,
@@ -372,7 +396,7 @@ func (a *Agent) loop(ctx context.Context) error {
 
 			// Execute tool
 			logger.Info("Executing tool: %s", tc.Name)
-			result := tool.Execute(ctx, args)
+			result := tool.Execute(a.toolContext(ctx), args)
 			logger.Info("Tool result: output_len=%d error=%q", len(result.Output), result.Error)
 
 			var resultContent string
@@ -403,6 +427,12 @@ func (a *Agent) loop(ctx context.Context) error {
 			if len(resultContent) > maxToolResultBytes {
 				truncated := resultContent[:maxToolResultBytes]
 				resultContent = truncated + fmt.Sprintf("\n\n[Output truncated: %d bytes total, showing first %d bytes. Do NOT assume the content ended here â for web_fetch call it again with offset set to the number of bytes already shown; for bash, narrow the command.]", len(resultContent), maxToolResultBytes)
+			}
+
+			if a.onToolUse != nil && result.Error == "" {
+				if note := a.onToolUse(tc.Name, args); note != "" {
+					resultContent += "\n\n" + note
+				}
 			}
 
 			resultContent = a.postToolHooks(ctx, tc, args, result.Output, result.Error, resultContent, notes)
@@ -448,7 +478,7 @@ func (a *Agent) saveCheckpoint() {
 
 // runSimpleChat handles providers without native tool calling (fallback)
 func (a *Agent) runSimpleChat(ctx context.Context) error {
-	resp, err := a.provider.Chat(llm.WithEffort(ctx, a.effort), a.messages, a.model)
+	resp, err := a.provider.Chat(llm.WithEffort(ctx, a.turnEffort()), a.messages, a.turnModel())
 	if err != nil {
 		a.emit(StepResult{Type: "error", Content: err.Error()})
 		return err

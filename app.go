@@ -43,6 +43,7 @@ import (
 type App struct {
 	subRuns    subAgentRuns    // running sub-agents, cancellable one by one
 	subLimiter subAgentLimiter // one concurrency limit for the whole sub-agent tree
+	skills     skillState      // files worked on, skill usage, forks running (app_skills.go)
 	ctx        context.Context
 	cfg        *config.Config
 	// providers is written while the app runs — a plugin can be added or
@@ -224,7 +225,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.ProcKill{M: a.procs})
 	a.registry.Register(tools.ProcList{M: a.procs})
 	a.registry.Register(tools.Bash{Procs: a.procs})
-	a.registry.Register(tools.Skill{Load: a.loadSkills, ProjectDir: a.GetWorkDir})
+	a.registry.Register(tools.Skill{Listing: a.skillListing, Invoke: a.invokeSkill})
 	a.registry.Register(tools.GitStatus{})
 	a.registry.Register(tools.GitDiff{})
 	a.registry.Register(tools.GitLog{})
@@ -741,6 +742,9 @@ func (a *App) ensureAgent() *agent.Agent {
 			// Save after every tool call and result, not only at the end of the
 			// turn: a restart mid-turn must not lose the work already shown.
 			OnCheckpoint: func(ag *agent.Agent) { a.saveSession(ag) },
+			// Files the agent works on can make skills available (paths,
+			// nested .openuai/skills folders).
+			OnToolUse: a.noteSkillPaths,
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)
@@ -803,8 +807,13 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 		}
 	}
 
-	// /<skill> at the start of the message loads that skill for this turn.
-	content = a.expandSkillInvocation(content)
+	// /<skill> at the start of the message loads that skill (or several
+	// stacked ones) for this turn.
+	plan, err := a.planSkillInvocation(a.ctx, content)
+	if err != nil {
+		return ChatResponse{Refused: true, Error: err.Error()}
+	}
+	content = plan.content
 
 	// UserPromptSubmit hooks can block the message or add context to it.
 	if hs := a.loadHooks(); hs.Has(hooks.UserPromptSubmit) {
@@ -836,10 +845,18 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 	defer func() { a.agentCancel = nil }()
 
 	ag := a.ensureAgent()
+	// A skill with context: fork runs in a sub-agent first; its report goes
+	// with the message.
+	content = a.runPlannedFork(ctx, skillPlan{content: content, fork: plan.fork, forkRendered: plan.forkRendered})
 	// Saved before running, so the message survives a restart mid-turn.
 	ag.BeginWithAttachments(content, images, files)
+	// Invoked skills' allowed-tools, disallowed-tools, model and effort
+	// apply until the next message.
+	for _, c := range plan.changes {
+		ag.ApplyTurnChange(c)
+	}
 	a.saveSession(ag)
-	err := ag.Continue(ctx)
+	err = ag.Continue(ctx)
 
 	// Save session after each interaction (success or failure)
 	if saveErr := ag.SaveSession(a.cfg.ConfigDir()); saveErr != nil {
@@ -1054,6 +1071,12 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			agentTasks[i] = at
 			continue
 		}
+		// A skill run in a sub-agent: its disallowed-tools leave the pool and
+		// its allowed-tools run without asking.
+		if len(t.Disallow) > 0 {
+			registry = registry.Without(t.Disallow...)
+		}
+		at.Allow = t.Allow
 		if def != nil && def.Isolation == subagents.IsolationWorktree {
 			wt, err := subagents.CreateWorktree(workDir, t.ID)
 			if err != nil {
@@ -1348,6 +1371,7 @@ func (a *App) ClearChat() {
 
 	a.currentAgent = nil
 	a.costTracker.Reset()
+	a.skills.reset()
 	agent.ClearSession(a.cfg.ConfigDir())
 }
 

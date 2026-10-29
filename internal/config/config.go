@@ -92,6 +92,13 @@ type settings struct {
 	ComputerUseDisplay   string            `json:"computer_use_display,omitempty"` // X display, e.g. ":0" (screen) or ":99" (virtual)
 	ComputerUseMonitor   *int              `json:"computer_use_monitor,omitempty"` // monitor index (xrandr); nil = primary (0), -1 = whole desktop
 	ComputerUseProfile   string            `json:"computer_use_profile,omitempty"` // chrome user-data-dir; empty = the user's own profile/session
+
+	// Skills (Claude Code's skillOverrides, disableSkillShellExecution,
+	// skill listing budget and per-entry cap).
+	SkillOverrides             map[string]string `json:"skill_overrides,omitempty"`
+	DisableSkillShellExecution bool              `json:"disable_skill_shell_execution,omitempty"`
+	SkillListingBudget         int               `json:"skill_listing_budget_chars,omitempty"`
+	SkillListingMaxDescChars   int               `json:"skill_listing_max_desc_chars,omitempty"`
 }
 
 // Config is the configuration, and it is shared mutable state: its values are
@@ -656,4 +663,34 @@ func configDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, "openuai"), nil
+}
+
+// --- Skills ---
+
+// SkillOverrides returns a copy of skill_overrides: skill name to
+// "on", "name-only", "user-invocable-only" or "off".
+func (c *Config) SkillOverrides() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]string, len(c.data.SkillOverrides))
+	for k, v := range c.data.SkillOverrides {
+		out[k] = v
+	}
+	return out
+}
+
+// DisableSkillShellExecution reports whether skills' !`command` injections
+// are replaced by a notice instead of being run.
+func (c *Config) DisableSkillShellExecution() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data.DisableSkillShellExecution
+}
+
+// SkillListingLimits returns the skill listing budget and the per-skill
+// description cap in characters (0: the defaults).
+func (c *Config) SkillListingLimits() (budget, maxDesc int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data.SkillListingBudget, c.data.SkillListingMaxDescChars
 }
