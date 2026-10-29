@@ -103,6 +103,7 @@ type Agent struct {
 	messages    []llm.Message
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
+	checkpoint  func(*Agent)     // called whenever the history grows mid-turn
 	maxTurns    int
 	effort      string // effort level for this agent's model calls ("": default)
 	permMode    string // permission mode (sub-agents); "" is the normal one
@@ -127,7 +128,11 @@ type Config struct {
 	Permissions *PermissionManager
 	CostTracker *llm.CostTracker
 	OnStep      func(StepResult)
-	MemoryText  string // pre-loaded memory content injected into system prompt
+	// OnCheckpoint, when set, is called each time the history grows during a
+	// run (a tool call is decided, a tool result arrives), so the caller can
+	// persist it: a restart or crash mid-turn then keeps the work done so far.
+	OnCheckpoint func(*Agent)
+	MemoryText   string // pre-loaded memory content injected into system prompt
 	// SystemPrompt replaces the default system prompt (used by sub-agents);
 	// environment details are still appended.
 	SystemPrompt string
@@ -181,6 +186,7 @@ func New(cfg Config) *Agent {
 		permissions: cfg.Permissions,
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
+		checkpoint:  cfg.OnCheckpoint,
 		maxTurns:    cfg.MaxTurns,
 		effort:      cfg.Effort,
 		permMode:    cfg.PermissionMode,
@@ -270,6 +276,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			Content:   resp.Content,
 			ToolCalls: toolCalls,
 		})
+		// Persist the decided tool calls before running them: a tool may
+		// restart the app (dev restart) and the turn must keep them.
+		a.saveCheckpoint()
 
 		// Reset error tracking if LLM produced text (it's trying something different)
 		if resp.Content != "" {
@@ -351,6 +360,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			})
 
 			a.emit(StepResult{Type: "tool_result", Content: fmt.Sprintf("Tool %s result:\n%s", tc.Name, resultContent), ToolName: tc.Name})
+			a.saveCheckpoint()
 
 			// If we hit the consecutive error limit, inject a system message to break the loop
 			if a.consecutiveErr >= maxConsecutiveErrors {
@@ -372,6 +382,13 @@ func (a *Agent) loop(ctx context.Context) error {
 	}
 	a.emit(StepResult{Type: "error", Content: "Agent reached maximum iterations"})
 	return fmt.Errorf("agent reached maximum iterations (%d)", maxIterations)
+}
+
+// saveCheckpoint lets the caller persist the history mid-turn.
+func (a *Agent) saveCheckpoint() {
+	if a.checkpoint != nil {
+		a.checkpoint(a)
+	}
 }
 
 // runSimpleChat handles providers without native tool calling (fallback)

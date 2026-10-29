@@ -730,6 +730,9 @@ func (a *App) ensureAgent() *agent.Agent {
 			Permissions: a.permissions,
 			CostTracker: a.costTracker,
 			MemoryText:  a.memoryStore.LoadIndex(),
+			// Save after every tool call and result, not only at the end of the
+			// turn: a restart mid-turn must not lose the work already shown.
+			OnCheckpoint: func(ag *agent.Agent) { a.saveSession(ag) },
 			OnStep: func(step agent.StepResult) {
 				logger.Debug("Agent step: type=%s tool=%s content_len=%d", step.Type, step.ToolName, len(step.Content))
 				wailsRuntime.EventsEmit(a.ctx, "agent_step", step)
