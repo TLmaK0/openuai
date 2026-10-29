@@ -118,7 +118,8 @@ func IsolateTools(reg *tools.Registry, w *Worktree) *tools.Registry {
 	for _, t := range reg.All() {
 		switch n := t.Definition().Name; n {
 		case "bash":
-			out.Register(tools.Bash{WorkDir: w.Dir})
+			b, _ := t.(tools.Bash)
+			out.Register(tools.Bash{WorkDir: w.Dir, Procs: b.Procs})
 		case "bash_sudo":
 			out.Register(tools.BashSudo{WorkDir: w.Dir})
 		case "git_status":

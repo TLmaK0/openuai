@@ -50,6 +50,8 @@ type Info struct {
 	ExitCode  int        `json:"exit_code"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	// StoppedByUser is set when the user stopped the process.
+	StoppedByUser bool `json:"stopped_by_user,omitempty"`
 }
 
 // Callbacks let the app forward process activity to the UI and the agent.
@@ -82,6 +84,7 @@ type Proc struct {
 	ended         time.Time
 	agentOffset   int64 // where the agent's next read continues from
 	killedByAgent bool
+	killedByUser  bool
 	exitSeen      bool // the agent already saw the exit through a read
 
 	userLine []byte   // what the user is typing right now (never leaves the app)
@@ -102,7 +105,7 @@ func (p *Proc) Info() Info {
 }
 
 func (p *Proc) infoLocked() Info {
-	i := Info{ID: p.id, Command: p.command, Cwd: p.cwd, StartedAt: p.started, Status: StatusRunning}
+	i := Info{ID: p.id, Command: p.command, Cwd: p.cwd, StartedAt: p.started, Status: StatusRunning, StoppedByUser: p.killedByUser}
 	switch {
 	case p.exited:
 		i.Status = StatusExited
@@ -551,6 +554,8 @@ func (m *Manager) Kill(id string, byAgent bool) error {
 	}
 	if byAgent {
 		p.killedByAgent = true
+	} else {
+		p.killedByUser = true
 	}
 	p.mu.Unlock()
 

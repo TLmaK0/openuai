@@ -60,7 +60,7 @@ func (t ProcStart) Definition() Definition {
 		Description: "Start a command in the background inside a real terminal (PTY) and return its id. " +
 			"Use it for interactive or long-running commands: logins (gh auth login, npm login), ssh/sudo prompts, " +
 			"Y/n wizards, dev servers, watchers, long builds. The user sees a live terminal in the chat and can type into it " +
-			"(passwords and tokens they type are never shown to you). Follow up with proc_read, proc_write and proc_kill.",
+			"(passwords and tokens they type are never shown to you). Follow up with proc_read, proc_write and proc_kill. When it ends without you reading its exit, you get a notification starting with \"[Background process\".",
 		Parameters: []Parameter{
 			{Name: "command", Type: "string", Description: "The shell command to run", Required: true},
 			{Name: "cwd", Type: "string", Description: "Working directory (default: the app's)", Required: false},
