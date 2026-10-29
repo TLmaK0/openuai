@@ -190,7 +190,7 @@ func imageContentParts(text string, images []string) []map[string]interface{} {
 	for _, img := range images {
 		parts = append(parts, map[string]interface{}{
 			"type":      "input_image",
-			"image_url": "data:image/png;base64," + img,
+			"image_url": "data:" + llm.ImageMediaType(img) + ";base64," + img,
 		})
 	}
 	return parts
@@ -536,3 +536,6 @@ func marshalArgs(args map[string]string) string {
 	b, _ := json.Marshal(args)
 	return string(b)
 }
+
+// SupportsImages: the Responses API takes image inputs.
+func (p *OpenAIProvider) SupportsImages() bool { return true }

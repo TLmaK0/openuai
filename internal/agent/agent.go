@@ -446,6 +446,21 @@ func (a *Agent) LastAssistantContent() string {
 // the n-th user message (0-based), discarding it and everything after. Used to
 // edit a previous message and continue from there. Returns false when there is
 // no n-th user message. The system prompt (index 0) is always preserved.
+// UserMessageImages returns the images of the n-th user message (0-based,
+// counted like RewindToUserMessage), so an edited message keeps them.
+func (a *Agent) UserMessageImages(n int) []string {
+	count := 0
+	for _, m := range a.messages {
+		if m.Role == llm.RoleUser {
+			if count == n {
+				return m.Images
+			}
+			count++
+		}
+	}
+	return nil
+}
+
 func (a *Agent) RewindToUserMessage(n int) bool {
 	count := 0
 	for i, m := range a.messages {

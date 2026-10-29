@@ -109,7 +109,7 @@ func renderPrompt(messages []llm.Message, tools []llm.ToolDefinition) string {
 	}
 
 	b.WriteString("Conversation:\n\n")
-	renderMessages(&b, messages)
+	renderMessages(&b, messages, imageKeepFrom(messages))
 	return b.String()
 }
 
@@ -118,11 +118,12 @@ func renderPrompt(messages []llm.Message, tools []llm.ToolDefinition) string {
 func renderDelta(messages []llm.Message) string {
 	var b strings.Builder
 	b.WriteString("Conversation continues (messages added since your last answer):\n\n")
-	renderMessages(&b, messages)
+	renderMessages(&b, messages, imageKeepFrom(messages))
 	return b.String()
 }
 
-func renderMessages(b *strings.Builder, messages []llm.Message) {
+func renderMessages(b *strings.Builder, messages []llm.Message, keepFrom int) {
+	n := 0 // images seen so far
 	for _, m := range messages {
 		switch m.Role {
 		case llm.RoleSystem:
@@ -144,11 +145,42 @@ func renderMessages(b *strings.Builder, messages []llm.Message) {
 		default:
 			fmt.Fprintf(b, "[%s]\n%s\n\n", m.Role, m.Content)
 		}
-		if len(m.Images) > 0 {
-			// Images cannot cross this boundary: a headless run takes a
-			// prompt, not image inputs. Saying so is better than dropping
-			// them silently, because computer-use turns depend on them.
-			fmt.Fprintf(b, "[%d image(s) omitted: this provider cannot pass images]\n\n", len(m.Images))
+		for range m.Images {
+			// Images travel as image blocks next to this prompt (see
+			// runImages); only the most recent maxImages do, so older ones
+			// are named as omitted rather than dropped silently.
+			if n >= keepFrom {
+				fmt.Fprintf(b, "[image #%d attached to this message: see the attached images]\n\n", n-keepFrom+1)
+			} else {
+				b.WriteString("[an earlier image was here: omitted]\n\n")
+			}
+			n++
 		}
 	}
+}
+
+// maxImages caps the images passed in one headless run: each one costs
+// tokens, and the newest are the ones that matter.
+const maxImages = 6
+
+// imageKeepFrom is the index of the first image of messages that is passed.
+func imageKeepFrom(messages []llm.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Images)
+	}
+	if total > maxImages {
+		return total - maxImages
+	}
+	return 0
+}
+
+// runImages returns the images passed with a prompt rendered from messages,
+// in order, matching the numbering renderMessages writes.
+func runImages(messages []llm.Message) []string {
+	var all []string
+	for _, m := range messages {
+		all = append(all, m.Images...)
+	}
+	return all[imageKeepFrom(messages):]
 }

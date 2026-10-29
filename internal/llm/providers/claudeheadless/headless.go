@@ -115,6 +115,8 @@ type invocation struct {
 	system     string
 	prompt     string
 	jsonSchema string
+	// images are passed as image blocks with the prompt (stream-json input).
+	images []string
 	// effort is the --effort level ("": the CLI default).
 	effort string
 	// sessionID names the CLI session; resume continues it instead of
@@ -156,6 +158,11 @@ func (in invocation) args() []string {
 		"--restricted",
 		"--strict-mcp-config",
 	}
+	if len(in.images) > 0 {
+		// Plain-text stdin cannot carry images: send one stream-json user
+		// message with the images and the prompt instead (see stdin()).
+		args = append(args, "--input-format", "stream-json")
+	}
 	if in.apiKey != "" {
 		args = append(args, "--bare")
 	}
@@ -188,7 +195,7 @@ func (in invocation) run(ctx context.Context) (*outcome, error) {
 	// The prompt arrives on stdin rather than in argv; see args(). exec copies
 	// it in its own goroutine and closes the pipe at EOF, so the child sees the
 	// end of the prompt while this side is already draining stdout.
-	cmd.Stdin = strings.NewReader(in.prompt)
+	cmd.Stdin = strings.NewReader(in.stdin())
 	if in.apiKey != "" {
 		// Only on this path: appended to the inherited environment, so the
 		// child keeps HOME and PATH and can still find its own installation.
@@ -308,4 +315,30 @@ func firstLine(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// stdin is what the run reads: the prompt as text, or, when there are
+// images, a single stream-json user message with the images and the prompt.
+func (in invocation) stdin() string {
+	if len(in.images) == 0 {
+		return in.prompt
+	}
+	type source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	}
+	type block struct {
+		Type   string  `json:"type"`
+		Text   string  `json:"text,omitempty"`
+		Source *source `json:"source,omitempty"`
+	}
+	blocks := make([]block, 0, len(in.images)+1)
+	for _, img := range in.images {
+		blocks = append(blocks, block{Type: "image", Source: &source{Type: "base64", MediaType: llm.ImageMediaType(img), Data: img}})
+	}
+	blocks = append(blocks, block{Type: "text", Text: in.prompt})
+	msg := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": blocks}}
+	data, _ := json.Marshal(msg)
+	return string(data) + "\n"
 }

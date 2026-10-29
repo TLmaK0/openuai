@@ -99,13 +99,20 @@ type claudeAPIMessage struct {
 }
 
 type claudeContentBlock struct {
+	Type      string             `json:"type"`
+	Text      string             `json:"text,omitempty"`
+	ID        string             `json:"id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Input     any                `json:"input,omitempty"`
+	ToolUseID string             `json:"tool_use_id,omitempty"`
+	Content   string             `json:"content,omitempty"`
+	Source    *claudeImageSource `json:"source,omitempty"`
+}
+
+type claudeImageSource struct {
 	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Input     any    `json:"input,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type claudeToolDef struct {
@@ -200,6 +207,21 @@ func (c *ClaudeProvider) ChatWithTools(ctx context.Context, messages []llm.Messa
 				Role:    "assistant",
 				Content: blocks,
 			})
+			continue
+		}
+
+		// User message with images: image blocks, then the text.
+		if m.Role == llm.RoleUser && len(m.Images) > 0 {
+			var blocks []claudeContentBlock
+			for _, img := range m.Images {
+				blocks = append(blocks, claudeContentBlock{Type: "image", Source: &claudeImageSource{Type: "base64", MediaType: llm.ImageMediaType(img), Data: img}})
+			}
+			text := m.Content
+			if text == "" {
+				text = "(image)"
+			}
+			blocks = append(blocks, claudeContentBlock{Type: "text", Text: text})
+			apiMessages = append(apiMessages, claudeAPIMessage{Role: "user", Content: blocks})
 			continue
 		}
 
@@ -335,3 +357,6 @@ func (c *ClaudeProvider) SetSecret(secret string) error {
 	c.mu.Unlock()
 	return c.store.Set(secretKey, secret)
 }
+
+// SupportsImages: the Messages API takes image blocks in user messages.
+func (p *ClaudeProvider) SupportsImages() bool { return true }

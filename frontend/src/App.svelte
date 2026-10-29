@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -551,7 +551,7 @@
       if (history?.length && !messages.length) {
         messages = history.map((m) => (m.role === 'tools'
           ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
-          : { role: m.role, content: m.content }));
+          : { role: m.role, content: m.content, images: m.images || [] }));
       }
     } catch (e) { /* no history — start empty */ }
 
@@ -954,39 +954,156 @@
   let queueEditId = -1;
   let queueEditText = '';
 
+  // Images pasted or dropped into the message box, sent with the next
+  // message: { id, data (base64), mime }.
+  let attachments = [];
+  let attachSeq = 0;
+  let attachError = '';
+  let viewImage = null;   // data URL shown full size
+  const MAX_ATTACH = 10;
+  const MAX_IMAGE_SIDE = 1568; // larger images are scaled down before sending
+
+  function imageMime(b64) {
+    if (b64.startsWith('/9j/')) return 'image/jpeg';
+    if (b64.startsWith('R0lGOD')) return 'image/gif';
+    if (b64.startsWith('UklGR')) return 'image/webp';
+    return 'image/png';
+  }
+  function imageURL(b64) { return `data:${imageMime(b64)};base64,${b64}`; }
+
+  // Decodes an image file, scales it to at most MAX_IMAGE_SIDE and returns
+  // it as base64 (PNG, or JPEG when the PNG would be too heavy).
+  function readImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        let data = canvas.toDataURL('image/png');
+        if (data.length > 3_000_000) data = canvas.toDataURL('image/jpeg', 0.85);
+        resolve(data.slice(data.indexOf(',') + 1));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('not a readable image')); };
+      img.src = url;
+    });
+  }
+
+  async function addImageFiles(files) {
+    attachError = '';
+    for (const f of files) {
+      if (!f.type.startsWith('image/')) continue;
+      if (attachments.length >= MAX_ATTACH) { attachError = `At most ${MAX_ATTACH} images per message.`; break; }
+      try {
+        const data = await readImage(f);
+        attachments = [...attachments, { id: ++attachSeq, data }];
+      } catch (e) {
+        attachError = `Could not read ${f.name || 'the image'}: ${e.message}`;
+      }
+    }
+  }
+
+  function handlePaste(e) {
+    const files = [...(e.clipboardData?.items || [])]
+      .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
+    if (files.length) {
+      e.preventDefault();
+      addImageFiles(files);
+      return;
+    }
+    // Some webviews (WebKitGTK) give a paste of an image no data at all:
+    // when there is no text either, ask the system clipboard directly.
+    const types = [...(e.clipboardData?.types || [])];
+    if (types.some((t) => t.startsWith('text/'))) return; // plain text paste goes on as usual
+    pasteFromSystemClipboard();
+  }
+
+  async function pasteFromSystemClipboard() {
+    try {
+      const b64 = await ClipboardImage();
+      if (!b64) return;
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+      await addImageFiles([new File([bytes], 'clipboard.png', { type: 'image/png' })]);
+    } catch (err) {
+      attachError = 'Could not paste the image: ' + (err?.message || err);
+    }
+  }
+  let dragOver = false;
+  function handleDragOver(e) {
+    if ([...(e.dataTransfer?.items || [])].some((it) => it.kind === 'file')) {
+      e.preventDefault();
+      dragOver = true;
+    }
+  }
+  function handleDrop(e) {
+    dragOver = false;
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    addImageFiles(files);
+  }
+  function removeAttachment(id) {
+    attachments = attachments.filter((a) => a.id !== id);
+    attachError = '';
+  }
+
   async function send() {
     const content = input.trim();
-    if (!content) return;
-    inputHistory = [...inputHistory, content];
-    // Keep last 100 entries
-    if (inputHistory.length > 100) inputHistory = inputHistory.slice(-100);
-    localStorage.setItem('inputHistory', JSON.stringify(inputHistory));
+    const images = attachments.map((a) => a.data);
+    if (!content && !images.length) return;
+    if (content) {
+      inputHistory = [...inputHistory, content];
+      // Keep last 100 entries
+      if (inputHistory.length > 100) inputHistory = inputHistory.slice(-100);
+      localStorage.setItem('inputHistory', JSON.stringify(inputHistory));
+    }
     historyIndex = -1;
     savedInput = '';
     input = '';
-    submit(content);
+    attachments = [];
+    attachError = '';
+    submit(content, images);
   }
 
   // Sends now, or queues it when the assistant is busy.
-  function submit(content) {
+  function submit(content, images = []) {
     content = (content || '').trim();
-    if (!content) return;
+    if (!content && !images.length) return;
     stickToBottom = true; // sending a message jumps back to the latest
     if (loading) {
-      queue = [...queue, { id: ++queueSeq, content }];
+      queue = [...queue, { id: ++queueSeq, content, images }];
       return;
     }
-    runMessage(content);
+    runMessage(content, images);
   }
 
-  async function runMessage(content) {
-    messages = [...messages, { role: 'user', content }];
+  async function runMessage(content, images = []) {
+    messages = [...messages, { role: 'user', content, images }];
+    const at = messages.length - 1;
     stickToBottom = true;
     loading = true;
     try {
-      const resp = await SendMessage(content);
-      totalCost = resp.cost_usd || 0;
-      totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+      const resp = await SendMessageWithImages(content, images);
+      if (resp.refused) {
+        // Not sent at all: give the message and its images back to the user.
+        messages = messages.filter((_, j) => j !== at);
+        if (!input.trim()) input = content;
+        attachments = [...images.map((data) => ({ id: ++attachSeq, data })), ...attachments];
+        attachError = resp.error;
+      } else {
+        totalCost = resp.cost_usd || 0;
+        totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+      }
     } finally {
       loading = false;
       aborting = false;
@@ -1000,7 +1117,7 @@
     const next = queue.find((q) => q.id !== queueEditId);
     if (!next) return;
     queue = queue.filter((q) => q.id !== next.id);
-    runMessage(next.content);
+    runMessage(next.content, next.images || []);
   }
 
   function removeQueued(id) {
@@ -1046,7 +1163,7 @@
     let n = 0;
     for (let j = 0; j < i; j++) if (messages[j].role === 'user') n++;
     // drop this message and everything after, then re-add the edited question
-    messages = [...messages.slice(0, i), { role: 'user', content }];
+    messages = [...messages.slice(0, i), { role: 'user', content, images: messages[i].images || [] }];
     editingIndex = -1;
     editText = '';
     loading = true;
@@ -1101,7 +1218,7 @@
     }
     const history = await GetChatHistory();
     messages = history?.length
-      ? history.map((m) => ({ role: m.role, content: m.content }))
+      ? history.map((m) => ({ role: m.role, content: m.content, images: m.images || [] }))
       : [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
     showSessions = false;
     totalCost = 0;
@@ -1958,7 +2075,14 @@
               <button class="edit-save" on:click={() => saveEdit(i)} disabled={!editText.trim()}>Save & resend</button>
             </div>
           {:else}
-            <div class="message-content">{msg.content}</div>
+            {#if msg.images?.length}
+              <div class="msg-images">
+                {#each msg.images as img}
+                  <button class="msg-image" on:click={() => (viewImage = imageURL(img))} title="View full size"><img src={imageURL(img)} alt="Attached" /></button>
+                {/each}
+              </div>
+            {/if}
+            {#if msg.content}<div class="message-content">{msg.content}</div>{/if}
             <button class="edit-btn" on:click={() => startEdit(i)} disabled={loading} title="Edit & continue from here" aria-label="Edit message">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
             </button>
@@ -2041,7 +2165,7 @@
             <button class="edit-save" on:click={() => saveQueueEdit(q.id)} disabled={!queueEditText.trim()}>Save</button>
           </div>
         {:else}
-          <div class="queued-badge">Pending · sent after the current response</div>
+          <div class="queued-badge">Pending · sent after the current response{#if q.images?.length} · {q.images.length} image{q.images.length > 1 ? 's' : ''}{/if}</div>
           <div class="message-content">{q.content}</div>
           <div class="queued-actions">
             <button class="queued-btn" on:click={() => startQueueEdit(q)} title="Edit before it is sent" aria-label="Edit queued message">
@@ -2056,7 +2180,23 @@
     {/each}
   </div>
 
-  <div class="input-area">
+  {#if attachments.length || attachError}
+    <div class="attach-strip">
+      {#each attachments as a (a.id)}
+        <div class="attach-thumb">
+          <img src={imageURL(a.data)} alt="Attachment" on:click={() => (viewImage = imageURL(a.data))} />
+          <button class="attach-x" on:click={() => removeAttachment(a.id)} title="Remove: it will not be sent" aria-label="Remove image">×</button>
+        </div>
+      {/each}
+      {#if attachError}<div class="attach-error">{attachError}</div>{/if}
+    </div>
+  {/if}
+  {#if viewImage}
+    <div class="image-viewer" on:click={() => (viewImage = null)} role="presentation">
+      <img src={viewImage} alt="Full size" />
+    </div>
+  {/if}
+  <div class="input-area" class:drag-over={dragOver} on:dragover={handleDragOver} on:dragleave={() => (dragOver = false)} on:drop={handleDrop}>
     {#if betaLipReading}
     <button class="lip-btn" class:lip-recording={lipRecording} class:lip-transcribing={lipTranscribing} on:mousedown={lipBtnDown} on:mouseup={lipBtnUp} on:mouseleave={lipBtnUp} on:touchstart|preventDefault={lipBtnDown} on:touchend|preventDefault={lipBtnUp} disabled={loading || lipTranscribing} title={lipRecording ? 'Release to read lips' : lipTranscribing ? 'Reading lips...' : 'Hold to lip-read (English)'}>
       {#if lipRecording}
@@ -2113,6 +2253,7 @@
       bind:this={textareaEl}
       bind:value={input}
       on:keydown={handleKeydown}
+      on:paste={handlePaste}
       placeholder={transcribing ? 'Transcribing...' : loading ? 'Write the next message (it will be queued)...' : 'Give me a task...'}
       rows="1"
       disabled={!isReady || transcribing}
@@ -2122,8 +2263,8 @@
         {#if aborting && !speaking}Stopping...{:else}Stop{/if}
       </button>
     {/if}
-    {#if !(loading || speaking) || input.trim()}
-      <button on:click={send} disabled={!isReady || !input.trim()} title={loading ? 'Queued: sent when the current response finishes' : 'Send'}>{loading ? 'Queue' : 'Send'}</button>
+    {#if !(loading || speaking) || input.trim() || attachments.length}
+      <button on:click={send} disabled={!isReady || (!input.trim() && !attachments.length)} title={loading ? 'Queued: sent when the current response finishes' : 'Send'}>{loading ? 'Queue' : 'Send'}</button>
     {/if}
     <button class="clear-btn" on:click={clearChat}>Clear</button>
   </div>
@@ -2131,6 +2272,17 @@
 
 <style>
   .message.queued { opacity: 0.7; border-style: dashed; }
+  .attach-strip { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; padding: 0.5rem 1rem 0; background: rgba(9,14,23,0.9); border-top: 1px solid #163050; }
+  .attach-thumb { position: relative; width: 64px; height: 64px; border-radius: 8px; overflow: hidden; border: 1px solid #2a3b55; }
+  .attach-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+  .attach-x { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px; padding: 0; border-radius: 50%; border: none; background: rgba(0,0,0,0.7); color: #fff; cursor: pointer; font-size: 13px; }
+  .attach-error { color: #ff8fa3; font-size: 0.8rem; }
+  .input-area.drag-over { outline: 2px dashed #2f9eff; outline-offset: -4px; }
+  .msg-images { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.35rem; }
+  .msg-image { padding: 0; border: 1px solid #2a3b55; border-radius: 8px; overflow: hidden; background: none; cursor: zoom-in; }
+  .msg-image img { display: block; max-width: 220px; max-height: 160px; object-fit: contain; }
+  .image-viewer { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+  .image-viewer img { max-width: 95vw; max-height: 95vh; }
   .queued-badge { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #8fb8ff; margin-bottom: 0.25rem; }
   .queued-actions { display: flex; gap: 0.3rem; justify-content: flex-end; margin-top: 0.3rem; }
   .queued-btn { background: transparent; border: 1px solid #2a3b55; color: #9fb3cc; padding: 0.15rem 0.35rem; border-radius: 6px; cursor: pointer; }
