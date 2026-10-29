@@ -898,6 +898,8 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		baseRegistry = baseRegistry.Without("spawn_agents")
 	}
 	taskRegistries := map[string]*tools.Registry{}
+	// Sub-agents with isolation: worktree get their own temporary worktree.
+	worktrees := map[string]*subagents.Worktree{}
 
 	agentTasks := make([]agent.SubAgentTask, len(tasks))
 	for i, t := range tasks {
@@ -921,6 +923,17 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			agentTasks[i] = at
 			continue
 		}
+		if def != nil && def.Isolation == subagents.IsolationWorktree {
+			wt, err := subagents.CreateWorktree(workDir, t.ID)
+			if err != nil {
+				at.SetupError = err.Error()
+				agentTasks[i] = at
+				continue
+			}
+			worktrees[t.ID] = wt
+			registry = subagents.IsolateTools(registry, wt)
+			logger.Info("[sub-agent:%s] Isolated in worktree %s (branch %s)", t.ID, wt.Dir, wt.Branch)
+		}
 		defModel, maxTurns := "", 0
 		if def != nil {
 			defModel, maxTurns = def.Model, def.MaxTurns
@@ -935,7 +948,11 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		}
 		at.Model, at.Registry, at.MaxTurns, at.Notice = model, registry, maxTurns, notice
 		taskRegistries[t.ID] = registry
-		at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		if wt := worktrees[t.ID]; wt != nil {
+			at.SystemPrompt = subagents.SystemPrompt(def, wt.Dir) + subagents.IsolationPrompt(wt)
+		} else {
+			at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+		}
 		agentTasks[i] = at
 	}
 
@@ -985,6 +1002,14 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	}, agentTasks)
 
 	// Roll up sub-agent costs into parent tracker
+	// Isolated worktrees: removed when unchanged, kept (and reported) otherwise.
+	for i := range results {
+		if wt := worktrees[results[i].ID]; wt != nil {
+			_, note := wt.Finish()
+			logger.Info("[sub-agent:%s] %s", results[i].ID, note)
+			results[i].Notice = strings.TrimSpace(results[i].Notice + " " + note)
+		}
+	}
 	for _, r := range results {
 		if r.InputTokens > 0 || r.OutputTokens > 0 || r.CostUSD > 0 {
 			m := r.Model
