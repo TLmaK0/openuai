@@ -7,6 +7,19 @@
   let expanded = false;
   let cancelling = false;
 
+  // sa.focus is set when the user clicks this agent's orb: open the card and
+  // highlight it for a moment.
+  let lastFocus = 0;
+  let highlight = false;
+  let highlightTimer;
+  $: if (sa.focus && sa.focus !== lastFocus) {
+    lastFocus = sa.focus;
+    expanded = true;
+    highlight = true;
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => (highlight = false), 1800);
+  }
+
   $: running = sa.status === 'running';
   $: lastTool = [...(sa.steps || [])].reverse().find((s) => s.tool);
   $: toolCount = (sa.steps || []).filter((s) => s.tool).length;
@@ -26,7 +39,7 @@
   }
 </script>
 
-<div class="sa-card" data-sa-key={sa.key} style={sa.color ? `border-left-color:${sa.color}` : ''} class:sa-running={running} class:sa-error={!running && sa.error && !sa.cancelled}>
+<div class="sa-card" data-sa-key={sa.key} style={sa.color ? `border-left-color:${sa.color}` : ''} class:sa-running={running} class:sa-highlight={highlight} class:sa-error={!running && sa.error && !sa.cancelled}>
   <button class="sa-header" on:click={() => (expanded = !expanded)}>
     <span class="sa-arrow">{expanded ? '▼' : '▶'}</span>
     <span class="sa-agent">{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent}</span>
@@ -78,7 +91,9 @@
 </div>
 
 <style>
-  .sa-card { border: 1px solid #22344d; border-left: 3px solid #2f9eff; border-radius: 6px; margin: 0.3rem 0; background: rgba(20, 30, 45, 0.5); font-size: 0.82rem; }
+  /* text-align: left overrides the centred text inherited from the page. */
+  .sa-card { border: 1px solid #22344d; border-left: 3px solid #2f9eff; border-radius: 6px; margin: 0.3rem 0; background: rgba(20, 30, 45, 0.5); font-size: 0.82rem; text-align: left; scroll-margin-top: 0.75rem; transition: box-shadow 0.4s ease, background 0.4s ease; }
+  .sa-highlight { box-shadow: 0 0 0 2px #2f9eff, 0 0 16px rgba(47, 158, 255, 0.45); background: rgba(47, 158, 255, 0.12); }
   .sa-running { border-left-color: #f5b942; }
   .sa-error { border-left-color: #ff6b81; }
   .sa-header { display: flex; align-items: center; gap: 0.5rem; width: 100%; background: none; border: none; color: #bbb; padding: 0.4rem 0.6rem; cursor: pointer; text-align: left; font: inherit; }
