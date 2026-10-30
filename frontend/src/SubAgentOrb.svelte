@@ -26,7 +26,7 @@
   class:failed={sa.status === 'finished' && (sa.error || sa.cancelled)}
   class:idle={main && !sa.busy}
   style="--sa-color:{color}"
-  title="{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent} · {sa.id}{sa.model ? ' · ' + sa.model : ''}{sa.cwd ? '\nProject: ' + sa.cwd : ''}\n{sa.description || ''}"
+  title="{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent} · {sa.id}{sa.model ? ' · ' + sa.model : ''}{sa.effort ? ' (effort ' + sa.effort + ')' : ''}{sa.cwd ? '\nProject: ' + sa.cwd : ''}\n{sa.description || ''}"
   on:click={() => dispatch('select')}>
   {#if !main && sa.status !== 'finished'}
     <span class="sa-x" role="button" tabindex="0" title="Cancel this sub-agent"
