@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -450,6 +450,8 @@
   let mpSecretInput = {};
   let mpInstalling = {};
   let mpFilter = 'All';
+  let mpListing = null;        // {source, url, fetched_at, notice, warnings} of the catalog shown
+  let mpRefreshing = false;
 
   let mcpQrDialog = false;
   let mcpQrImage = '';
@@ -1401,10 +1403,32 @@
   async function openMarketplace() {
     showMarketplace = !showMarketplace;
     if (showMarketplace) {
-      marketplaceCatalog = await GetMarketplace();
+      setMarketplaceListing(await GetMarketplace());
       installedNames = (await GetInstalledNames()) || [];
       hasNpx = await CheckNpx();
     }
+  }
+
+  function setMarketplaceListing(listing) {
+    mpListing = listing || null;
+    marketplaceCatalog = (listing && listing.entries) || [];
+  }
+
+  async function refreshMarketplace() {
+    mpRefreshing = true;
+    try {
+      setMarketplaceListing(await RefreshMarketplace());
+    } finally {
+      mpRefreshing = false;
+    }
+  }
+
+  function mpSourceLabel(l) {
+    if (!l) return '';
+    const when = l.fetched_at ? new Date(l.fetched_at * 1000).toLocaleString() : '';
+    if (l.source === 'registry') return 'From the registry' + (when ? ', updated ' + when : '');
+    if (l.source === 'cache') return 'Offline copy' + (when ? ' from ' + when : '');
+    return 'Built-in catalog';
   }
 
   async function installFromMarketplace(name) {
@@ -1996,6 +2020,21 @@
           <button class="mcp-add-btn" on:click={openMarketplace}>{showMarketplace ? 'Hide' : 'Browse'}</button>
         </div>
         {#if showMarketplace}
+          {#if mpListing}
+            <div class="mp-source">
+              <span title={mpListing.url}>{mpSourceLabel(mpListing)}</span>
+              <button class="mp-filter-btn" disabled={mpRefreshing} on:click={refreshMarketplace}>{mpRefreshing ? 'Refreshing...' : 'Refresh'}</button>
+            </div>
+            {#if mpListing.notice}
+              <div class="mp-banner mp-banner-warn">{mpListing.notice}</div>
+            {/if}
+            {#if mpListing.warnings && mpListing.warnings.length}
+              <details class="mp-warnings">
+                <summary>{mpListing.warnings.length} registry {mpListing.warnings.length === 1 ? 'entry' : 'entries'} skipped</summary>
+                {#each mpListing.warnings as w}<div>{w}</div>{/each}
+              </details>
+            {/if}
+          {/if}
           {#if !hasNpx}
             <div class="mp-banner">Node.js is required for marketplace servers. Install from <a href="https://nodejs.org" target="_blank">nodejs.org</a></div>
           {/if}
@@ -3645,6 +3684,25 @@
     margin-bottom: 0.5rem;
   }
   .mp-banner a { color: #3ad8ff; }
+  .mp-banner-warn {
+    border-color: #e0a030;
+    color: #e0a030;
+  }
+  .mp-source {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.7rem;
+    color: #8a94a6;
+    margin-bottom: 0.5rem;
+  }
+  .mp-warnings {
+    font-size: 0.7rem;
+    color: #8a94a6;
+    margin-bottom: 0.5rem;
+  }
+  .mp-warnings summary { cursor: pointer; }
   .mp-filters {
     display: flex;
     gap: 0.25rem;
