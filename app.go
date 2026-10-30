@@ -253,6 +253,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.ListMemories{Store: a.memoryStore})
 	a.registry.Register(tools.SearchMemory{Store: a.memoryStore})
 	a.registry.Register(tools.SpawnAgents{Fn: a.spawnSubAgents, Agents: a.describeSubAgents, Models: a.describeSubAgentModels})
+	a.registry.Register(tools.StopAgent{Fn: a.stopSubAgent})
 	if cfg.ComputerUseEnabled() {
 		disp := a.GetComputerUseDisplay()
 		computeruse.RegisterTools(a.registry, computeruse.New(disp, cfg.ComputerUseMonitor(), cfg.ComputerUseProfile()))
@@ -1181,6 +1182,10 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			}
 		}
 		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent, ResumeID: t.Resume, AgentID: t.AgentID}
+		// Its agent_id is known before it runs, so stop_agent can find it.
+		if at.ResumeID == "" && at.AgentID == "" {
+			at.AgentID = agent.NewAgentID()
+		}
 		// A background sub-agent still running must not run twice at once.
 		if t.Resume != "" && t.Resume != bgOwner(ctx) && a.bgAgents != nil && a.bgAgents.has(t.Resume) {
 			at.SetupError = bgBusyError(t.Resume)
@@ -1331,6 +1336,13 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		taskColors[t.ID] = defsFor(dir).Color(name)
 	}
 	run := a.subRuns.newRun()
+	agentIDs := map[string]string{}
+	for _, at := range agentTasks {
+		agentIDs[at.ID] = at.AgentID
+		if at.ResumeID != "" {
+			agentIDs[at.ID] = at.ResumeID
+		}
+	}
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
 		Provider:      provider,
 		Model:         parentModel,
@@ -1368,6 +1380,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			})
 		},
 		OnDone: func(r agent.SubAgentResult) {
+			r = a.subRuns.ended(run+"/"+r.ID, r)
 			a.emitSubAgent("subagent_done", map[string]any{
 				"key": run + "/" + r.ID, "agent_id": r.AgentID, "output": r.Output, "error": r.Error, "notice": r.Notice,
 				"partial": r.Partial, "cancelled": r.Cancelled, "cost_usd": r.CostUSD,
@@ -1376,6 +1389,8 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		},
 		TaskContext: func(taskID string, parent context.Context) (context.Context, func()) {
 			c, release := a.subRuns.taskContext(run+"/"+taskID, parent)
+			// A background sub-agent runs alone in the spawn its runBackground makes.
+			a.subRuns.track(run+"/"+taskID, agentIDs[taskID], taskID, scope.key, agentIDs[taskID] == bgOwner(ctx))
 			return withSubAgentScope(c, subAgentScope{depth: childDepth, key: run + "/" + taskID, registry: taskRegistries[taskID], dir: taskDirs[taskID]}), release
 		},
 	}, agentTasks)
