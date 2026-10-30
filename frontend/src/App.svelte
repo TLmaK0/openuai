@@ -1888,7 +1888,7 @@
       <label class="agent-pick" class:agent-pick-on={mainAgent.name} title={agentTitle}>
         <span class="agent-pick-label">Agent</span>
         <select value={mainAgent.name || ''} on:change={(e) => chooseMainAgent(e.target.value)} disabled={loading} aria-label="Agent the conversation runs as">
-          <option value="">Assistant</option>
+          <option value=""></option>
           {#each mainAgent.agents || [] as ag}<option value={ag.name}>{ag.name}{ag.scope !== 'builtin' ? ' (' + ag.scope + ')' : ''}</option>{/each}
         </select>
       </label>
