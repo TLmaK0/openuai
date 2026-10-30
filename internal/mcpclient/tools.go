@@ -127,6 +127,17 @@ func coerceArg(val, typ string) any {
 // onSend is called when a send-type tool is executed (for echo loop prevention).
 func RegisterMCPTools(registry *tools.Registry, manager *Manager, onSend OnSendCallback) {
 	allTools := manager.AllTools()
+	// Drop the tools of this manager whose server was removed or no longer
+	// offers them, so the assistant is not offered tools it cannot call.
+	for _, t := range registry.All() {
+		mt, ok := t.(*MCPTool)
+		if !ok || mt.manager != manager {
+			continue
+		}
+		if _, still := allTools[mt.localName]; !still {
+			registry.Unregister(mt.localName)
+		}
+	}
 	for localName, ref := range allTools {
 		tool := &MCPTool{
 			serverName: ref.ServerName,

@@ -62,7 +62,10 @@ func (m *Manager) Start(events chan<- eventbus.Event) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
-	for _, cfg := range m.configs {
+	m.mu.RLock()
+	cfgs := append([]config.MCPServerConfig(nil), m.configs...)
+	m.mu.RUnlock()
+	for _, cfg := range cfgs {
 		if !cfg.AutoStart {
 			continue
 		}
@@ -126,13 +129,20 @@ func (m *Manager) AuthenticateServer(name string) error {
 
 	if !ok {
 		// Server not started yet — try starting it first
-		for _, cfg := range m.configs {
-			if cfg.Name == name {
-				ctx := context.Background()
-				return m.startServer(ctx, cfg)
+		m.mu.RLock()
+		var found *config.MCPServerConfig
+		for i := range m.configs {
+			if m.configs[i].Name == name {
+				cfg := m.configs[i]
+				found = &cfg
+				break
 			}
 		}
-		return fmt.Errorf("server %q not found", name)
+		m.mu.RUnlock()
+		if found == nil {
+			return fmt.Errorf("server %q not found", name)
+		}
+		return m.startServer(context.Background(), *found)
 	}
 
 	return conn.RunPendingAuth(context.Background())
@@ -164,6 +174,46 @@ func (m *Manager) Reconnect(cfg config.MCPServerConfig) error {
 	}
 
 	return nil
+}
+
+// AddServer records a server added at runtime and connects it at once.
+// It replaces a server of the same name, so the manager's view of the
+// configuration (used e.g. by AuthenticateServer) matches the saved one.
+func (m *Manager) AddServer(cfg config.MCPServerConfig) error {
+	m.mu.Lock()
+	replaced := false
+	for i := range m.configs {
+		if m.configs[i].Name == cfg.Name {
+			m.configs[i] = cfg
+			replaced = true
+		}
+	}
+	if !replaced {
+		m.configs = append(m.configs, cfg)
+	}
+	m.mu.Unlock()
+	return m.Reconnect(cfg)
+}
+
+// RemoveServer disconnects a server and forgets its configuration, so its
+// tools are no longer listed by AllTools.
+func (m *Manager) RemoveServer(name string) {
+	m.mu.Lock()
+	conn, ok := m.connections[name]
+	delete(m.connections, name)
+	kept := m.configs[:0:0]
+	for _, c := range m.configs {
+		if c.Name != name {
+			kept = append(kept, c)
+		}
+	}
+	m.configs = kept
+	m.mu.Unlock()
+	if ok {
+		if err := conn.Stop(); err != nil {
+			logger.Error("MCP manager: error stopping %s: %s", name, err.Error())
+		}
+	}
 }
 
 // startServer launches a single MCP server connection.
