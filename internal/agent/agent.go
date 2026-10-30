@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -515,7 +516,7 @@ func (a *Agent) execToolCall(ctx context.Context, tc llm.ToolCall) (map[string]s
 	// Execute tool
 	logger.Info("Executing tool: %s", tc.Name)
 	started := time.Now()
-	result := tool.Execute(a.toolContext(ctx), args)
+	result := runTool(a.toolContext(ctx), tool, tc.Name, args)
 	elapsed := time.Since(started)
 	logger.Info("Tool result: output_len=%d error=%q", len(result.Output), result.Error)
 
@@ -573,6 +574,20 @@ func (a *Agent) execToolCall(ctx context.Context, tc llm.ToolCall) (map[string]s
 		a.consecutiveErr = 0
 	}
 	return args, resultContent
+}
+
+// runTool executes a tool and turns a panic inside it into a tool error, so a
+// bug in one tool is reported to the agent (which can try something else)
+// instead of taking down the whole app with every conversation and sub-agent
+// in it. The stack is logged for debugging.
+func runTool(ctx context.Context, tool tools.Tool, name string, args map[string]string) (result tools.Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Tool %s panicked: %v\n%s", name, r, debug.Stack())
+			result = tools.Result{Error: fmt.Sprintf("tool %s crashed: %v. This is a bug in the tool, not in your input; try a different approach.", name, r)}
+		}
+	}()
+	return tool.Execute(ctx, args)
 }
 
 // saveCheckpoint lets the caller persist the history mid-turn.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"openuai/internal/hooks"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -141,6 +142,20 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 		wg.Add(1)
 		go func(idx int, t SubAgentTask) {
 			defer wg.Done()
+			// An unexpected panic ends this sub-agent with an error instead
+			// of crashing the app (tool panics are already turned into tool
+			// errors by runTool; this covers the rest of the run).
+			notified := false
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("[sub-agent:%s] Panicked: %v\n%s", t.ID, r, debug.Stack())
+					results[idx] = SubAgentResult{ID: t.ID, Agent: t.Agent, Error: fmt.Sprintf("sub-agent crashed: %v", r), Notice: t.Notice}
+					if cfg.OnDone != nil && !notified {
+						notified = true
+						cfg.OnDone(results[idx])
+					}
+				}
+			}()
 
 			if cfg.Acquire != nil {
 				if t.SetupError == "" {
@@ -158,6 +173,7 @@ func RunSubAgents(ctx context.Context, cfg SubAgentConfig, tasks []SubAgentTask)
 
 			results[idx] = runSingleSubAgent(ctx, cfg, t)
 			if cfg.OnDone != nil {
+				notified = true
 				cfg.OnDone(results[idx])
 			}
 		}(i, task)

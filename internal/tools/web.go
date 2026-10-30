@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
+
+	"openuai/internal/logger"
 )
 
 // Content limits for web_fetch.
@@ -112,7 +115,11 @@ func (t WebFetch) Execute(ctx context.Context, args map[string]string) Result {
 
 	// Strip HTML tags for readability if it looks like HTML
 	if !raw && isHTML(resp.contentType) {
-		content = stripHTMLTags(content)
+		text, err := htmlToText(content)
+		if err != nil {
+			return Result{Error: fmt.Sprintf("could not convert the HTML page to text: %s. Call web_fetch again with raw=true to get the page as served.", err)}
+		}
+		content = text
 	}
 
 	total := len(content)
@@ -241,7 +248,43 @@ func docsHost(host string) bool {
 	return false
 }
 
-// stripHTMLTags removes HTML tags and collapses whitespace for readability
+// htmlToText converts an HTML page to readable text. A page that cannot be
+// converted is reported as an error instead of crashing the app.
+func htmlToText(s string) (text string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("web_fetch: HTML to text conversion panicked: %v\n%s", r, debug.Stack())
+			text, err = "", fmt.Errorf("%v", r)
+		}
+	}()
+	return stripHTMLTags(s), nil
+}
+
+// hasPrefixFoldASCII reports whether s[i:] starts with prefix, ignoring ASCII
+// case. prefix must be lowercase ASCII. HTML tag names are ASCII, and
+// comparing on s itself keeps every index valid: lowercasing the whole page
+// (strings.ToLower) can change its length in bytes (the Kelvin sign U+212A
+// becomes "k", U+0130 becomes "i", an invalid byte becomes U+FFFD), so its
+// indices stop matching those of s.
+func hasPrefixFoldASCII(s string, i int, prefix string) bool {
+	if i < 0 || len(s)-i < len(prefix) {
+		return false
+	}
+	for k := 0; k < len(prefix); k++ {
+		c := s[i+k]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != prefix[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// stripHTMLTags removes HTML tags and collapses whitespace for readability.
+// Tags are matched case-insensitively on s itself (see hasPrefixFoldASCII);
+// the text is copied byte for byte, so non-ASCII characters are kept as is.
 func stripHTMLTags(s string) string {
 	var b strings.Builder
 	inTag := false
@@ -249,20 +292,18 @@ func stripHTMLTags(s string) string {
 	inStyle := false
 	lastWasSpace := false
 
-	lower := strings.ToLower(s)
-
 	for i := 0; i < len(s); i++ {
-		if i+7 <= len(s) && lower[i:i+7] == "<script" {
+		if hasPrefixFoldASCII(s, i, "<script") {
 			inScript = true
 		}
-		if i+8 <= len(s) && lower[i:i+8] == "</script" {
+		if hasPrefixFoldASCII(s, i, "</script") {
 			inScript = false
 			inTag = true
 		}
-		if i+6 <= len(s) && lower[i:i+6] == "<style" {
+		if hasPrefixFoldASCII(s, i, "<style") {
 			inStyle = true
 		}
-		if i+7 <= len(s) && lower[i:i+7] == "</style" {
+		if hasPrefixFoldASCII(s, i, "</style") {
 			inStyle = false
 			inTag = true
 		}
@@ -274,14 +315,11 @@ func stripHTMLTags(s string) string {
 		if s[i] == '<' {
 			inTag = true
 			// Add newline for block elements
-			if i+1 < len(s) {
-				next := strings.ToLower(s[i:])
-				if strings.HasPrefix(next, "<br") || strings.HasPrefix(next, "<p") ||
-					strings.HasPrefix(next, "<div") || strings.HasPrefix(next, "<h") ||
-					strings.HasPrefix(next, "<li") || strings.HasPrefix(next, "<tr") {
-					b.WriteByte('\n')
-					lastWasSpace = true
-				}
+			if hasPrefixFoldASCII(s, i, "<br") || hasPrefixFoldASCII(s, i, "<p") ||
+				hasPrefixFoldASCII(s, i, "<div") || hasPrefixFoldASCII(s, i, "<h") ||
+				hasPrefixFoldASCII(s, i, "<li") || hasPrefixFoldASCII(s, i, "<tr") {
+				b.WriteByte('\n')
+				lastWasSpace = true
 			}
 			continue
 		}
