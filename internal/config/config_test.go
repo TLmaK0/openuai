@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -666,5 +667,20 @@ func TestALeftOverProviderPluginIsReportedThenDropped(t *testing.T) {
 func TestNoLeftOverPluginsReportsNothing(t *testing.T) {
 	if got := loadFrom(t, `{}`).IgnoredProviderPlugins(); len(got) != 0 {
 		t.Errorf("IgnoredProviderPlugins() = %v on a fresh config, want none", got)
+	}
+}
+
+func TestDirHonoursXDGConfigHome(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("XDG_CONFIG_HOME is a Linux convention")
+	}
+	x := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", x)
+	dir, err := Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(x, "openuai"); dir != want {
+		t.Fatalf("Dir() = %q, want %q", dir, want)
 	}
 }

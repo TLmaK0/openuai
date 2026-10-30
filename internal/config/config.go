@@ -676,6 +676,12 @@ func (c *Config) Save() error {
 	return os.WriteFile(c.Path(), data, 0o600)
 }
 
+// Dir returns the OpenUAI configuration directory (<user config dir>/openuai,
+// which honours XDG_CONFIG_HOME on Linux) without loading the configuration.
+func Dir() (string, error) {
+	return configDir()
+}
+
 func configDir() (string, error) {
 	home, err := os.UserConfigDir()
 	if err != nil {

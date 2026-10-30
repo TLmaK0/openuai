@@ -26,6 +26,36 @@ static int openuai_signal_is_default(int sig) {
 }
 
 static int openuai_sigrtmax(void) { return SIGRTMAX; }
+static int openuai_sigrtmin(void) { return SIGRTMIN; }
+
+// Defined in sigonstack_linux.c.
+extern volatile int openuai_jsc_signal;
+
+static void openuai_set_jsc_signal(int sig) { openuai_jsc_signal = sig; }
+
+// Tests: a C handler installed the way GLib and WebKit do, without
+// SA_ONSTACK, and the flags it ends up with.
+static void openuai_test_handler(int sig) { (void)sig; }
+
+static int openuai_test_install(int sig, struct sigaction *old) {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sa_handler = openuai_test_handler;
+	sigemptyset(&sa.sa_mask);
+	return sigaction(sig, &sa, old);
+}
+
+static int openuai_test_restore(int sig, struct sigaction *old) {
+	return sigaction(sig, old, NULL);
+}
+
+static int openuai_signal_onstack(int sig) {
+	struct sigaction sa;
+	if (sigaction(sig, NULL, &sa) != 0) {
+		return -1;
+	}
+	return (sa.sa_flags & SA_ONSTACK) != 0;
+}
 */
 import "C"
 
@@ -63,10 +93,25 @@ const jscSignalOffset = 3
 //
 // A JSC_SIGNAL_FOR_GC already in the environment is respected as is.
 func configureWebKitSignals() {
+	if sig, ok := jscSignalFromEnv(); ok {
+		// Usually inherited from a parent OpenUAI (its terminals, or the
+		// relaunch loop it started): Go's handler is on that signal again in
+		// this process, and WebKit would override it. Hand it over clean,
+		// as below, when it is one a program may give away.
+		if sig == int(C.SIGUSR1) || sig == int(C.SIGUSR2) ||
+			(sig >= int(C.openuai_sigrtmin()) && sig <= int(C.openuai_sigrtmax())) {
+			C.openuai_set_jsc_signal(C.int(sig))
+			C.openuai_signal_to_default(C.int(sig))
+		}
+		return
+	}
 	if _, ok := os.LookupEnv(jscSignalEnv); ok {
 		return
 	}
 	sig := jscSignal(int(C.openuai_sigrtmax()))
+	// Keep sigonstack_linux.c from adding SA_ONSTACK to JavaScriptCore's
+	// handler on it.
+	C.openuai_set_jsc_signal(C.int(sig))
 	// Go installs its handler on every signal, real-time ones included.
 	// Give this one back to the default disposition: WebKit then installs
 	// its handler on a clean signal, and nothing of Go's is overridden.
@@ -79,9 +124,34 @@ func configureWebKitSignals() {
 	}
 }
 
+// sigrtmax returns SIGRTMAX (tests).
+func sigrtmax() int { return int(C.openuai_sigrtmax()) }
+
 // jscSignal returns the signal number to hand to JavaScriptCore.
 func jscSignal(sigrtmax int) int {
 	return sigrtmax - jscSignalOffset
+}
+
+// installCHandler installs a C handler without SA_ONSTACK on sig, the way
+// GLib and WebKit do, and returns a function that puts the previous one back
+// (tests).
+func installCHandler(sig int) (restore func(), err error) {
+	var old C.struct_sigaction
+	if C.openuai_test_install(C.int(sig), &old) != 0 {
+		return nil, fmt.Errorf("sigaction(%d) failed", sig)
+	}
+	return func() { C.openuai_test_restore(C.int(sig), &old) }, nil
+}
+
+// signalOnStack reports whether the handler on sig has SA_ONSTACK (tests).
+func signalOnStack(sig int) bool {
+	return C.openuai_signal_onstack(C.int(sig)) == 1
+}
+
+// setJSCSignal tells sigonstack_linux.c which signal is JavaScriptCore's
+// (tests).
+func setJSCSignal(sig int) {
+	C.openuai_set_jsc_signal(C.int(sig))
 }
 
 // signalIsDefault reports whether sig has the default disposition (tests).
