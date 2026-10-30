@@ -373,30 +373,21 @@ func (a *App) startup(ctx context.Context) {
 	a.eventBus.Start(ctx)
 	logger.Info("EventBus started")
 
-	// MCP manager (if servers configured)
+	// MCP manager. Created even with no servers configured, so a server
+	// installed or added later connects at once instead of after a restart.
 	mcpServers := cfg.MCPServers()
-	if len(mcpServers) > 0 {
-		a.mcpManager = mcpclient.NewManager(mcpServers)
-		a.mcpManager.OnTokensSaved(func(name string, tokens *config.MCPOAuthTokens) {
-			if _, ok := a.cfg.SetMCPServerTokens(name, tokens); ok {
-				a.cfg.Save()
-				logger.Info("MCP OAuth tokens saved for %s", name)
-			}
-		})
-		a.mcpManager.OnReady(func() {
-			mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
-			logger.Info("MCP tools registered: %d total tools now", len(a.registry.Definitions()))
-			// Reset agent so it picks up new tools. Under agentMu so it never
-			// races with startup recovery or a running turn.
-			a.agentMu.Lock()
-			a.currentAgent = nil
-			a.agentMu.Unlock()
-		})
-		if err := a.eventBus.RegisterSource(a.mcpManager); err != nil {
-			logger.Error("Failed to register MCP manager: %s", err.Error())
-		} else {
-			logger.Info("MCP manager registered with %d servers", len(mcpServers))
+	a.mcpManager = mcpclient.NewManager(mcpServers)
+	a.mcpManager.OnTokensSaved(func(name string, tokens *config.MCPOAuthTokens) {
+		if _, ok := a.cfg.SetMCPServerTokens(name, tokens); ok {
+			a.cfg.Save()
+			logger.Info("MCP OAuth tokens saved for %s", name)
 		}
+	})
+	a.mcpManager.OnReady(a.refreshMCPTools)
+	if err := a.eventBus.RegisterSource(a.mcpManager); err != nil {
+		logger.Error("Failed to register MCP manager: %s", err.Error())
+	} else {
+		logger.Info("MCP manager registered with %d servers", len(mcpServers))
 	}
 
 	// Restore watched chats from config
@@ -1760,16 +1751,64 @@ func (a *App) AddMCPServer(name, command string, args []string, env map[string]s
 	cfg := server
 	if a.mcpManager != nil {
 		go func() {
-			if err := a.mcpManager.Reconnect(cfg); err != nil {
+			if err := a.mcpManager.AddServer(cfg); err != nil {
 				logger.Info("MCP server %q: initial connect: %s", name, err.Error())
 			} else {
-				mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
-				a.currentAgent = nil
+				a.refreshMCPTools()
 			}
-			wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name})
+			a.emitMCPChanged(name)
 		}()
 	}
 	return ""
+}
+
+// refreshMCPTools syncs the MCP tools in the registry with the connected
+// servers and, when the tool set changed, resets the agent so its next turn
+// offers the new tools.
+func (a *App) refreshMCPTools() {
+	if a.syncMCPTools() {
+		a.resetAgentForTools()
+	}
+}
+
+// syncMCPTools registers the tools of the connected MCP servers and drops
+// those of removed ones, reporting whether the registry changed.
+func (a *App) syncMCPTools() bool {
+	if a.mcpManager == nil {
+		return false
+	}
+	before := toolNames(a.registry)
+	mcpclient.RegisterMCPTools(a.registry, a.mcpManager, a.TrackSentMessageID)
+	after := toolNames(a.registry)
+	logger.Info("MCP tools registered: %d total tools now", len(a.registry.Definitions()))
+	return before != after
+}
+
+// resetAgentForTools drops the agent so the next turn builds one with the
+// current tool set. Under agentMu so it never races with startup recovery
+// or a running turn.
+func (a *App) resetAgentForTools() {
+	a.agentMu.Lock()
+	a.currentAgent = nil
+	a.agentMu.Unlock()
+}
+
+// toolNames lists the registry's tool names, to tell whether it changed.
+func toolNames(r *tools.Registry) string {
+	defs := r.Definitions()
+	names := make([]string, len(defs))
+	for i, d := range defs {
+		names[i] = d.Name
+	}
+	return strings.Join(names, "\n")
+}
+
+// emitMCPChanged tells the UI to reload the MCP server list.
+func (a *App) emitMCPChanged(name string) {
+	if a.ctx == nil {
+		return
+	}
+	wailsRuntime.EventsEmit(a.ctx, "mcp_auth_done", map[string]string{"name": name})
 }
 
 // --- Sessions ---
@@ -2414,5 +2453,17 @@ func (a *App) RemoveMCPServer(name string) string {
 		return err.Error()
 	}
 	logger.Info("MCP server %q removed", name)
+	if a.mcpManager != nil {
+		// Disconnect it and drop its tools now; the agent reset waits for a
+		// running turn, so it does not block the caller.
+		a.mcpManager.RemoveServer(name)
+		changed := a.syncMCPTools()
+		go func() {
+			if changed {
+				a.resetAgentForTools()
+			}
+			a.emitMCPChanged(name)
+		}()
+	}
 	return ""
 }

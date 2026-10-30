@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"sort"
+	"sync"
 )
 
 type Parameter struct {
@@ -35,7 +36,11 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]string) Result
 }
 
+// Registry holds the tools offered to the agent. It is safe for concurrent
+// use: MCP servers connected or removed at runtime change it while a turn
+// may be reading it.
 type Registry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 }
 
@@ -44,19 +49,32 @@ func NewRegistry() *Registry {
 }
 
 func (r *Registry) Register(t Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.tools[t.Definition().Name] = t
 }
 
+// Unregister removes the named tool, if present.
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
 
 func (r *Registry) All() []Tool {
+	r.mu.RLock()
 	out := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, t)
 	}
+	r.mu.RUnlock()
 	// Stable order: tool lists are sent to the model and hashed to reuse its
 	// session, so a random map order would look like a different tool set.
 	sort.Slice(out, func(i, j int) bool { return out[i].Definition().Name < out[j].Definition().Name })
@@ -64,10 +82,12 @@ func (r *Registry) All() []Tool {
 }
 
 func (r *Registry) Definitions() []Definition {
+	r.mu.RLock()
 	out := make([]Definition, 0, len(r.tools))
 	for _, t := range r.tools {
 		out = append(out, t.Definition())
 	}
+	r.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -79,6 +99,8 @@ func (r *Registry) Without(names ...string) *Registry {
 		exclude[n] = struct{}{}
 	}
 	nr := NewRegistry()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for name, t := range r.tools {
 		if _, skip := exclude[name]; !skip {
 			nr.tools[name] = t
