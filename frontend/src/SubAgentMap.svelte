@@ -77,7 +77,7 @@
         </g>
       {/each}
     </svg>
-    <SubAgentOrb sa={mainSa} main />
+    <SubAgentOrb sa={mainSa} main on:select={() => dispatch('select', 'main')} />
     {#each agents as sa (sa.key)}
       <SubAgentOrb {sa} on:select={() => dispatch('select', sa.key)} />
     {/each}

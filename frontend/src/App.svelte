@@ -1,7 +1,7 @@
 <script>
   import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles, GetMainAgent, SetMainAgent, SetMainAgentDefault, RunInitialPrompt } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
-  import { onMount, afterUpdate } from 'svelte';
+  import { onMount, afterUpdate, tick } from 'svelte';
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import hljs from 'highlight.js';
@@ -145,9 +145,23 @@
   $: liveSubAgents = messages.filter((m) => m.role === 'subagent' && (m.sa.status === 'running' || saLinger[m.sa.key])).map((m) => m.sa);
   $: if (!liveSubAgents.length && Object.keys(saLinks).length) saLinks = {};
 
-  function scrollToSubAgent(key) {
-    const el = chatEl && chatEl.querySelector(`[data-sa-key="${CSS.escape(key)}"]`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Clicking an orb: the main one goes to the latest message; a sub-agent's
+  // opens its card, highlights it and scrolls to it. The view is not pulled
+  // back down afterwards, so the card can be read while it keeps updating.
+  async function scrollToSubAgent(key) {
+    if (!chatEl) return;
+    if (key === 'main') {
+      stickToBottom = true;
+      chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: 'smooth' });
+      return;
+    }
+    const i = messages.findIndex((m) => m.role === 'subagent' && m.sa.key === key);
+    if (i < 0) return;
+    stickToBottom = false;
+    messages = [...messages.slice(0, i), { ...messages[i], sa: { ...messages[i].sa, focus: Date.now() } }, ...messages.slice(i + 1)];
+    await tick();
+    const el = chatEl.querySelector(`.sa-card[data-sa-key="${CSS.escape(key)}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   const TAU = Math.PI * 2;
