@@ -287,3 +287,30 @@ func TestRepositoryRegistryMatchesBuiltin(t *testing.T) {
 		t.Fatalf("registry/marketplace.json and the built-in Catalog differ:\nregistry: %s\nbuiltin:  %s", a, b)
 	}
 }
+
+func TestFallbackIsRetriedNotReportedAsRegistry(t *testing.T) {
+	rs := newRegistryServer(t, goodRegistry)
+	s := NewStore(rs.URL, t.TempDir())
+	if l := s.Get(context.Background()); l.Source != SourceRegistry {
+		t.Fatalf("first get: %+v", l)
+	}
+
+	rs.set(http.StatusInternalServerError, "")
+	if l := s.Refresh(context.Background()); l.Source != SourceCache || l.Notice == "" {
+		t.Fatalf("refresh while down: %+v", l)
+	}
+	// The cache is still fresh, but the last attempt failed: Get must ask
+	// again and keep the notice, not show the cache as the registry.
+	hits := rs.hits.Load()
+	if l := s.Get(context.Background()); l.Source != SourceCache || l.Notice == "" {
+		t.Fatalf("get while down: %+v", l)
+	}
+	if rs.hits.Load() != hits+1 {
+		t.Fatalf("registry not asked again after a fallback")
+	}
+
+	rs.set(http.StatusOK, goodRegistry)
+	if l := s.Get(context.Background()); l.Source != SourceRegistry || l.Notice != "" {
+		t.Fatalf("get once back: %+v", l)
+	}
+}

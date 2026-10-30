@@ -240,7 +240,11 @@ func (s *Store) Get(ctx context.Context) Listing {
 		return copyListing(*s.current)
 	}
 	cache, _ := s.readCache()
-	if cache != nil && s.fresh(cache.FetchedAt) {
+	// After a fallback (registry unreachable or invalid) the registry is
+	// asked again instead of presenting the cached copy as current: the
+	// notice stays until the registry answers.
+	fellBack := s.current != nil && s.current.Source != SourceRegistry
+	if !fellBack && cache != nil && s.fresh(cache.FetchedAt) {
 		if entries, warnings, err := ParseRegistry(cache.Body); err == nil {
 			return s.set(Listing{Entries: entries, Source: SourceRegistry, URL: s.url, FetchedAt: cache.FetchedAt, Warnings: warnings})
 		}
