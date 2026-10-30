@@ -1363,9 +1363,15 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			}
 			logger.Info("[sub-agent:%s] level=%d parent=%q", t.ID, childDepth, scope.key)
 			a.emitSubAgent("subagent_start", map[string]any{
-				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
+				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "effort": t.Effort, "description": t.Description,
 				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID, "color": taskColors[t.ID], "cwd": t.ProjectDir,
 			})
+		},
+		// The model the provider reports, when it is not the one resolved at
+		// the start (e.g. an alias such as "default").
+		OnModel: func(taskID, model string) {
+			logger.Info("[sub-agent:%s] Runs on model %q", taskID, model)
+			a.emitSubAgent("subagent_model", map[string]any{"key": run + "/" + taskID, "model": model})
 		},
 		OnDone: func(r agent.SubAgentResult) {
 			a.emitSubAgent("subagent_done", map[string]any{

@@ -106,6 +106,7 @@ type Agent struct {
 	toolDefs    []llm.ToolDefinition
 	onStep      func(StepResult) // callback for each step
 	checkpoint  func(*Agent)     // called whenever the history grows mid-turn
+	onModel     func(string)     // called with the model each response reports
 	maxTurns    int
 	effort      string // effort level for this agent's model calls ("": default)
 	permMode    string // permission mode (sub-agents); "" is the normal one
@@ -154,6 +155,9 @@ type Config struct {
 	Permissions *PermissionManager
 	CostTracker *llm.CostTracker
 	OnStep      func(StepResult)
+	// OnModel, when set, is called with the model each response reports it
+	// ran on (it can differ from Model when Model is an alias like "default").
+	OnModel func(model string)
 	// OnCheckpoint, when set, is called each time the history grows during a
 	// run (a tool call is decided, a tool result arrives), so the caller can
 	// persist it: a restart or crash mid-turn then keeps the work done so far.
@@ -240,6 +244,7 @@ func New(cfg Config) *Agent {
 		costTracker: cfg.CostTracker,
 		onStep:      cfg.OnStep,
 		checkpoint:  cfg.OnCheckpoint,
+		onModel:     cfg.OnModel,
 		maxTurns:    cfg.MaxTurns,
 		effort:      cfg.Effort,
 		permMode:    cfg.PermissionMode,
@@ -346,6 +351,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		if a.costTracker != nil {
 			a.costTracker.Track(resp)
 		}
+		a.reportModel(resp)
 
 		// If there's text content, emit it
 		if resp.Content != "" {
@@ -576,6 +582,13 @@ func (a *Agent) saveCheckpoint() {
 	}
 }
 
+// reportModel passes the model a response says it ran on to OnModel.
+func (a *Agent) reportModel(resp *llm.Response) {
+	if a.onModel != nil && resp != nil && resp.Model != "" {
+		a.onModel(resp.Model)
+	}
+}
+
 // runSimpleChat handles providers without native tool calling (fallback)
 func (a *Agent) runSimpleChat(ctx context.Context) error {
 	resp, err := a.provider.Chat(llm.WithEffort(ctx, a.turnEffort()), a.messages, a.turnModel())
@@ -586,6 +599,7 @@ func (a *Agent) runSimpleChat(ctx context.Context) error {
 	if a.costTracker != nil {
 		a.costTracker.Track(resp)
 	}
+	a.reportModel(resp)
 	a.messages = append(a.messages, llm.Message{
 		Role:    llm.RoleAssistant,
 		Content: resp.Content,

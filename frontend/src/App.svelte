@@ -816,6 +816,15 @@
         }
       });
     });
+    // The model a sub-agent actually runs on, as the provider reports it
+    // (it was started with an alias such as "default" or "opus").
+    EventsOn('subagent_model', (e) => {
+      updateSubAgent(e.key, (sa) => {
+        if (!e.model || sa.model === e.model) return;
+        if (sa.model && !sa.requested_model) sa.requested_model = sa.model;
+        sa.model = e.model;
+      });
+    });
     EventsOn('subagent_done', (e) => {
       let nick = null;
       let parent = null;

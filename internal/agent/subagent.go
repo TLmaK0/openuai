@@ -39,6 +39,10 @@ type SubAgentConfig struct {
 	// OnStart, when set, is called as each sub-agent starts (also for tasks
 	// that fail during setup, so every task is visible).
 	OnStart func(task SubAgentTask, model string)
+	// OnModel, when set, is called when a sub-agent's responses report a
+	// model other than the one it was started with (or last reported): the
+	// model it actually runs on, e.g. when it was started with an alias.
+	OnModel func(taskID, model string)
 	// OnDone, when set, is called with each sub-agent's result.
 	OnDone func(SubAgentResult)
 	// TaskContext, when set, derives the context one task runs under so it
@@ -288,8 +292,21 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		}
 	}
 
+	// The model actually in use, as the provider reports it.
+	var onModel func(string)
+	if cfg.OnModel != nil {
+		last := model
+		onModel = func(m string) {
+			if m != last {
+				last = m
+				cfg.OnModel(task.ID, m)
+			}
+		}
+	}
+
 	ag := New(Config{
 		OnCheckpoint: func(ag *Agent) { save(ag, StatusRunning, "") },
+		OnModel:      onModel,
 		Provider:     cfg.Provider,
 		Model:        model,
 		Registry:     registry,

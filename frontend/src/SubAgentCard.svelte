@@ -30,6 +30,17 @@
     try { await CancelSubAgent(sa.key); } catch (_) { cancelling = false; }
   }
 
+  // Short name of a model id: "claude-opus-4-1-20250805" -> "Opus 4.1".
+  // Ids of other families are shown as they are.
+  function modelLabel(m) {
+    const f = /(opus|sonnet|haiku)(?:[-_ ]?(\d+)(?:[-.](\d+))?)?/i.exec(m || '');
+    if (!f) return m || '';
+    const name = f[1][0].toUpperCase() + f[1].slice(1).toLowerCase();
+    // Dates (20250514) are not versions.
+    if (!f[2] || f[2].length > 2) return name;
+    return name + ' ' + f[2] + (f[3] && f[3].length <= 2 ? '.' + f[3] : '');
+  }
+
   function statusLabel(s) {
     if (s.status === 'running') return cancelling ? 'cancelling…' : 'running';
     if (s.cancelled) return 'cancelled';
@@ -44,6 +55,7 @@
     <span class="sa-arrow">{expanded ? '▼' : '▶'}</span>
     <span class="sa-agent">{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent}</span>
     <span class="sa-id">{sa.id}</span>
+    {#if sa.model}<span class="sa-model" title="Model: {sa.model}{sa.effort ? ' · effort ' + sa.effort : ''}">{modelLabel(sa.model)}{sa.effort ? ' · ' + sa.effort : ''}</span>{/if}
     {#if sa.cwd}<span class="sa-cwd" title={sa.cwd}>{sa.cwd.split(/[\\/]/).filter(Boolean).pop() || sa.cwd}</span>{/if}
     <span class="sa-status sa-status-{statusLabel(sa).replace('…', '')}">{statusLabel(sa)}</span>
     {#if running && lastTool}
@@ -62,7 +74,7 @@
   {#if expanded}
     <div class="sa-body">
       <div class="sa-section"><span class="sa-label">Task</span><pre>{sa.description}</pre></div>
-      {#if sa.model}<div class="sa-section"><span class="sa-label">Model</span> {sa.model}</div>{/if}
+      {#if sa.model}<div class="sa-section"><span class="sa-label">Model</span> {sa.model}{sa.requested_model ? ' (requested as ' + sa.requested_model + ')' : ''}{sa.effort ? ' · effort ' + sa.effort : ''}</div>{/if}
       {#if sa.cwd}<div class="sa-section"><span class="sa-label">Project</span> {sa.cwd}</div>{/if}
       {#if sa.depth > 1}<div class="sa-section"><span class="sa-label">Level</span> {sa.depth}{sa.parentNick ? ' · launched by Agente ' + sa.parentNick : ''}</div>{/if}
       {#if sa.notice}<div class="sa-section sa-notice">{sa.notice}</div>{/if}
@@ -100,6 +112,7 @@
   .sa-arrow { font-size: 0.7rem; color: #777; }
   .sa-agent { color: #2f9eff; font-weight: 600; }
   .sa-id { color: #888; }
+  .sa-model { color: #b9a7ff; font-size: 0.75rem; padding: 0 0.4rem; border: 1px solid #3a3360; border-radius: 8px; white-space: nowrap; }
   .sa-cwd { color: #8fb3d9; font-size: 0.75rem; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sa-status { font-size: 0.72rem; padding: 0 0.4rem; border-radius: 8px; background: #1d2a3b; }
   .sa-status-running, .sa-status-cancelling { color: #f5b942; }
