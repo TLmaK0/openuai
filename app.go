@@ -94,8 +94,12 @@ type App struct {
 
 	// Restart recovery (app_restart.go): background messages waiting for the
 	// agent survive restarts, and the turn a restart interrupted is resumed.
-	pending      *pendingStore
-	resumeOnce   sync.Once
+	pending    *pendingStore
+	resumeOnce sync.Once
+	// Background sub-agents running (on disk, resumed after a restart).
+	bgAgents     *bgStore
+	bgResumes    []bgSubAgent
+	bgResumeOnce sync.Once
 	shuttingDown atomic.Bool
 
 	hk hookState // hooks (app_hooks.go)
@@ -223,6 +227,7 @@ func (a *App) startup(ctx context.Context) {
 	a.registry.Register(tools.BashSudo{})
 	a.procs = procs.NewManager(a.procCallbacks())
 	a.pending = loadPendingStore(filepath.Join(cfg.ConfigDir(), "sessions"))
+	a.bgAgents = loadBgStore(cfg.ConfigDir())
 	a.registry.Register(tools.ProcStart{M: a.procs})
 	a.registry.Register(tools.ProcRead{M: a.procs})
 	a.registry.Register(tools.ProcWrite{M: a.procs})
@@ -473,6 +478,9 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) shutdown(ctx context.Context) {
 	logger.Info("Shutting down")
+	// Set first: from now on, running sub-agents keep their saved work (to
+	// be resumed) and their results are not delivered.
+	a.shuttingDown.Store(true)
 	a.endSession("other")
 	a.saveWindowPosition()
 	// Keep the list of running processes: the next start reports them.
@@ -1140,7 +1148,13 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 				t.Cwd = tr.Dir
 			}
 		}
-		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent, ResumeID: t.Resume}
+		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent, ResumeID: t.Resume, AgentID: t.AgentID}
+		// A background sub-agent still running must not run twice at once.
+		if t.Resume != "" && t.Resume != bgOwner(ctx) && a.bgAgents != nil && a.bgAgents.has(t.Resume) {
+			at.SetupError = bgBusyError(t.Resume)
+			agentTasks[i] = at
+			continue
+		}
 		dir, err := dirFor(t)
 		if err != nil {
 			at.SetupError = err.Error()
@@ -1292,6 +1306,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		Permissions:   a.permissions,
 		MaxConcurrent: maxConcurrent,
 		TranscriptDir: transcriptDir,
+		Persist:       func() bool { return !a.shuttingDown.Load() },
 		Hooks:         a.loadHooks,
 		WorkDir:       workDir,
 		SessionID:     a.sessionID(),

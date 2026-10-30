@@ -69,9 +69,15 @@ func (a *Agent) RunInProgress() bool { return a.runInProgress }
 // background processes that were running. It reports whether the turn should
 // be resumed and whether the conversation changed (and must be saved).
 func (a *Agent) RecoverInterrupted(killed []string, at time.Time) (resume, changed bool) {
+	return a.RecoverInterruptedWithNote(killed, "", at)
+}
+
+// RecoverInterruptedWithNote is RecoverInterrupted with note (e.g. what
+// happened to the background sub-agents) added to the restart note.
+func (a *Agent) RecoverInterruptedWithNote(killed []string, note string, at time.Time) (resume, changed bool) {
 	interrupted := a.runInProgress
 	a.runInProgress = false
-	if !interrupted && len(killed) == 0 {
+	if !interrupted && len(killed) == 0 && note == "" {
 		return false, false
 	}
 	if interrupted {
@@ -96,6 +102,9 @@ func (a *Agent) RecoverInterrupted(killed []string, at time.Time) (resume, chang
 	if len(killed) > 0 {
 		b.WriteString(" Background processes that were running before the restart (no longer reachable with the proc_* tools): " +
 			strings.Join(killed, ", ") + ".")
+	}
+	if note != "" {
+		b.WriteString(" " + note)
 	}
 	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: b.String()})
 	a.resumePending = resume

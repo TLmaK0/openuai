@@ -33,6 +33,8 @@ type SubTask struct {
 	// Disallow removes tools from the sub-agent's pool (disallowed-tools).
 	Disallow []string `json:"-"`
 	// OnFinish is called once a background task has finished.
+	// AgentID is the agent_id a new sub-agent gets (known before it runs).
+	AgentID  string `json:"-"`
 	OnFinish func() `json:"-"`
 }
 
