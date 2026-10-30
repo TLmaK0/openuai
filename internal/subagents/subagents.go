@@ -487,21 +487,13 @@ func ProjectInstructionFiles(workDir string) []string {
 // ProjectInstructions returns every AGENTS.md from the repository root down
 // to workDir, in that order.
 func ProjectInstructions(workDir string) string {
-	var b strings.Builder
+	var files []InstructionFile
 	for _, d := range projectChain(workDir) {
-		p := filepath.Join(d, "AGENTS.md")
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
+		if f, ok := readInstructionFile(filepath.Join(d, "AGENTS.md"), ScopeProject); ok {
+			files = append(files, f)
 		}
-		note := ""
-		if len(data) > maxInstructionBytes {
-			data = data[:maxInstructionBytes]
-			note = "\n[truncated]"
-		}
-		fmt.Fprintf(&b, "Contents of %s:\n\n%s%s\n\n", p, strings.TrimSpace(string(data)), note)
 	}
-	return strings.TrimSpace(b.String())
+	return formatInstructionFiles(files)
 }
 
 // GitStatus is a short snapshot of the repository at workDir, or "" outside

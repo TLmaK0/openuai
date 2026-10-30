@@ -123,6 +123,10 @@ type Agent struct {
 	transcript string
 	// backgroundTasks lists running background work for Stop hooks.
 	backgroundTasks func() []map[string]any
+	// basePrompt is the system prompt without the instruction files;
+	// instructions returns them (refreshed every turn).
+	basePrompt   string
+	instructions func() string
 
 	// Skills (see skillturn.go): what invoked skills changed for this turn,
 	// a grant for the agent's whole life, and a callback after each tool use.
@@ -186,6 +190,10 @@ type Config struct {
 	TranscriptPath string
 	// BackgroundTasks lists running background work (Stop hook input).
 	BackgroundTasks func() []map[string]any
+	// Instructions, when set, returns the instruction files section
+	// (AGENTS.md) of the system prompt. It is called at the start of every
+	// turn so edits apply without restarting; "" means none.
+	Instructions func() string
 }
 
 func New(cfg Config) *Agent {
@@ -241,11 +249,35 @@ func New(cfg Config) *Agent {
 		transcript:  cfg.TranscriptPath,
 
 		backgroundTasks: cfg.BackgroundTasks,
+		basePrompt:      prompt,
+		instructions:    cfg.Instructions,
 		toolDefs:        toolDefs,
 		messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: prompt},
 		},
 	}
+}
+
+// refreshSystemPrompt rebuilds the system message with the current
+// instruction files. An unchanged result leaves the message byte-identical,
+// so providers that key a session on it (claude-headless) keep reusing it.
+func (a *Agent) refreshSystemPrompt() {
+	if a.instructions == nil || len(a.messages) == 0 || a.messages[0].Role != llm.RoleSystem {
+		return
+	}
+	p := a.basePrompt
+	if ins := a.instructions(); ins != "" {
+		p += "\n\n" + ins
+	}
+	a.messages[0].Content = p
+}
+
+// SystemPrompt returns the current system message.
+func (a *Agent) SystemPrompt() string {
+	if len(a.messages) == 0 {
+		return ""
+	}
+	return a.messages[0].Content
 }
 
 // InjectEvent adds an event notification to the conversation context without
@@ -264,6 +296,7 @@ func (a *Agent) loop(ctx context.Context) error {
 	if a.registry != nil {
 		a.toolDefs = convertToolDefs(a.registry)
 	}
+	a.refreshSystemPrompt()
 	a.halt = ""
 	logger.Debug("System prompt length: %d", len(a.messages[0].Content))
 
