@@ -27,6 +27,7 @@ import (
 	"openuai/internal/logger"
 	"openuai/internal/marketplace"
 	"openuai/internal/mcpclient"
+	"openuai/internal/mcpserver"
 	"openuai/internal/memory"
 	"openuai/internal/piper"
 	"openuai/internal/procs"
@@ -448,6 +449,8 @@ func (a *App) startup(ctx context.Context) {
 			},
 			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
 			RequestRestart:   func(worktree string, window []int) (any, error) { return a.RequestRestart(worktree, window) },
+			// OpenUAI as an MCP server for other clients (issue #28).
+			MCP: mcpserver.HTTPHandler(mcpserver.New(a.version, a.mcpBackend())),
 		})
 		if err := a.apiServer.Start(); err != nil {
 			logger.Error("Failed to start API server: %s", err.Error())
@@ -919,7 +922,9 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 		summary.TotalInputTokens, summary.TotalOutputTokens, summary.TotalCostUSD)
 
 	return ChatResponse{
-		Content:      "",
+		// The UI shows the answer from the streamed steps; API and MCP
+		// callers get it here, taken while this turn still holds agentMu.
+		Content:      lastAnswer(ag.Messages()),
 		InputTokens:  summary.TotalInputTokens,
 		OutputTokens: summary.TotalOutputTokens,
 		CostUSD:      summary.TotalCostUSD,

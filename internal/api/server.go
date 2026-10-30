@@ -41,6 +41,9 @@ type Handlers struct {
 	// RequestRestart relaunches the app (dev mode); worktree may be empty.
 	// window, when [x, y], is where the window opens after the restart.
 	RequestRestart func(worktree string, window []int) (any, error)
+	// MCP, when set, serves OpenUAI as an MCP server (streamable HTTP) at
+	// /mcp, next to the REST API.
+	MCP http.Handler
 }
 
 // Server is the REST API + WebSocket server.

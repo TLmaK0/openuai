@@ -11,7 +11,7 @@ Autonomous AI agent that reacts to events, executes tasks, and runs as a single 
 - **Autonomous agent** — plan-first execution with full tool access: bash, filesystem, git, web
 - **Event-driven** — subscribe to WhatsApp, Teams, email, webhooks; agent reacts automatically
 - **Multi-agent** — spawn concurrent sub-agents for parallel task execution
-- **MCP compatible** — connect to any MCP server to extend capabilities
+- **MCP compatible** — connect to any MCP server to extend capabilities, and expose OpenUAI itself as an MCP server ([see below](#use-openuai-from-other-mcp-clients))
 - **Marketplace** — one-click install of curated MCP servers from Settings
 - **Voice** — hands-free wake word ("say a name, then your task"), push-to-talk Whisper STT (auto-detect language) + neural TTS
 - **System tray** — background mode with native OS notifications
@@ -77,6 +77,77 @@ wails build -tags webkit2_40
 # Linux (webkit2gtk-4.1) / macOS / Windows
 wails build
 ```
+
+## Use OpenUAI from other MCP clients
+
+OpenUAI is also an MCP **server**: Claude Code, Claude Desktop or any other MCP
+client can hand tasks to the running app.
+
+**Tools exposed**
+
+| Tool | What it does |
+|------|--------------|
+| `send_message` | Sends a message or task to the assistant and waits for its final answer |
+| `get_conversation` | Reads the current conversation (last `limit` entries, default 20) |
+| `new_conversation` | Archives the current conversation and starts a new one |
+| `stop_task` | Stops the task the assistant is running |
+| `get_status` | Provider, model, working folder and accumulated tokens/cost |
+
+A `send_message` call runs exactly like a message typed in the chat: same
+conversation, tools, connectors, memory, hooks and skills. **Permissions are not
+bypassed**: when a tool needs approval, the usual dialog shows up in the
+OpenUAI window and the call waits for your answer there. Messages are run one
+at a time, after whatever the assistant is already doing.
+
+**Enable it.** The MCP endpoint lives on the local API, which is off by default.
+Set in `config.json` in the OpenUAI config folder (`~/.config/openuai` on Linux,
+`~/Library/Application Support/openuai` on macOS, `%AppData%\openuai` on Windows)
+and restart OpenUAI:
+
+```json
+{ "api_enabled": true, "api_port": 9120 }
+```
+
+The API only listens on `127.0.0.1`, and the MCP endpoint rejects requests
+whose `Host` or `Origin` is not local (so web pages cannot reach it).
+
+**Two transports, same tools:**
+
+- Streamable HTTP: `http://127.0.0.1:9120/mcp` (served by the running app).
+- stdio: `openuai mcp`, a small proxy to that endpoint for clients that launch
+  MCP servers as commands. It reads `api_port` from the config
+  (`--port N` or `--url URL` override it). OpenUAI must be running.
+
+**Claude Code**
+
+```bash
+# HTTP (recommended)
+claude mcp add --transport http openuai http://127.0.0.1:9120/mcp
+# or stdio
+claude mcp add openuai -- /path/to/openuai mcp
+```
+
+Tasks can take minutes; raise Claude Code's tool timeout if needed, e.g.
+`MCP_TOOL_TIMEOUT=600000 claude` (milliseconds). While a task runs, OpenUAI
+sends progress notifications every 10 seconds.
+
+**Claude Desktop** — add to `claude_desktop_config.json` (Settings → Developer →
+Edit Config) and restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "openuai": {
+      "command": "/path/to/openuai",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+On macOS the binary is `/Applications/openuai.app/Contents/MacOS/openuai`
+(or wherever you put the app); on Windows use the full path of
+`openuai-windows-amd64.exe`.
 
 ## Architecture
 
