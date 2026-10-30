@@ -97,6 +97,11 @@ type settings struct {
 	// empty means marketplace.DefaultRegistryURL.
 	MarketplaceURL string `json:"marketplace_url,omitempty"`
 
+	// Agent is the agent definition the main conversation runs as by
+	// default (Claude Code's "agent" setting); empty: the normal assistant.
+	// A project's .openuai/settings.json "agent" key wins over it.
+	Agent string `json:"agent,omitempty"`
+
 	// Skills (Claude Code's skillOverrides, disableSkillShellExecution,
 	// skill listing budget and per-entry cap).
 	SkillOverrides             map[string]string `json:"skill_overrides,omitempty"`
@@ -677,6 +682,23 @@ func configDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, "openuai"), nil
+}
+
+// --- Main conversation agent ---
+
+// Agent returns the user's default agent for the main conversation ("":
+// the normal assistant).
+func (c *Config) Agent() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.data.Agent
+}
+
+// SetAgent sets the user's default agent for the main conversation.
+func (c *Config) SetAgent(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data.Agent = name
 }
 
 // --- Skills ---

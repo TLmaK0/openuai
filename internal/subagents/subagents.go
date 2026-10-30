@@ -69,9 +69,15 @@ type Definition struct {
 	Background      bool            // always run detached from the turn that launches it
 	Hooks           hooks.Config    // hooks active only while this sub-agent runs
 	Skills          []string        // skills preloaded into the sub-agent\'s prompt
-	Prompt          string
-	Path            string
-	Scope           string
+	// InitialPrompt is sent as the first user message when the agent runs
+	// as the main conversation (ignored for sub-agents).
+	InitialPrompt string
+	// MainHooks are the hooks as written (Stop stays Stop), used when the
+	// agent runs as the main conversation.
+	MainHooks hooks.Config
+	Prompt    string
+	Path      string
+	Scope     string
 }
 
 // StringList accepts both a YAML list and a comma-separated string.
@@ -96,13 +102,32 @@ func (l *StringList) UnmarshalYAML(n *yaml.Node) error {
 	return fmt.Errorf("line %d: expected a list or a comma-separated string", n.Line)
 }
 
+// splitList splits on commas outside parentheses, so "Agent(a, b), Read"
+// is two entries.
 func splitList(s string) []string {
 	out := []string{}
-	for _, p := range strings.Split(s, ",") {
+	depth, start := 0, 0
+	add := func(p string) {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
 	}
+	for i, r := range s {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				add(s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	add(s[start:])
 	return out
 }
 
@@ -124,6 +149,7 @@ type frontmatter struct {
 	Background      bool         `yaml:"background"`
 	Hooks           hooks.Config `yaml:"hooks"`
 	Skills          StringList   `yaml:"skills"`
+	InitialPrompt   string       `yaml:"initialPrompt"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -163,10 +189,11 @@ func Parse(data []byte) (*Definition, error) {
 	if fm.MaxTurns < 0 {
 		return nil, errors.New("maxTurns must be a positive number")
 	}
-	defHooks, err := parseHooks(fm.Hooks)
+	defHooks, err := parseHooks(fm.Hooks, true)
 	if err != nil {
 		return nil, err
 	}
+	mainHooks, _ := parseHooks(fm.Hooks, false)
 	isolation := strings.ToLower(strings.TrimSpace(fm.Isolation))
 	if isolation != "" && isolation != IsolationWorktree {
 		return nil, fmt.Errorf("invalid isolation %q: the only value is worktree", fm.Isolation)
@@ -207,6 +234,8 @@ func Parse(data []byte) (*Definition, error) {
 		Background:      fm.Background,
 		Hooks:           defHooks,
 		Skills:          []string(fm.Skills),
+		InitialPrompt:   strings.TrimSpace(fm.InitialPrompt),
+		MainHooks:       mainHooks,
 		Prompt:          strings.TrimSpace(strings.Join(lines[end+1:], "\n")),
 	}
 	if fm.Tools != nil {
@@ -363,11 +392,15 @@ func match(pattern, name string) bool {
 // applied first, then tools. With no definition the subagent gets every tool
 // except AlwaysExcluded. It fails when no tool is left.
 func FilterTools(reg *tools.Registry, d *Definition) (*tools.Registry, error) {
+	return filterTools(reg, d, AlwaysExcluded)
+}
+
+func filterTools(reg *tools.Registry, d *Definition, exclude []string) (*tools.Registry, error) {
 	allowed := map[string]bool{}
 	for _, t := range reg.All() {
 		n := t.Definition().Name
 		excluded := false
-		for _, x := range AlwaysExcluded {
+		for _, x := range exclude {
 			if n == x {
 				excluded = true
 			}
@@ -388,6 +421,7 @@ func FilterTools(reg *tools.Registry, d *Definition) (*tools.Registry, error) {
 		if d.HasTools {
 			keep := map[string]bool{}
 			for _, p := range d.Tools {
+				p = toolPattern(p)
 				hit := false
 				for n := range allowed {
 					if match(p, n) {

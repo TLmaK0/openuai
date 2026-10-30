@@ -19,6 +19,8 @@ func (s *Server) registerRoutes() {
 	api.GET("/model", s.handleGetModel)
 	api.PUT("/model", s.handleSetModel)
 	api.GET("/provider", s.handleGetProvider)
+	api.GET("/agent", s.handleGetAgent)
+	api.PUT("/agent", s.handleSetAgent)
 	api.PUT("/provider", s.handleSetProvider)
 	api.GET("/chats/watched", s.handleGetWatchedChats)
 	api.POST("/chats/watched", s.handleWatchChat)
@@ -106,6 +108,31 @@ func (s *Server) handleSetModel(c echo.Context) error {
 	}
 	result := s.handlers.SetModel(req.Model)
 	return c.JSON(http.StatusOK, result)
+}
+
+// --- Main conversation agent ---
+
+func (s *Server) handleGetAgent(c echo.Context) error {
+	if s.handlers.GetAgent == nil {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not available"})
+	}
+	return c.JSON(http.StatusOK, s.handlers.GetAgent())
+}
+
+type setAgentRequest struct {
+	Agent string `json:"agent"` // "": the normal assistant
+	Scope string `json:"scope"` // ""/"session", "user" or "project"
+}
+
+func (s *Server) handleSetAgent(c echo.Context) error {
+	if s.handlers.SetAgent == nil {
+		return c.JSON(http.StatusNotImplemented, map[string]string{"error": "not available"})
+	}
+	var req setAgentRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+	return c.JSON(http.StatusOK, s.handlers.SetAgent(req.Agent, req.Scope))
 }
 
 // --- Provider ---

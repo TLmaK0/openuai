@@ -30,6 +30,9 @@ type SessionState struct {
 	// interrupted turn but it has not run yet. Persisted so the decision
 	// survives the agent being rebuilt (e.g. when MCP tools become ready).
 	ResumePending bool `json:"resume_pending,omitempty"`
+	// MainAgent is the agent chosen for this conversation (not a saved
+	// default): nil when none was chosen, "" for the normal assistant.
+	MainAgent *string `json:"main_agent,omitempty"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions (without messages).
@@ -61,6 +64,7 @@ func (a *Agent) SaveSession(configDir string) error {
 		RunInProgress:  a.runInProgress,
 		ResumeAttempts: a.resumeAttempts,
 		ResumePending:  a.resumePending,
+		MainAgent:      a.mainAgent,
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -125,6 +129,34 @@ func (a *Agent) loadSessionFrom(path string) error {
 	a.resumePending = state.ResumePending
 	logger.Info("Session restored: %d messages from %s", len(a.messages), path)
 	return nil
+}
+
+// SetMainAgentChoice records the agent chosen for this conversation (nil:
+// none chosen, follow the saved defaults), saved with the session.
+func (a *Agent) SetMainAgentChoice(name *string) {
+	if name == nil {
+		a.mainAgent = nil
+		return
+	}
+	n := *name
+	a.mainAgent = &n
+}
+
+// PeekMainAgentChoice reads the agent chosen for a saved session ("current"
+// or an archived ID) without loading it: nil when none was chosen or the
+// session does not exist.
+func PeekMainAgentChoice(configDir, id string) *string {
+	data, err := os.ReadFile(filepath.Join(configDir, "sessions", id+".json"))
+	if err != nil {
+		return nil
+	}
+	var state struct {
+		MainAgent *string `json:"main_agent"`
+	}
+	if json.Unmarshal(data, &state) != nil {
+		return nil
+	}
+	return state.MainAgent
 }
 
 // ArchiveSession saves the current session to history and removes current.json.
