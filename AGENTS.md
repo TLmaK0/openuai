@@ -82,6 +82,7 @@ OpenUAI combines the **autonomy of Cowork** with the **power of Claude Code**:
 
 - **Browser automation**: always use MCP browser tools (Puppeteer). Never use bash to launch/pkill Chrome, install pyautogui, xdotool, or any screen-automation/CDP workaround — the MCP server owns the browser lifecycle
 - **Browser visibility**: run VISIBLE by default (`launchOptions {"headless": false}` on the first navigate). This is a desktop app — the user wants to watch the browser work. Only go headless if the user explicitly asks for background operation, or there is no graphical display
+- **Automated UI checks run headless**: when an agent or sub-agent checks UI on its own (test pages, component harnesses, screenshots for verification), it must use a headless browser and never open visible windows on the user's desktop. Stop any temporary servers it started (e.g. `python3 -m http.server`) when it is done. The visible-by-default rule applies only to browser work the user wants to watch
 - **Never fabricate form data**: if a form needs values the user didn't provide, ask for them — never invent names, emails, or messages
 
 ### Target Capabilities
