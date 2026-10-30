@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles, GetMainAgent, SetMainAgent, SetMainAgentDefault, RunInitialPrompt } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -546,6 +546,58 @@
   let activeProvider = null;
   $: isReady = activeProvider ? activeProvider.ready : false;
 
+  // Agent definition the main conversation runs as (issue #70): chosen for
+  // this conversation from the header, or saved as a default in Settings.
+  let mainAgent = { name: '', agents: [] };
+  let agentError = '';
+  let ownInitial = false; // this UI is sending the initialPrompt itself
+  async function refreshMainAgent() {
+    try { mainAgent = await GetMainAgent(); } catch (e) { /* keep the last state */ }
+  }
+  async function chooseMainAgent(name) {
+    agentError = '';
+    const err = await SetMainAgent(name);
+    if (err) agentError = err;
+    await refreshMainAgent();
+    if (!err) await runInitialIfPending();
+  }
+  async function saveMainAgentDefault(name, scope) {
+    agentError = '';
+    const err = await SetMainAgentDefault(name, scope);
+    if (err) agentError = err;
+    await refreshMainAgent();
+    if (!err) await runInitialIfPending();
+  }
+  // A conversation that starts as an agent with an initialPrompt sends it as
+  // its first message.
+  async function runInitialIfPending() {
+    await refreshMainAgent();
+    const p = mainAgent.initial_pending;
+    if (!p || loading) return;
+    ownInitial = true;
+    messages = [...messages, { role: 'user', content: p, images: [], files: [] }];
+    const at = messages.length - 1;
+    loading = true;
+    stickToBottom = true;
+    try {
+      const resp = await RunInitialPrompt();
+      if (resp.refused) {
+        messages = messages.filter((_, j) => j !== at);
+      } else {
+        totalCost = resp.cost_usd || 0;
+        totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
+      }
+    } finally {
+      ownInitial = false;
+      loading = false;
+      aborting = false;
+    }
+    drainQueue();
+  }
+  $: agentTitle = mainAgent.name
+    ? `Runs as agent ${mainAgent.name}${mainAgent.description ? ': ' + mainAgent.description : ''}${mainAgent.model ? '\nModel: ' + mainAgent.model : ''}${mainAgent.source ? '\nFrom: ' + mainAgent.source : ''}`
+    : 'Normal assistant';
+
   onMount(async () => {
     providers = await GetProviders();
     provider = await GetProvider();
@@ -582,6 +634,29 @@
           : { role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }));
       }
     } catch (e) { /* no history — start empty */ }
+
+    // Agent the conversation runs as, and its initialPrompt when the backend
+    // sends it (no UI was ready to do it).
+    await refreshMainAgent();
+    EventsOn('main_agent', () => refreshMainAgent());
+    EventsOn('main_agent_error', (e) => {
+      messages = [...messages, { role: 'error', content: e.error }];
+      refreshMainAgent();
+    });
+    EventsOn('initial_prompt', (e) => {
+      if (ownInitial) return;
+      messages = [...messages, { role: 'user', content: e.content, images: [], files: [] }];
+      loading = true;
+      stickToBottom = true;
+    });
+    EventsOn('initial_prompt_done', (e) => {
+      if (ownInitial) return;
+      loading = false;
+      totalCost = e.cost_usd || 0;
+      totalTokens = (e.input_tokens || 0) + (e.output_tokens || 0);
+      refreshMainAgent();
+      drainQueue();
+    });
 
     // Keep the sound switch in sync with the backend state.
     EventsOn('sound_enabled', (on) => {
@@ -833,6 +908,7 @@
         totalTokens = (resp.input_tokens || 0) + (resp.output_tokens || 0);
       }
     } catch (e) { loading = false; }
+    try { await runInitialIfPending(); } catch (e) { loading = false; }
     drainQueue();
   });
 
@@ -1277,6 +1353,8 @@
     messages = [];
     totalCost = 0;
     totalTokens = 0;
+    agentError = '';
+    await runInitialIfPending();
   }
 
   async function refreshEventStats() {
@@ -1807,17 +1885,59 @@
   <header>
     <h1>OpenUAI</h1>
     <div class="header-right">
+      <label class="agent-pick" class:agent-pick-on={mainAgent.name} title={agentTitle}>
+        <span class="agent-pick-label">Agent</span>
+        <select value={mainAgent.name || ''} on:change={(e) => chooseMainAgent(e.target.value)} disabled={loading} aria-label="Agent the conversation runs as">
+          <option value="">Assistant</option>
+          {#each mainAgent.agents || [] as ag}<option value={ag.name}>{ag.name}{ag.scope !== 'builtin' ? ' (' + ag.scope + ')' : ''}</option>{/each}
+        </select>
+      </label>
       <span class="cost-badge" title="Total tokens: {totalTokens}">
         ${totalCost.toFixed(4)}
       </span>
       <button class="icon-btn" class:icon-btn-active={showSessions} on:click={toggleSessions}>Sessions</button>
       <button class="icon-btn" class:icon-btn-active={showEvents} on:click={toggleEvents}>Events{eventLog.length > 0 ? ` (${eventLog.length})` : ''}</button>
-      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) { refreshHooks(); refreshSkills(); refreshInstructions(); await refreshMCPServers(); } }}>Settings</button>
+      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) { refreshMainAgent(); refreshHooks(); refreshSkills(); refreshInstructions(); await refreshMCPServers(); } }}>Settings</button>
     </div>
   </header>
 
+  {#if agentError || mainAgent.error}
+    <div class="agent-error" role="alert">
+      <span>{agentError || ('Agent "' + mainAgent.wanted + '" (' + mainAgent.source + ' setting) is not running: ' + mainAgent.error + '. Using the normal assistant.')}</span>
+      {#if agentError}<button class="agent-error-x" on:click={() => (agentError = '')} aria-label="Dismiss">×</button>{/if}
+    </div>
+  {/if}
+
   {#if showSettings}
     <div class="settings">
+      <div class="settings-group">
+        <div class="settings-group-title">Main conversation agent</div>
+        <div class="setting-row">
+          <label>Running as</label>
+          <span class="setting-hint">{mainAgent.name ? mainAgent.name + (mainAgent.model ? ' · ' + mainAgent.model : '') + (mainAgent.source ? ' · ' + (mainAgent.source === 'session' ? 'chosen for this conversation' : mainAgent.source + ' default') : '') : 'Normal assistant'}{mainAgent.spawn_agents ? ' · may launch: ' + mainAgent.spawn_agents.join(', ') : ''}</span>
+        </div>
+        <div class="setting-row">
+          <label>Default (user)</label>
+          <select value={mainAgent.user_default || ''} on:change={(e) => saveMainAgentDefault(e.target.value, 'user')}>
+            <option value="">Normal assistant</option>
+            {#each mainAgent.agents || [] as ag}<option value={ag.name}>{ag.name}{ag.scope !== 'builtin' ? ' (' + ag.scope + ')' : ''}</option>{/each}
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>Default (project)</label>
+          <select value={mainAgent.project_default || ''} on:change={(e) => saveMainAgentDefault(e.target.value, 'project')}>
+            <option value="">Not set (user default)</option>
+            {#each mainAgent.agents || [] as ag}<option value={ag.name}>{ag.name}{ag.scope !== 'builtin' ? ' (' + ag.scope + ')' : ''}</option>{/each}
+          </select>
+        </div>
+        {#if mainAgent.project_file}
+          <div class="setting-row"><label>Project file</label><code class="hook-cmd" title={mainAgent.project_file}>{mainAgent.project_file}</code></div>
+        {/if}
+        {#if mainAgent.notice}
+          <div class="setting-row"><label>Notes</label><span class="setting-hint">{mainAgent.notice}</span></div>
+        {/if}
+      </div>
+
       <div class="settings-group">
         <div class="settings-group-title">LLM Provider</div>
         <div class="setting-row">
@@ -2241,7 +2361,7 @@
   {/if}
 
   {#if liveSubAgents.length}
-    <SubAgentMap agents={liveSubAgents} links={Object.values(saLinks)} mainBusy={loading} mainName={assistantName} on:select={(e) => scrollToSubAgent(e.detail)} />
+    <SubAgentMap agents={liveSubAgents} links={Object.values(saLinks)} mainBusy={loading} mainName={assistantName} mainAgent={mainAgent.name} mainModel={mainAgent.model} mainColor={SA_COLOR_NAMES[mainAgent.color] || ''} on:select={(e) => scrollToSubAgent(e.detail)} />
   {/if}
 
   <div class="chat" class:with-sa-column={liveSubAgents.length > 0} bind:this={chatEl} on:click={onChatClick} on:scroll={onChatScroll} on:wheel={onChatWheel}>
@@ -2561,6 +2681,47 @@
   }
 
   .header-right { display: flex; align-items: center; gap: 0.5rem; }
+
+  .agent-pick {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: #7f9bbd;
+  }
+  .agent-pick select {
+    background: #0d1a2b;
+    color: #cfe3ff;
+    border: 1px solid #163050;
+    border-radius: 4px;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+    max-width: 11rem;
+  }
+  .agent-pick-on select {
+    border-color: #f5b942;
+    color: #ffd98a;
+  }
+  .agent-error {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0 1rem 0.4rem;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid #ff5f6d;
+    border-radius: 6px;
+    background: rgba(255, 95, 109, 0.12);
+    color: #ffb3ba;
+    font-size: 0.85rem;
+  }
+  .agent-error span { flex: 1; }
+  .agent-error-x {
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    font-size: 1rem;
+  }
 
   .cost-badge {
     background: #163050;

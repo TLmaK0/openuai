@@ -13,6 +13,9 @@
   export let links = [];    // [{ from, to, at }], one per pair of agents
   export let mainBusy = false;
   export let mainName = '';  // the assistant's name (wake word)
+  export let mainAgent = ''; // agent definition the main conversation runs as
+  export let mainModel = '';
+  export let mainColor = '';
 
   const dispatch = createEventDispatcher();
   const MAIN_COLOR = '#2f9eff';
@@ -22,9 +25,9 @@
   let pos = {};
   let height = 0;
 
-  $: mainSa = { key: 'main', nick: mainName || 'Assistant', agent: 'main agent', id: 'main', color: MAIN_COLOR, steps: [], busy: mainBusy, status: 'running' };
+  $: mainSa = { key: 'main', nick: mainName || mainAgent || 'Assistant', agent: mainAgent ? 'main conversation running as agent ' + mainAgent : 'main agent (normal assistant)', id: 'main', model: mainAgent ? mainModel : '', color: mainColor || MAIN_COLOR, steps: [], busy: mainBusy, status: 'running' };
   $: running = new Set(agents.filter((a) => a.status === 'running').map((a) => a.key));
-  $: colors = Object.fromEntries([['main', MAIN_COLOR], ...agents.map((a) => [a.key, a.color])]);
+  $: colors = Object.fromEntries([['main', mainColor || MAIN_COLOR], ...agents.map((a) => [a.key, a.color])]);
 
   function measure() {
     if (!inner) return;

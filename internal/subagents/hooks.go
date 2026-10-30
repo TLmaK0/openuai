@@ -11,13 +11,14 @@ import (
 // in a sub-agent definition becomes SubagentStop (the event a sub-agent
 // fires when it finishes). Claude Code events OpenUAI has no counterpart for
 // are accepted and ignored.
-func parseHooks(cfg hooks.Config) (hooks.Config, error) {
+// With sub false (the agent runs as the main conversation) Stop stays Stop.
+func parseHooks(cfg hooks.Config, sub bool) (hooks.Config, error) {
 	if len(cfg) == 0 {
 		return nil, nil
 	}
 	out := hooks.Config{}
 	for ev, groups := range cfg {
-		if ev == hooks.Stop {
+		if sub && ev == hooks.Stop {
 			ev = hooks.SubagentStop
 		}
 		if hooks.SkippedEvent(ev) {

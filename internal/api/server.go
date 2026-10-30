@@ -41,6 +41,12 @@ type Handlers struct {
 	// RequestRestart relaunches the app (dev mode); worktree may be empty.
 	// window, when [x, y], is where the window opens after the restart.
 	RequestRestart func(worktree string, window []int) (any, error)
+	// GetAgent describes the agent definition the main conversation runs
+	// as; SetAgent chooses one ("": the normal assistant) for the
+	// conversation (scope "" or "session") or saves it as the default
+	// ("user" or "project").
+	GetAgent func() any
+	SetAgent func(name, scope string) any
 	// MCP, when set, serves OpenUAI as an MCP server (streamable HTTP) at
 	// /mcp, next to the REST API.
 	MCP http.Handler

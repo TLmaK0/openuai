@@ -114,7 +114,8 @@ type Agent struct {
 	// Hooks (see hooks.go): loaded on each event so edits apply at once.
 	hooks      func() *hooks.Set
 	workDir    string
-	agentType  string // set for sub-agents
+	agentType  string  // set for sub-agents
+	mainAgent  *string // agent chosen for the conversation (saved with the session)
 	agentID    string
 	stopBlocks int    // Stop hook continuations in a row
 	halt       string // set when a hook stopped the turn (continue: false)
@@ -195,6 +196,10 @@ type Config struct {
 	// turn so edits apply without restarting; "" means none.
 	Instructions func() string
 }
+
+// DefaultSystemPrompt is the normal assistant's system prompt (before the
+// environment, memory and instruction sections are added).
+func DefaultSystemPrompt() string { return systemPrompt }
 
 func New(cfg Config) *Agent {
 	// Convert tools.Definition to llm.ToolDefinition

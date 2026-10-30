@@ -103,6 +103,8 @@ type App struct {
 	shuttingDown atomic.Bool
 
 	hk hookState // hooks (app_hooks.go)
+
+	mainAg mainAgentState // agent definition the main conversation runs as (app_main_agent.go)
 }
 
 type permAnswer struct {
@@ -455,6 +457,17 @@ func (a *App) startup(ctx context.Context) {
 			},
 			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
 			RequestRestart:   func(worktree string, window []int) (any, error) { return a.RequestRestart(worktree, window) },
+			// Agent definition the main conversation runs as (issue #70).
+			GetAgent: func() any { return a.GetMainAgent() },
+			SetAgent: func(name, scope string) any {
+				var errText string
+				if scope == "" || scope == "session" {
+					errText = a.SetMainAgent(name)
+				} else {
+					errText = a.SetMainAgentDefault(name, scope)
+				}
+				return map[string]any{"error": errText, "agent": a.GetMainAgent()}
+			},
 			// OpenUAI as an MCP server for other clients (issue #28).
 			MCP: mcpserver.HTTPHandler(mcpserver.New(a.version, a.mcpBackend())),
 		})
@@ -465,6 +478,10 @@ func (a *App) startup(ctx context.Context) {
 
 	a.initHooks()
 	a.recoverAfterRestart()
+	// A conversation that starts as an agent sends its initialPrompt.
+	a.agentMu.Lock()
+	a.armInitialPromptLocked(a.ensureAgent())
+	a.agentMu.Unlock()
 	// SessionStart: "resume" when a conversation was restored.
 	source := "startup"
 	a.agentMu.Lock()
@@ -494,6 +511,10 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.procs != nil {
 		a.procs.Shutdown()
 	}
+	// Inline MCP servers of the agent the conversation runs as.
+	a.mainAg.mu.Lock()
+	a.mainAg.active.stop()
+	a.mainAg.mu.Unlock()
 	tray.Stop()
 }
 
@@ -772,12 +793,32 @@ func (a *App) ensureAgent() *agent.Agent {
 	if ag := a.currentAgent; ag != nil {
 		return ag
 	}
+	// The agent definition the conversation runs as, if any (issue #70).
+	a.loadMainAgentChoice()
+	ag := a.newMainAgent(a.resolveMainAgent())
+	// Try to restore previous session
+	if err := ag.LoadSession(a.cfg.ConfigDir()); err != nil {
+		logger.Error("Failed to load session: %s", err.Error())
+	}
+	ag.SetMainAgentChoice(a.mainAgentChoice())
+	// Return the local: a concurrent reset (e.g. MCP tools becoming ready)
+	// may set currentAgent to nil at any moment.
+	a.currentAgent = ag
+	return ag
+}
+
+// newMainAgent builds the main conversation's agent, as the normal assistant
+// (setup nil) or as an agent definition.
+func (a *App) newMainAgent(setup *mainAgentSetup) *agent.Agent {
 	{
-		memoryText := a.memoryStore.LoadIndex()
+		memoryText := ""
+		if a.memoryStore != nil {
+			memoryText = a.memoryStore.LoadIndex()
+		}
 		if memoryText != "" {
 			a.instructionsLoaded(filepath.Join(a.cfg.ConfigDir(), "memory", "MEMORY.md"), "User", "session_start")
 		}
-		ag := agent.New(agent.Config{
+		cfg := agent.Config{
 			Provider:        a.activeProvider(),
 			Model:           a.cfg.DefaultModel(),
 			Registry:        a.registry,
@@ -806,15 +847,9 @@ func (a *App) ensureAgent() *agent.Agent {
 					a.apiServer.Broadcast("agent_step", "", step)
 				}
 			},
-		})
-		// Try to restore previous session
-		if err := ag.LoadSession(a.cfg.ConfigDir()); err != nil {
-			logger.Error("Failed to load session: %s", err.Error())
 		}
-		// Return the local: a concurrent reset (e.g. MCP tools becoming ready)
-		// may set currentAgent to nil at any moment.
-		a.currentAgent = ag
-		return ag
+		a.applyMainAgent(&cfg, setup)
+		return agent.New(cfg)
 	}
 }
 
@@ -838,6 +873,12 @@ func (a *App) SendMessageWithImages(content string, images []string) ChatRespons
 // SendMessageWithAttachments sends a user message with images and files.
 // Files must have been stored first with SaveAttachment or PickAttachments.
 func (a *App) SendMessageWithAttachments(content string, images []string, files []llm.Attachment) ChatResponse {
+	// The first message of a conversation started as an agent with an
+	// initialPrompt that was not sent yet goes after it.
+	return a.sendMessage(a.withInitialPrompt(content), images, files)
+}
+
+func (a *App) sendMessage(content string, images []string, files []llm.Attachment) ChatResponse {
 	logger.Info("SendMessage: %s (%d images, %d files)", content, len(images), len(files))
 	if len(files) > 0 {
 		checked, err := a.checkAttachments(files)
@@ -867,7 +908,7 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 	// UserPromptSubmit hooks see the message as typed (before a /skill
 	// expands) and can block it or add context to it.
 	var notes []string
-	if hs := a.loadHooks(); hs.Has(hooks.UserPromptSubmit) {
+	if hs := a.mainHooks(); hs.Has(hooks.UserPromptSubmit) {
 		r := a.runHookOn(a.ctx, hs, hooks.UserPromptSubmit, "", map[string]any{"prompt": content})
 		if r.Decision == "block" || r.StopAll {
 			reason := r.Reason
@@ -1516,6 +1557,11 @@ func (a *App) ClearChat() {
 	a.skills.reset()
 	agent.ClearSession(a.cfg.ConfigDir())
 	a.startSession("clear", false)
+	// A new conversation run as an agent starts with its initialPrompt.
+	if a.agentMu.TryLock() {
+		a.armInitialPromptLocked(a.ensureAgent())
+		a.agentMu.Unlock()
+	}
 }
 
 // extractMemoriesFromSession sends a truncated transcript to the LLM to extract
@@ -1876,6 +1922,12 @@ func (a *App) ResumeSession(id string) string {
 	a.endSession("resume")
 	a.currentAgent = nil
 	a.costTracker.Reset()
+	// The resumed conversation runs as the agent chosen for it, if any.
+	a.loadMainAgentChoice()
+	choice := agent.PeekMainAgentChoice(a.cfg.ConfigDir(), id)
+	a.mainAg.mu.Lock()
+	a.mainAg.choice = choice
+	a.mainAg.mu.Unlock()
 	ag := a.ensureAgent()
 	if err := ag.LoadSessionByID(a.cfg.ConfigDir(), id); err != nil {
 		return err.Error()
