@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,6 +86,34 @@ func (s *pendingStore) Peek() (pendingItem, bool) {
 		return pendingItem{}, false
 	}
 	return s.data.Items[0], true
+}
+
+// Has reports whether key is queued or was already handled.
+func (s *pendingStore) Has(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data.Handled[key]; ok {
+		return true
+	}
+	for _, it := range s.data.Items {
+		if it.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Keys returns the keys of the queued notifications starting with prefix.
+func (s *pendingStore) Keys(prefix string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, it := range s.data.Items {
+		if strings.HasPrefix(it.Key, prefix) {
+			out = append(out, it.Key)
+		}
+	}
+	return out
 }
 
 // Done removes key from the queue and remembers it as handled.
@@ -195,13 +224,14 @@ func (a *App) recoverAfterRestart() {
 	a.agentMu.Lock()
 	ag := a.ensureAgent()
 	killed := takeKilledProcs(a.cfg.ConfigDir())
-	resume, changed := ag.RecoverInterrupted(killed, time.Now())
+	bgNote := a.recoverBackgroundSubAgents()
+	resume, changed := ag.RecoverInterruptedWithNote(killed, bgNote, time.Now())
 	if changed {
 		a.saveSession(ag)
 	}
 	a.agentMu.Unlock()
-	if resume || a.pending.Len() > 0 {
-		logger.Info("Restart recovery: resume=%v pending=%d killed_procs=%d", resume, a.pending.Len(), len(killed))
+	if resume || a.pending.Len() > 0 || len(a.bgResumes) > 0 {
+		logger.Info("Restart recovery: resume=%v pending=%d killed_procs=%d bg_subagents_resumed=%d", resume, a.pending.Len(), len(killed), len(a.bgResumes))
 		go func() {
 			time.Sleep(resumeFallbackDelay)
 			a.ResumeInterrupted()
@@ -235,7 +265,7 @@ func (a *App) drainPending() {
 // ResumeInterrupted runs.
 func (a *App) HasInterruptedWork() bool {
 	ag := a.ensureAgent()
-	return ag.ResumePending() || a.pending.Len() > 0
+	return ag.ResumePending() || a.pending.Len() > 0 || len(a.bgResumes) > 0
 }
 
 // ResumeInterrupted finishes the turn a restart interrupted and then handles
@@ -244,6 +274,9 @@ func (a *App) HasInterruptedWork() bool {
 func (a *App) ResumeInterrupted() ChatResponse {
 	var resp ChatResponse
 	a.resumeOnce.Do(func() {
+		// Background sub-agents first: they run on their own, with the UI
+		// ready to show their orbs.
+		a.startBgResumes()
 		a.agentMu.Lock()
 		ag := a.ensureAgent()
 		if ag.ResumePending() {

@@ -51,6 +51,10 @@ type SubAgentConfig struct {
 	// TranscriptDir, when set, is where each sub-agent's work is saved so it
 	// can be resumed later (see Transcript).
 	TranscriptDir string
+	// Persist, when set, is asked before each save of a transcript; false
+	// keeps the saved work as it is (the app is shutting down: what a dying
+	// run does then must not overwrite the work to resume).
+	Persist func() bool
 	// Hooks returns the user/project hooks; WorkDir is where hooks run.
 	Hooks   func() *hooks.Set
 	WorkDir string
@@ -81,6 +85,9 @@ type SubAgentTask struct {
 	// ResumeID continues a previous sub-agent (its agent_id) with its full
 	// history; Description is then the new message for it.
 	ResumeID string
+	// AgentID, when set (and ResumeID is not), is the agent_id the new
+	// sub-agent gets, so the caller knows it before the run starts.
+	AgentID string
 	// Hooks are the hooks of the sub-agent's definition, active only while
 	// it runs; WorkDir overrides SubAgentConfig.WorkDir (isolated worktree).
 	Hooks   *hooks.Set
@@ -193,6 +200,8 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		}
 		history, created = tr.Messages, tr.CreatedAt
 		logger.Info("[sub-agent:%s] Resuming %s (%d saved messages)", task.ID, task.ResumeID, len(tr.Messages))
+	} else if task.AgentID != "" {
+		agentID = task.AgentID
 	} else {
 		agentID = NewAgentID()
 	}
@@ -265,7 +274,22 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		}
 	}
 
+	// The work is saved after every step (not only at the end), so a
+	// sub-agent interrupted by a restart can be resumed with its history.
+	save := func(ag *Agent, status, errMsg string) {
+		if cfg.TranscriptDir == "" || (cfg.Persist != nil && !cfg.Persist()) {
+			return
+		}
+		if err := SaveTranscript(cfg.TranscriptDir, Transcript{
+			ID: agentID, Agent: task.Agent, Model: model, Description: task.Description, Status: status, Error: errMsg, Dir: task.ProjectDir,
+			Messages: ag.Messages(), CreatedAt: created, UpdatedAt: time.Now(),
+		}); err != nil {
+			logger.Error("[sub-agent:%s] Could not save its work: %s", task.ID, err.Error())
+		}
+	}
+
 	ag := New(Config{
+		OnCheckpoint: func(ag *Agent) { save(ag, StatusRunning, "") },
 		Provider:     cfg.Provider,
 		Model:        model,
 		Registry:     registry,
@@ -289,7 +313,9 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		ag.SetHistory(history)
 	}
 
-	err := ag.Run(runCtx, task.Description)
+	ag.Begin(task.Description)
+	save(ag, StatusRunning, "")
+	err := ag.Continue(runCtx)
 
 	summary := tracker.Summary()
 	result := SubAgentResult{
@@ -303,6 +329,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		OutputTokens: summary.TotalOutputTokens,
 	}
 
+	interrupted := false
 	switch {
 	case errors.Is(err, ErrMaxTurns):
 		result.Partial = true
@@ -315,6 +342,10 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 		result.Error = "cancelled by the user"
 		result.Output = ag.PartialWork()
 		logger.Info("[sub-agent:%s] Cancelled by the user", task.ID)
+	case err != nil && ctx.Err() != nil:
+		interrupted = true
+		result.Error = err.Error()
+		logger.Info("[sub-agent:%s] Interrupted: %s", task.ID, err.Error())
 	case err != nil:
 		result.Error = err.Error()
 		logger.Error("[sub-agent:%s] Error: %s", task.ID, err.Error())
@@ -323,23 +354,20 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 
 	result.AgentID = agentID
-	if cfg.TranscriptDir != "" {
-		status := "finished"
-		switch {
-		case result.Partial:
-			status = "partial"
-		case result.Cancelled:
-			status = "cancelled"
-		case result.Error != "":
-			status = "error"
-		}
-		if err := SaveTranscript(cfg.TranscriptDir, Transcript{
-			ID: agentID, Agent: task.Agent, Model: model, Description: task.Description, Status: status, Dir: task.ProjectDir,
-			Messages: ag.Messages(), CreatedAt: created, UpdatedAt: time.Now(),
-		}); err != nil {
-			logger.Error("[sub-agent:%s] Could not save its work: %s", task.ID, err.Error())
-		}
+	status := StatusFinished
+	switch {
+	case result.Partial:
+		status = StatusPartial
+	case result.Cancelled:
+		status = StatusCancelled
+	case interrupted:
+		// The whole run was stopped (turn stopped or app closing): it can
+		// be resumed later.
+		status = StatusInterrupted
+	case result.Error != "":
+		status = StatusError
 	}
+	save(ag, status, result.Error)
 	return result
 }
 

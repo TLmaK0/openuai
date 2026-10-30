@@ -27,12 +27,34 @@ type Transcript struct {
 	Agent       string `json:"agent"`
 	Model       string `json:"model"`
 	Description string `json:"description"`
-	Status      string `json:"status"` // finished, partial, cancelled, error
+	Status      string `json:"status"` // Status* below
+	// Error is why the run failed (status error or interrupted).
+	Error string `json:"error,omitempty"`
 	// Dir is the directory it worked in when not the app's (spawn_agents cwd).
 	Dir       string        `json:"dir,omitempty"`
 	Messages  []llm.Message `json:"messages"`
 	CreatedAt time.Time     `json:"created_at"`
 	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+// Transcript statuses.
+const (
+	StatusRunning     = "running" // still working (saved after every step)
+	StatusFinished    = "finished"
+	StatusPartial     = "partial" // stopped at maxTurns
+	StatusCancelled   = "cancelled"
+	StatusError       = "error"
+	StatusInterrupted = "interrupted" // its whole run was stopped; resumable
+)
+
+// Ended reports whether the run recorded in t is over (it will not continue
+// on its own).
+func (t Transcript) Ended() bool {
+	switch t.Status {
+	case StatusFinished, StatusPartial, StatusCancelled, StatusError:
+		return true
+	}
+	return false
 }
 
 var agentIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
