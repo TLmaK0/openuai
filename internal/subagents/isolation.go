@@ -201,29 +201,42 @@ var isolatedDirDefault = map[string]bool{"list_dir": true, "search_files": true,
 // and git run inside it, relative paths resolve inside it, and absolute paths
 // into the main checkout are refused.
 func IsolateTools(reg *tools.Registry, w *Worktree) *tools.Registry {
+	return bindTools(reg, w.Dir, w.Repo)
+}
+
+// BindTools returns reg with every tool bound to dir, as if OpenUAI had been
+// launched there: commands and git run in dir and relative paths resolve
+// inside it. Absolute paths are left alone (dir is not a sandbox).
+func BindTools(reg *tools.Registry, dir string) *tools.Registry {
+	return bindTools(reg, dir, "")
+}
+
+// bindTools binds reg to dir; when refuse is set, absolute paths inside
+// refuse but outside dir are rejected (the main checkout of a worktree).
+func bindTools(reg *tools.Registry, dir, refuse string) *tools.Registry {
 	out := tools.NewRegistry()
 	for _, t := range reg.All() {
 		switch n := t.Definition().Name; n {
 		case "bash":
 			b, _ := t.(tools.Bash)
-			out.Register(tools.Bash{WorkDir: w.Dir, Procs: b.Procs})
+			out.Register(tools.Bash{WorkDir: dir, Procs: b.Procs})
 		case "bash_sudo":
-			out.Register(tools.BashSudo{WorkDir: w.Dir})
+			out.Register(tools.BashSudo{WorkDir: dir})
 		case "git_status":
-			out.Register(tools.GitStatus{WorkDir: w.Dir})
+			out.Register(tools.GitStatus{WorkDir: dir})
 		case "git_diff":
-			out.Register(tools.GitDiff{WorkDir: w.Dir})
+			out.Register(tools.GitDiff{WorkDir: dir})
 		case "git_log":
-			out.Register(tools.GitLog{WorkDir: w.Dir})
+			out.Register(tools.GitLog{WorkDir: dir})
 		case "git_add":
-			out.Register(tools.GitAdd{WorkDir: w.Dir})
+			out.Register(tools.GitAdd{WorkDir: dir})
 		case "git_commit":
-			out.Register(tools.GitCommit{WorkDir: w.Dir})
+			out.Register(tools.GitCommit{WorkDir: dir})
 		case "git_branch":
-			out.Register(tools.GitBranch{WorkDir: w.Dir})
+			out.Register(tools.GitBranch{WorkDir: dir})
 		default:
 			if keys, ok := isolatedPathArgs[n]; ok {
-				out.Register(isolatedTool{Tool: t, w: w, keys: keys, dirDefault: isolatedDirDefault[n]})
+				out.Register(boundTool{Tool: t, dir: dir, refuse: refuse, keys: keys, dirDefault: isolatedDirDefault[n]})
 			} else {
 				out.Register(t)
 			}
@@ -232,14 +245,15 @@ func IsolateTools(reg *tools.Registry, w *Worktree) *tools.Registry {
 	return out
 }
 
-type isolatedTool struct {
+type boundTool struct {
 	tools.Tool
-	w          *Worktree
+	dir        string
+	refuse     string
 	keys       []string
 	dirDefault bool
 }
 
-func (t isolatedTool) Execute(ctx context.Context, args map[string]string) tools.Result {
+func (t boundTool) Execute(ctx context.Context, args map[string]string) tools.Result {
 	a := make(map[string]string, len(args))
 	for k, v := range args {
 		a[k] = v
@@ -249,13 +263,13 @@ func (t isolatedTool) Execute(ctx context.Context, args map[string]string) tools
 		switch {
 		case v == "":
 			if t.dirDefault {
-				a[k] = t.w.Dir
+				a[k] = t.dir
 			}
 		case strings.HasPrefix(v, "~"):
 		case !filepath.IsAbs(v):
-			a[k] = filepath.Join(t.w.Dir, v)
-		case within(v, t.w.Repo) && !within(v, t.w.Dir):
-			return tools.Result{Error: fmt.Sprintf("this sub-agent is isolated in a worktree: use paths inside %s, not the main checkout %s", t.w.Dir, t.w.Repo)}
+			a[k] = filepath.Join(t.dir, v)
+		case t.refuse != "" && within(v, t.refuse) && !within(v, t.dir):
+			return tools.Result{Error: fmt.Sprintf("this sub-agent is isolated in a worktree: use paths inside %s, not the main checkout %s", t.dir, t.refuse)}
 		}
 	}
 	return t.Tool.Execute(ctx, a)

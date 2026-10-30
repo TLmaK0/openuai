@@ -31,6 +31,11 @@ func (s *Server) registerRoutes() {
 	api.POST("/dev/restart", s.handleDevRestart)
 
 	s.echo.GET("/ws", s.hub.handleWS)
+
+	// MCP server endpoint (streamable HTTP: POST, GET and DELETE).
+	if s.handlers.MCP != nil {
+		s.echo.Any("/mcp", echo.WrapHandler(s.handlers.MCP))
+	}
 }
 
 // --- Chat ---

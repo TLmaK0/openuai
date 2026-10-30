@@ -23,14 +23,16 @@ const TranscriptRetention = 30 * 24 * time.Hour
 // main conversation, so it survives that conversation being compacted or
 // cleared, and lets the sub-agent be resumed later with its full history.
 type Transcript struct {
-	ID          string        `json:"id"`
-	Agent       string        `json:"agent"`
-	Model       string        `json:"model"`
-	Description string        `json:"description"`
-	Status      string        `json:"status"` // finished, partial, cancelled, error
-	Messages    []llm.Message `json:"messages"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ID          string `json:"id"`
+	Agent       string `json:"agent"`
+	Model       string `json:"model"`
+	Description string `json:"description"`
+	Status      string `json:"status"` // finished, partial, cancelled, error
+	// Dir is the directory it worked in when not the app's (spawn_agents cwd).
+	Dir       string        `json:"dir,omitempty"`
+	Messages  []llm.Message `json:"messages"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
 }
 
 var agentIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)

@@ -168,10 +168,10 @@ func TestNoteSkillPathsActivatesPathAndNestedSkills(t *testing.T) {
 func TestForkAgentName(t *testing.T) {
 	inProject(t)
 	a := NewApp()
-	if n := a.forkAgentName("Explore"); n != "explore" {
+	if n := a.forkAgentName(context.Background(), "Explore"); n != "explore" {
 		t.Fatalf("%q", n)
 	}
-	if n := a.forkAgentName(""); n != "general-purpose" {
+	if n := a.forkAgentName(context.Background(), ""); n != "general-purpose" {
 		t.Fatalf("%q", n)
 	}
 }

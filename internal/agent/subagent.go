@@ -85,6 +85,12 @@ type SubAgentTask struct {
 	// it runs; WorkDir overrides SubAgentConfig.WorkDir (isolated worktree).
 	Hooks   *hooks.Set
 	WorkDir string
+	// ProjectDir is the directory the task was launched in when it is not
+	// the app's (spawn_agents "cwd"); "" for the app's directory.
+	ProjectDir string
+	// ProjectHooks, when set, replaces SubAgentConfig.Hooks: the user and
+	// project hooks of ProjectDir.
+	ProjectHooks func() *hooks.Set
 	// Allow pre-approves tool calls for the whole run (a skill's
 	// allowed-tools when the skill runs in a sub-agent).
 	Allow func(tool, arg string) bool
@@ -214,7 +220,10 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 	}
 	hookFn := func() *hooks.Set {
 		var base *hooks.Set
-		if cfg.Hooks != nil {
+		switch {
+		case task.ProjectHooks != nil:
+			base = task.ProjectHooks()
+		case cfg.Hooks != nil:
 			base = cfg.Hooks()
 		}
 		return base.Merge(task.Hooks)
@@ -325,7 +334,7 @@ func runSingleSubAgent(ctx context.Context, cfg SubAgentConfig, task SubAgentTas
 			status = "error"
 		}
 		if err := SaveTranscript(cfg.TranscriptDir, Transcript{
-			ID: agentID, Agent: task.Agent, Model: model, Description: task.Description, Status: status,
+			ID: agentID, Agent: task.Agent, Model: model, Description: task.Description, Status: status, Dir: task.ProjectDir,
 			Messages: ag.Messages(), CreatedAt: created, UpdatedAt: time.Now(),
 		}); err != nil {
 			logger.Error("[sub-agent:%s] Could not save its work: %s", task.ID, err.Error())

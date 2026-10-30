@@ -27,6 +27,7 @@ import (
 	"openuai/internal/logger"
 	"openuai/internal/marketplace"
 	"openuai/internal/mcpclient"
+	"openuai/internal/mcpserver"
 	"openuai/internal/memory"
 	"openuai/internal/piper"
 	"openuai/internal/procs"
@@ -449,6 +450,8 @@ func (a *App) startup(ctx context.Context) {
 			},
 			SetNotifications: func(enabled bool) { a.ToggleNotifications(enabled) },
 			RequestRestart:   func(worktree string, window []int) (any, error) { return a.RequestRestart(worktree, window) },
+			// OpenUAI as an MCP server for other clients (issue #28).
+			MCP: mcpserver.HTTPHandler(mcpserver.New(a.version, a.mcpBackend())),
 		})
 		if err := a.apiServer.Start(); err != nil {
 			logger.Error("Failed to start API server: %s", err.Error())
@@ -920,7 +923,9 @@ func (a *App) SendMessageWithAttachments(content string, images []string, files 
 		summary.TotalInputTokens, summary.TotalOutputTokens, summary.TotalCostUSD)
 
 	return ChatResponse{
-		Content:      "",
+		// The UI shows the answer from the streamed steps; API and MCP
+		// callers get it here, taken while this turn still holds agentMu.
+		Content:      lastAnswer(ag.Messages()),
 		InputTokens:  summary.TotalInputTokens,
 		OutputTokens: summary.TotalOutputTokens,
 		CostUSD:      summary.TotalCostUSD,
@@ -1033,7 +1038,6 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	if n := agent.PruneTranscripts(transcriptDir, agent.TranscriptRetention); n > 0 {
 		logger.Info("Removed %d expired sub-agent records", n)
 	}
-	defs := a.loadSubAgentDefs(workDir, true)
 	provider := a.activeProvider()
 	parentModel := a.cfg.DefaultModel()
 	globalModel := os.Getenv("OPENUAI_SUBAGENT_MODEL")
@@ -1045,6 +1049,28 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 	// get spawn_agents at all.
 	scope := subAgentScopeFrom(ctx)
 	childDepth := scope.depth + 1
+	// Each task works in its "cwd" when given (another project, as if
+	// OpenUAI had been launched there), else in its parent's directory.
+	parentDir := workDir
+	if scope.dir != "" {
+		parentDir = scope.dir
+	}
+	dirFor := func(t tools.SubTask) (string, error) {
+		if strings.TrimSpace(t.Cwd) == "" {
+			return parentDir, nil
+		}
+		return subagents.ResolveDir(t.Cwd, parentDir)
+	}
+	// Subagent definitions are looked up in each task's directory first.
+	defsByDir := map[string]subagents.Set{}
+	defsFor := func(dir string) subagents.Set {
+		d, ok := defsByDir[dir]
+		if !ok {
+			d = a.loadSubAgentDefs(dir, true)
+			defsByDir[dir] = d
+		}
+		return d
+	}
 	if childDepth > agent.MaxSubAgentDepth {
 		msg := fmt.Sprintf("nesting limit reached: sub-agents can delegate up to %d levels deep; do this work yourself instead of calling spawn_agents again", agent.MaxSubAgentDepth)
 		logger.Info("[sub-agent:%s] %s", scope.key, msg)
@@ -1063,7 +1089,11 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			if name == "" {
 				name = subagents.BuiltinGeneral
 			}
-			if d := defs.Defs[name]; t.Background || (d != nil && d.Background) {
+			dir, err := dirFor(t)
+			if err != nil {
+				dir = parentDir
+			}
+			if d := defsFor(dir).Defs[name]; t.Background || (d != nil && d.Background) {
 				bg = append(bg, t)
 			} else {
 				fg = append(fg, t)
@@ -1081,6 +1111,9 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		baseRegistry = baseRegistry.Without("spawn_agents")
 	}
 	taskRegistries := map[string]*tools.Registry{}
+	// Directory of each task working outside the app's directory.
+	taskDirs := map[string]string{}
+	taskColors := map[string]string{}
 	// Sub-agents with isolation: worktree get their own temporary worktree.
 	worktrees := map[string]*subagents.Worktree{}
 	// Inline MCP servers of sub-agent definitions only live while this run lasts.
@@ -1099,7 +1132,28 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 				t.Agent = tr.Agent
 			}
 		}
+		// A resumed sub-agent keeps its directory unless the task names one.
+		if t.Resume != "" && strings.TrimSpace(t.Cwd) == "" {
+			if tr, err := agent.LoadTranscript(transcriptDir, t.Resume); err == nil && tr.Dir != "" {
+				t.Cwd = tr.Dir
+			}
+		}
 		at := agent.SubAgentTask{ID: t.ID, Description: t.Description, Agent: t.Agent, ResumeID: t.Resume}
+		dir, err := dirFor(t)
+		if err != nil {
+			at.SetupError = err.Error()
+			at.ProjectDir = strings.TrimSpace(t.Cwd)
+			agentTasks[i] = at
+			continue
+		}
+		other := a.otherDir(dir)
+		if other {
+			at.ProjectDir = dir
+			taskDirs[t.ID] = dir
+			at.ProjectHooks = func() *hooks.Set { return a.loadHooksIn(dir) }
+			logger.Info("[sub-agent:%s] Works in %s", t.ID, dir)
+		}
+		defs := defsFor(dir)
 		var def *subagents.Definition
 		if t.Agent == "" {
 			// No agent named: run as the general-purpose agent.
@@ -1126,7 +1180,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		}
 		at.Allow = t.Allow
 		if def != nil && def.Isolation == subagents.IsolationWorktree {
-			wt, err := subagents.CreateWorktreeWithHooks(workDir, t.ID, a.loadHooks(), a.commonHookInput())
+			wt, err := subagents.CreateWorktreeWithHooks(dir, t.ID, a.loadHooksIn(dir), a.hookInputIn(dir))
 			if err != nil {
 				at.SetupError = err.Error()
 				agentTasks[i] = at
@@ -1135,6 +1189,8 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			worktrees[t.ID] = wt
 			registry = subagents.IsolateTools(registry, wt)
 			logger.Info("[sub-agent:%s] Isolated in worktree %s (branch %s)", t.ID, wt.Dir, wt.Branch)
+		} else if other {
+			registry = a.bindToDir(registry, dir)
 		}
 		var mcpNote string
 		if def != nil && len(def.MCPServers) > 0 {
@@ -1162,23 +1218,24 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			at.Notice = strings.TrimSpace(at.Notice + " " + mcpNote)
 		}
 		taskRegistries[t.ID] = registry
-		promptDir := workDir
+		promptDir := dir
 		if wt := worktrees[t.ID]; wt != nil {
 			promptDir = wt.Dir
 			at.SystemPrompt = subagents.SystemPrompt(def, wt.Dir) + subagents.IsolationPrompt(wt)
 		} else {
-			at.SystemPrompt = subagents.SystemPrompt(def, workDir)
+			at.SystemPrompt = subagents.SystemPrompt(def, dir)
 		}
 		for _, f := range instructionFilesFor(def, promptDir) {
 			a.instructionsLoaded(f, "Project", "session_start")
 		}
 		// Persistent memory: its contents go in the prompt and the agent always
 		// gets the file tools it needs to manage it.
-		if memDir := subagents.MemoryDir(def, workDir, filepath.Join(a.cfg.ConfigDir(), "agent-memory")); memDir != "" {
+		if memDir := subagents.MemoryDir(def, dir, filepath.Join(a.cfg.ConfigDir(), "agent-memory")); memDir != "" {
 			at.SystemPrompt += subagents.MemoryPrompt(memDir)
 			for _, tl := range baseRegistry.All() {
 				for _, n := range subagents.MemoryTools {
-					if tl.Definition().Name == n {
+					// Keep the copy already bound to the worktree or directory.
+					if _, has := registry.Get(n); !has && tl.Definition().Name == n {
 						registry.Register(tl)
 					}
 				}
@@ -1196,13 +1253,13 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			at.Effort = def.Effort
 		}
 		at.Hooks = subagents.HookSet(def)
-		if section, notice := a.preloadSkills(def, workDir); section != "" || notice != "" {
+		if section, notice := a.preloadSkills(def, dir); section != "" || notice != "" {
 			at.SystemPrompt += section
 			if notice != "" {
 				at.Notice = strings.TrimSpace(at.Notice + " " + notice)
 			}
 		}
-		at.WorkDir = workDir
+		at.WorkDir = dir
 		if wt := worktrees[t.ID]; wt != nil {
 			at.WorkDir = wt.Dir
 		}
@@ -1212,6 +1269,19 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		agentTasks[i] = at
 	}
 
+	// Colours come from each task's definitions (resolved now: OnStart runs
+	// concurrently).
+	for i, t := range tasks {
+		name := agentTasks[i].Agent
+		if name == "" {
+			name = subagents.BuiltinGeneral
+		}
+		dir := parentDir
+		if d := taskDirs[t.ID]; d != "" {
+			dir = d
+		}
+		taskColors[t.ID] = defsFor(dir).Color(name)
+	}
 	run := a.subRuns.newRun()
 	results := agent.RunSubAgents(ctx, agent.SubAgentConfig{
 		Provider:      provider,
@@ -1245,7 +1315,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 			logger.Info("[sub-agent:%s] level=%d parent=%q", t.ID, childDepth, scope.key)
 			a.emitSubAgent("subagent_start", map[string]any{
 				"key": run + "/" + t.ID, "run": run, "id": t.ID, "agent": name, "model": model, "description": t.Description,
-				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID, "color": defs.Color(name),
+				"parent": scope.key, "depth": childDepth, "resume": t.ResumeID, "color": taskColors[t.ID], "cwd": t.ProjectDir,
 			})
 		},
 		OnDone: func(r agent.SubAgentResult) {
@@ -1257,7 +1327,7 @@ func (a *App) spawnSubAgents(ctx context.Context, tasks []tools.SubTask) []tools
 		},
 		TaskContext: func(taskID string, parent context.Context) (context.Context, func()) {
 			c, release := a.subRuns.taskContext(run+"/"+taskID, parent)
-			return withSubAgentScope(c, subAgentScope{depth: childDepth, key: run + "/" + taskID, registry: taskRegistries[taskID]}), release
+			return withSubAgentScope(c, subAgentScope{depth: childDepth, key: run + "/" + taskID, registry: taskRegistries[taskID], dir: taskDirs[taskID]}), release
 		},
 	}, agentTasks)
 
