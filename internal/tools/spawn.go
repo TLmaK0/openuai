@@ -22,6 +22,9 @@ type SubTask struct {
 	// Background runs the task detached from this turn; its result arrives
 	// later as a notification.
 	Background bool `json:"background,omitempty"`
+	// Cwd optionally runs the sub-agent in another directory (another
+	// project), as if OpenUAI had been launched there.
+	Cwd string `json:"cwd,omitempty"`
 
 	// Set only by OpenUAI itself (a skill with context: fork), never from
 	// the model's input.
@@ -104,7 +107,7 @@ func (s SpawnAgents) Definition() Definition {
 			{
 				Name:        "tasks",
 				Type:        "string",
-				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (one of the available models listed in the tool description), optionally "effort" (low, medium, high, xhigh or max; overrides the agent definition), optionally "resume" (the agent_id of a previous sub-agent, to continue it with its history), and optionally "background": true (do not wait for it: it keeps running after this turn and its result arrives later as a notification). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
+				Description: `JSON array of tasks, each with "id" (unique identifier), "description" (what the sub-agent should do) and optionally "agent" (name of a subagent definition) and "model" (one of the available models listed in the tool description), optionally "effort" (low, medium, high, xhigh or max; overrides the agent definition), optionally "resume" (the agent_id of a previous sub-agent, to continue it with its history), optionally "cwd" (a directory, usually another project on this machine: the sub-agent works there as if OpenUAI had been launched in it, with that project's AGENTS.md, .openuai agents, hooks, skills and git repository, and its bash, git and relative paths bound to it; its "agent" is looked up in that project first; nested sub-agents inherit it), and optionally "background": true (do not wait for it: it keeps running after this turn and its result arrives later as a notification). Example: [{"id":"review","agent":"code-reviewer","description":"Review the changes in internal/api"}]`,
 				Required:    true,
 			},
 		},

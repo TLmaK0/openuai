@@ -31,6 +31,7 @@
     <span class="sa-arrow">{expanded ? '▼' : '▶'}</span>
     <span class="sa-agent">{sa.nick ? 'Agente ' + sa.nick + ' · ' : ''}{sa.agent}</span>
     <span class="sa-id">{sa.id}</span>
+    {#if sa.cwd}<span class="sa-cwd" title={sa.cwd}>{sa.cwd.split(/[\\/]/).filter(Boolean).pop() || sa.cwd}</span>{/if}
     <span class="sa-status sa-status-{statusLabel(sa).replace('…', '')}">{statusLabel(sa)}</span>
     {#if running && lastTool}
       <span class="sa-current">{lastTool.tool}</span>
@@ -49,6 +50,7 @@
     <div class="sa-body">
       <div class="sa-section"><span class="sa-label">Task</span><pre>{sa.description}</pre></div>
       {#if sa.model}<div class="sa-section"><span class="sa-label">Model</span> {sa.model}</div>{/if}
+      {#if sa.cwd}<div class="sa-section"><span class="sa-label">Project</span> {sa.cwd}</div>{/if}
       {#if sa.depth > 1}<div class="sa-section"><span class="sa-label">Level</span> {sa.depth}{sa.parentNick ? ' · launched by Agente ' + sa.parentNick : ''}</div>{/if}
       {#if sa.notice}<div class="sa-section sa-notice">{sa.notice}</div>{/if}
       {#if sa.steps.length}
@@ -83,6 +85,7 @@
   .sa-arrow { font-size: 0.7rem; color: #777; }
   .sa-agent { color: #2f9eff; font-weight: 600; }
   .sa-id { color: #888; }
+  .sa-cwd { color: #8fb3d9; font-size: 0.75rem; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sa-status { font-size: 0.72rem; padding: 0 0.4rem; border-radius: 8px; background: #1d2a3b; }
   .sa-status-running, .sa-status-cancelling { color: #f5b942; }
   .sa-status-done { color: #6fd18f; }

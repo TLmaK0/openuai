@@ -344,7 +344,11 @@ func (a *App) noteSkillPaths(tool string, args map[string]string) string {
 // without asking only when the skill's allowed-tools or the user's
 // permissions already allow bash; otherwise the invocation aborts.
 func (a *App) renderOptions(sk skills.Skill, turn *tools.Turn) skills.RenderOptions {
-	work := a.GetWorkDir()
+	return a.renderOptionsIn(sk, turn, a.GetWorkDir())
+}
+
+// renderOptionsIn is renderOptions for an agent working in work.
+func (a *App) renderOptionsIn(sk skills.Skill, turn *tools.Turn, work string) skills.RenderOptions {
 	rules := skills.ToolRules(sk.AllowedTools, sk, work)
 	effort := defaultSkillEffort
 	if turn != nil && turn.Effort != "" {
@@ -374,7 +378,7 @@ func (a *App) renderOptions(sk skills.Skill, turn *tools.Turn) skills.RenderOpti
 
 // skillTurnChange is what invoking sk changes for the rest of the turn.
 func (a *App) skillTurnChange(ctx context.Context, sk skills.Skill) tools.TurnChange {
-	work := a.GetWorkDir()
+	work := a.dirOf(ctx)
 	c := tools.TurnChange{Skill: sk.Name, Effort: sk.Effort, Model: a.resolveSkillModel(ctx, sk)}
 	if rules := skills.ToolRules(sk.AllowedTools, sk, work); len(rules) > 0 {
 		c.Allow = func(tool, arg string) bool { return skills.AnyMatch(rules, tool, arg) }
@@ -404,7 +408,8 @@ func (a *App) resolveSkillModel(ctx context.Context, sk skills.Skill) string {
 
 // invokeSkill runs the skill tool: the assistant loads a skill.
 func (a *App) invokeSkill(ctx context.Context, name, args string) tools.Result {
-	set := a.loadSkills()
+	work := a.dirOf(ctx)
+	set := a.loadSkillsIn(work)
 	sk, ok := set.Get(name)
 	if !ok {
 		var names []string
@@ -423,7 +428,7 @@ func (a *App) invokeSkill(ctx context.Context, name, args string) tools.Result {
 	}
 	a.skills.used(sk.Name)
 	turn := tools.TurnFrom(ctx)
-	rendered, err := skills.Render(sk, args, a.renderOptions(sk, turn))
+	rendered, err := skills.Render(sk, args, a.renderOptionsIn(sk, turn, work))
 	if err != nil {
 		logger.Error("Skill %s: %s", sk.Name, err.Error())
 		return tools.Result{Error: err.Error()}
@@ -454,7 +459,7 @@ func (a *App) runSkillFork(ctx context.Context, sk skills.Skill, rendered string
 	task := tools.SubTask{
 		ID:          "skill-" + strings.Trim(forkIDUnsafe.ReplaceAllString(sk.Name, "-"), "-"),
 		Description: "Carry out this skill's task. You do not see the conversation that invoked it.\n\n" + rendered,
-		Agent:       a.forkAgentName(sk.Agent),
+		Agent:       a.forkAgentName(ctx, sk.Agent),
 		Model:       sk.Model,
 		Effort:      sk.Effort,
 		Allow:       c.Allow,
@@ -476,12 +481,12 @@ func (a *App) runSkillFork(ctx context.Context, sk skills.Skill, rendered string
 
 // forkAgentName maps a skill's agent field to a subagent definition name:
 // Claude Code's names (Explore, general-purpose...) match case-insensitively.
-func (a *App) forkAgentName(name string) string {
+func (a *App) forkAgentName(ctx context.Context, name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return subagents.BuiltinGeneral
 	}
-	defs := a.loadSubAgentDefs(a.GetWorkDir(), false)
+	defs := a.loadSubAgentDefs(a.dirOf(ctx), false)
 	if _, ok := defs.Defs[name]; ok {
 		return name
 	}
@@ -608,7 +613,7 @@ func (a *App) preloadSkills(def *subagents.Definition, workDir string) (string, 
 	if def == nil || len(def.Skills) == 0 {
 		return "", ""
 	}
-	set := a.loadSkills()
+	set := a.loadSkillsIn(workDir)
 	var b strings.Builder
 	var missing []string
 	seen := map[string]bool{}
@@ -623,8 +628,7 @@ func (a *App) preloadSkills(def *subagents.Definition, workDir string) (string, 
 			missing = append(missing, n)
 			continue
 		}
-		o := a.renderOptions(sk, nil)
-		o.ProjectDir = workDir
+		o := a.renderOptionsIn(sk, nil, workDir)
 		rendered, err := skills.Render(sk, "", o)
 		if err != nil {
 			missing = append(missing, n+" ("+err.Error()+")")
