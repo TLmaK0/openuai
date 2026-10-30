@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,4 +65,59 @@ func (p *slowLoopProvider) ChatWithTools(ctx context.Context, _ []llm.Message, _
 	n := atomic.AddInt32(&p.calls, 1)
 	return &llm.Response{InputTokens: 1, OutputTokens: 1, Model: "mock"},
 		[]llm.ToolCall{{ID: fmt.Sprintf("tc-%d", n), Name: "list_dir", Arguments: map[string]string{"path": "/x"}}}, nil
+}
+
+// A sub-agent cancelled on its own (Cancel button or stop_agent) can be
+// resumed: the new run gets its whole history, with the tool call cut short
+// closed, plus the new message.
+func TestResumeAfterCancelKeepsHistory(t *testing.T) {
+	dir := t.TempDir()
+	reg := tools.NewRegistry()
+	reg.Register(mockTool{name: "list_dir", output: "LISTING42"})
+	cfg := SubAgentConfig{
+		Provider: &slowLoopProvider{}, Model: "mock", Registry: reg, Permissions: NewPermissionManager("", nil), MaxConcurrent: 1, TranscriptDir: dir,
+		TaskContext: func(_ string, parent context.Context) (context.Context, func()) {
+			c, cancel := context.WithCancel(parent)
+			go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+			return c, cancel
+		},
+	}
+	r1 := RunSubAgents(context.Background(), cfg, []SubAgentTask{{ID: "loop", Description: "loop forever on PLATANO"}})[0]
+	if !r1.Cancelled || r1.AgentID == "" || !strings.Contains(r1.Output, "LISTING42") {
+		t.Fatalf("first run: %+v", r1)
+	}
+	if tr, err := LoadTranscript(dir, r1.AgentID); err != nil || tr.Status != StatusCancelled {
+		t.Fatalf("transcript: %v %q", err, tr.Status)
+	}
+
+	p := &recProvider{}
+	r2 := RunSubAgents(context.Background(), resumeCfg(p, dir), []SubAgentTask{{ID: "loop", Description: "new rule: RULE42; go on", ResumeID: r1.AgentID}})[0]
+	if r2.Error != "" || r2.Cancelled || r2.AgentID != r1.AgentID {
+		t.Fatalf("resume: %+v", r2)
+	}
+	msgs := p.seen[0]
+	var all []string
+	results := map[string]bool{}
+	for _, m := range msgs {
+		all = append(all, m.Content)
+		if m.Role == llm.RoleToolResult {
+			results[m.ToolCallID] = true
+		}
+	}
+	joined := strings.Join(all, "\n")
+	for _, want := range []string{"PLATANO", "LISTING42", "RULE42"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("resumed run did not see %q:\n%s", want, joined)
+		}
+	}
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if !results[tc.ID] {
+				t.Fatalf("tool call %s left without a result", tc.ID)
+			}
+		}
+	}
+	if last := msgs[len(msgs)-1]; last.Role != llm.RoleUser || !strings.Contains(last.Content, "RULE42") {
+		t.Fatalf("the new instructions must be the last message: %+v", last)
+	}
 }

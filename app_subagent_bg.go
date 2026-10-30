@@ -19,7 +19,7 @@ import (
 
 // BackgroundNotice is the placeholder result of a sub-agent launched in the
 // background: the turn that launched it does not wait for it.
-const BackgroundNotice = "Running in the background: its result will arrive later as a notification starting with \"[Background sub-agents finished\". Do not wait for it: continue with other work or end your turn."
+const BackgroundNotice = "Running in the background: its result will arrive later as a notification starting with \"[Background sub-agents finished\". Do not wait for it: continue with other work or end your turn. To stop it, call stop_agent with its agent_id."
 
 // bgNotificationPrefix starts the notification carrying the result of a
 // background sub-agent.
@@ -164,7 +164,7 @@ func (s *bgStore) list() []bgSubAgent {
 // bgBusyError is the error for a task resuming a background sub-agent that is
 // still running (it must not run twice at once).
 func bgBusyError(agentID string) string {
-	return fmt.Sprintf("sub-agent %q is still running in the background; its result will arrive as a notification: do not launch it again", agentID)
+	return fmt.Sprintf("sub-agent %q is still running in the background; its result will arrive as a notification: do not launch it again (to restart it with new instructions, stop it first with stop_agent and then resume it)", agentID)
 }
 
 // spawnWithBackground runs fg now (the caller waits for them) and bg detached
@@ -218,9 +218,20 @@ func (a *App) runBackground(ctx context.Context, t tools.SubTask, e bgSubAgent) 
 	if t.OnFinish != nil {
 		t.OnFinish()
 	}
+	// A stop_agent call may be waiting for this run: it is released once the
+	// record below is updated, so the sub-agent can be resumed right away.
+	run, stopped := a.subRuns.bgSettle(e.AgentID)
+	defer a.subRuns.finish(run)
 	if a.shuttingDown.Load() || ctx.Err() != nil {
 		// The app is closing: keep its record, the next start resumes it.
 		logger.Info("[sub-agent:%s] Stopped by the app closing; it will be resumed on the next start", t.ID)
+		return
+	}
+	if stopped {
+		// Stopped with stop_agent: that call reports its result, so no
+		// notification is queued for it.
+		logger.Info("[sub-agent:%s] Background sub-agent stopped by the agent (agent_id %s)", e.TaskID, e.AgentID)
+		a.bgAgents.remove(e.AgentID)
 		return
 	}
 	a.deliverBackground(e, bgNotificationPrefix+e.TaskID+"]\n\n"+tools.FormatResults(results))

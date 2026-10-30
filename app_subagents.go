@@ -18,6 +18,8 @@ type subAgentRuns struct {
 	seq     atomic.Int64
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
+	// runs are the sub-agents stop_agent can stop (app_subagent_stop.go).
+	runs map[string]*subAgentRun
 }
 
 func (r *subAgentRuns) newRun() string { return fmt.Sprintf("sa%d", r.seq.Add(1)) }
