@@ -781,6 +781,8 @@ func (a *App) ensureAgent() *agent.Agent {
 			SessionID:       a.sessionID(),
 			TranscriptPath:  a.transcriptPath(),
 			BackgroundTasks: a.backgroundTasks,
+			// AGENTS.md files, read again every turn.
+			Instructions: a.instructionsLoader(),
 			// Save after every tool call and result, not only at the end of the
 			// turn: a restart mid-turn must not lose the work already shown.
 			OnCheckpoint: func(ag *agent.Agent) { a.saveSession(ag) },

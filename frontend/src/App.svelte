@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills } from '../wailsjs/go/main/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles } from '../wailsjs/go/main/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
@@ -404,6 +404,8 @@
     slashIndex = 0;
     textareaEl?.focus();
   }
+  let instructionFiles = [];
+  async function refreshInstructions() { try { instructionFiles = (await GetInstructionFiles()) || []; } catch (e) { instructionFiles = []; } }
   async function refreshHooks() { try { hookList = (await GetHooks()) || { entries: [] }; } catch (e) { hookList = { entries: [], warnings: [String(e)] }; } }
   let models = [];
   let selectedModel = '';
@@ -1810,7 +1812,7 @@
       </span>
       <button class="icon-btn" class:icon-btn-active={showSessions} on:click={toggleSessions}>Sessions</button>
       <button class="icon-btn" class:icon-btn-active={showEvents} on:click={toggleEvents}>Events{eventLog.length > 0 ? ` (${eventLog.length})` : ''}</button>
-      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) { refreshHooks(); refreshSkills(); await refreshMCPServers(); } }}>Settings</button>
+      <button class="icon-btn" on:click={async () => { showSettings = !showSettings; if (showSettings) { refreshHooks(); refreshSkills(); refreshInstructions(); await refreshMCPServers(); } }}>Settings</button>
     </div>
   </header>
 
@@ -1875,6 +1877,16 @@
         {#each skillList.warnings || [] as w}
           <div class="setting-row"><label></label><span class="voice-status voice-status-err">{w}</span></div>
         {/each}
+      </div>
+      <div class="settings-group">
+        <div class="settings-group-title">Instructions (AGENTS.md)</div>
+        {#if instructionFiles.length}
+          {#each instructionFiles as f}
+            <div class="setting-row hook-row"><label>{f.scope === 'user' ? 'User' : 'Project'}</label><code class="hook-cmd" title={f.path}>{f.path}</code><span class="hook-src">{fmtSize(f.size)}{f.truncated ? ' · truncated' : ''}</span></div>
+          {/each}
+        {:else}
+          <div class="setting-row"><label></label><span class="voice-status">No instruction files. Add ~/.config/openuai/AGENTS.md or an AGENTS.md in the project.</span></div>
+        {/if}
       </div>
       <div class="settings-group">
         <div class="settings-group-title">Hooks</div>
