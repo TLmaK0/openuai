@@ -4,6 +4,7 @@ package main
 
 import (
 	"os"
+	"strconv"
 	"syscall"
 	"testing"
 )
@@ -42,5 +43,49 @@ func TestConfigureWebKitSignalsKeepsUserChoice(t *testing.T) {
 
 	if got := os.Getenv(jscSignalEnv); got != "12" {
 		t.Fatalf("%s = %q, want the user's 12", jscSignalEnv, got)
+	}
+}
+
+// An inherited JSC_SIGNAL_FOR_GC (a parent OpenUAI exports it to everything
+// it starts) still gets that signal handed over without Go's handler.
+func TestConfigureWebKitSignalsCleansInheritedSignal(t *testing.T) {
+	sig := jscSignal(sigrtmax()) - 1
+	t.Setenv(jscSignalEnv, strconv.Itoa(sig))
+	if signalIsDefault(sig) {
+		t.Fatalf("signal %d should start with Go's handler", sig)
+	}
+
+	configureWebKitSignals()
+	defer setJSCSignal(0)
+
+	if !signalIsDefault(sig) {
+		t.Fatalf("signal %d still has Go's handler; WebKit would override it", sig)
+	}
+}
+
+// C libraries' handlers get SA_ONSTACK as they are installed, except on
+// JavaScriptCore's suspend signal and SIGUSR1.
+func TestCHandlersGetSAOnStack(t *testing.T) {
+	rtmax := sigrtmax()
+	plain, jsc := rtmax-6, rtmax-7
+	setJSCSignal(jsc)
+	defer setJSCSignal(0)
+
+	restore, err := installCHandler(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restore()
+	if !signalOnStack(plain) {
+		t.Fatalf("C handler on signal %d installed without SA_ONSTACK", plain)
+	}
+
+	restoreJSC, err := installCHandler(jsc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restoreJSC()
+	if signalOnStack(jsc) {
+		t.Fatalf("JavaScriptCore's signal %d must keep its handler on the thread's own stack", jsc)
 	}
 }

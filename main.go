@@ -2,8 +2,11 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"os"
 	"strings"
+
+	"openuai/internal/config"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -27,6 +30,18 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		os.Exit(runMCPCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
+
+	// Keep fatal errors and unrecovered panics on disk too, and pick up the
+	// trace of a crash of the previous run (#86). Not in the run `wails build`
+	// makes to generate bindings: it would take the previous crash for itself.
+	var crashes *crashRun
+	if dir, err := config.Dir(); err == nil && !bindingsBuild {
+		lastCrashTrace, crashes = startCrashLog(dir)
+		if lastCrashTrace != "" {
+			fmt.Fprintf(os.Stderr, "openuai: the previous run crashed; trace saved in %s\n", lastCrashTrace)
+		}
+	}
+	defer crashes.finish()
 
 	// Before WebKit starts: keep JavaScriptCore off Go's SIGUSR1 (#86).
 	configureWebKitSignals()

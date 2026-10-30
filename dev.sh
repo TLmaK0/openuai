@@ -15,6 +15,13 @@
 # exiting with 42. Without a worktree it relaunches in the same directory.
 # Each launch runs that directory's own `dev.sh --once`, so every worktree is
 # built with its own build steps.
+#
+# When the app crashes (a Go fatal error exits with code 2, a fatal signal
+# gives 128+N) it is relaunched too, at most $OPENUAI_CRASH_RELAUNCH_MAX times
+# (default 3) within $OPENUAI_CRASH_RELAUNCH_WINDOW seconds (default 300); then
+# the loop stops. A normal quit (code 0), a build failure, SIGINT/SIGTERM/SIGHUP
+# and Ctrl+C on the loop stop it as before. Crash traces are kept in the
+# "crashes" folder of the OpenUAI config directory.
 set -e
 
 # Detect OS and install system dependencies
@@ -142,8 +149,34 @@ run() {
   exec "$bin"
 }
 
+# crash_dir_hint prints where the app keeps its crash traces.
+crash_dir_hint() {
+  case "$(uname -s)" in
+    Darwin) echo "$HOME/Library/Application Support/openuai/crashes" ;;
+    MINGW*|MSYS*) echo "${APPDATA:-%AppData%}/openuai/crashes" ;;
+    *) echo "${XDG_CONFIG_HOME:-$HOME/.config}/openuai/crashes" ;;
+  esac
+}
+
+# is_crash_code CODE: whether an exit code means the app crashed. Go exits
+# with 2 on a fatal error or an unrecovered panic; a process killed by signal
+# N gives 128+N. SIGHUP, SIGINT and SIGTERM are someone stopping it on purpose.
+is_crash_code() {
+  local code=$1
+  if [ "$code" -eq 2 ]; then
+    return 0
+  fi
+  if [ "$code" -gt 128 ] && [ "$code" -le 192 ]; then
+    case $((code - 128)) in
+      1|2|15) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
 # Relaunch loop: runs `dev.sh --once` in $dir until the app exits with a code
-# other than 42.
+# other than 42, or crashes more often than the crash relaunch cap allows.
 relaunch_loop() {
   # Channel the app uses to tell us where to relaunch. Its presence in the
   # environment is also how the app knows a relaunch loop is running.
@@ -158,10 +191,24 @@ relaunch_loop() {
     done
   fi
 
+  # Ctrl+C on the loop reaches the app too (same process group); the loop
+  # notes it and stops once the app is gone instead of relaunching it.
+  local interrupted=false
+  trap 'interrupted=true' INT
+
+  local crash_max=${OPENUAI_CRASH_RELAUNCH_MAX:-3}
+  local crash_window=${OPENUAI_CRASH_RELAUNCH_WINDOW:-300}
+  # SECONDS at each crash relaunch still inside the window.
+  local crash_times=()
+
   # prev_dir is the directory that last ran fine; a version that dies right
   # after a restart into another directory falls back to it.
   local prev_dir=""
   while true; do
+    if $interrupted; then
+      echo "OpenUAI dev: interrupted; stopping" >&2
+      exit 130
+    fi
     if ! cd "$dir"; then
       echo "OpenUAI dev: cannot enter $dir" >&2
       exit 1
@@ -171,6 +218,10 @@ relaunch_loop() {
 
     local code=0 started=$SECONDS
     ./dev.sh --once || code=$?
+    if $interrupted; then
+      echo "OpenUAI dev: interrupted (app exit code $code); stopping" >&2
+      exit 130
+    fi
     if [ "$code" -ne 42 ]; then
       # Build failure or crash shortly after switching directory: do not
       # leave the user without the app, go back to the one that worked.
@@ -179,6 +230,23 @@ relaunch_loop() {
         echo "OpenUAI dev: $dir failed (code $code) right after the restart; going back to $prev_dir" >&2
         dir="$prev_dir"
         prev_dir=""
+        sleep 1
+        continue
+      fi
+      if is_crash_code "$code"; then
+        local now=$SECONDS kept=() t
+        for t in "${crash_times[@]}"; do
+          if [ $((now - t)) -lt "$crash_window" ]; then
+            kept+=("$t")
+          fi
+        done
+        crash_times=("${kept[@]}")
+        if [ "${#crash_times[@]}" -ge "$crash_max" ]; then
+          echo "OpenUAI dev: the app crashed (code $code) after $crash_max crash relaunches within ${crash_window}s; not relaunching it again. Crash traces: $(crash_dir_hint)" >&2
+          exit "$code"
+        fi
+        crash_times+=("$now")
+        echo "OpenUAI dev: the app crashed (code $code); relaunching in $dir (crash relaunch ${#crash_times[@]}/$crash_max within ${crash_window}s). Crash traces: $(crash_dir_hint)" >&2
         sleep 1
         continue
       fi

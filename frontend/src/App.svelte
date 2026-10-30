@@ -60,6 +60,14 @@
     renderer: codeRenderer,
   });
 
+  // noticeLabel is the short text of a restart notice: when the app had
+  // crashed, it says so and where the crash trace is (#86).
+  function noticeLabel(content) {
+    const label = content.match(/^\[OpenUAI restarted at [0-9:]+\]/)?.[0]?.slice(1, -1) || 'OpenUAI restarted';
+    const trace = content.match(/crash trace is saved in `([^`]+)`/)?.[1];
+    return trace ? `${label} after a crash (trace: ${trace})` : label;
+  }
+
   // Delegated chat clicks: code-copy buttons and file names.
   function onChatClick(e) {
     const btn = e.target.closest && e.target.closest('.code-copy');
@@ -2455,7 +2463,7 @@
         </div>
       {:else if msg.role === 'notice'}
         <div class="message notice-msg">
-          <div class="message-content">↻ {msg.content.match(/^\[OpenUAI restarted at [0-9:]+\]/)?.[0]?.slice(1, -1) || 'OpenUAI restarted'}</div>
+          <div class="message-content">↻ {noticeLabel(msg.content)}</div>
         </div>
       {:else if msg.role === 'error'}
         <div class="message error-msg">

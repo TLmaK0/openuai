@@ -224,8 +224,12 @@ func (a *App) recoverAfterRestart() {
 	a.agentMu.Lock()
 	ag := a.ensureAgent()
 	killed := takeKilledProcs(a.cfg.ConfigDir())
-	bgNote := a.recoverBackgroundSubAgents()
-	resume, changed := ag.RecoverInterruptedWithNote(killed, bgNote, time.Now())
+	note := a.recoverBackgroundSubAgents()
+	if lastCrashTrace != "" {
+		logger.Error("The previous run crashed; trace saved in %s", lastCrashTrace)
+		note = strings.TrimSpace(crashNote(lastCrashTrace) + " " + note)
+	}
+	resume, changed := ag.RecoverInterruptedWithNote(killed, note, time.Now())
 	if changed {
 		a.saveSession(ag)
 	}
