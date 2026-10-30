@@ -28,6 +28,9 @@ func main() {
 		os.Exit(runMCPCommand(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	}
 
+	// Before WebKit starts: keep JavaScriptCore off Go's SIGUSR1 (#86).
+	configureWebKitSignals()
+
 	// Create an instance of the app structure
 	app := NewApp()
 	app.whisperVersion = strings.TrimSpace(whisperVersion)
