@@ -249,9 +249,9 @@ func (a *App) notRunningResult(agentID string) tools.Result {
 	if err != nil {
 		return tools.Result{Error: fmt.Sprintf("cannot stop %q: it is not a running sub-agent (%s). Running sub-agents: %s", agentID, err.Error(), running)}
 	}
-	state := "it is not running (last status: " + tr.Status + ")"
+	state := "is not running (last status: " + tr.Status + ")"
 	if tr.Ended() {
-		state = "it has already finished (status: " + tr.Status + ") and its result was already reported"
+		state = "has already finished (status: " + tr.Status + ") and its result was already reported"
 	}
 	return tools.Result{Output: fmt.Sprintf("Nothing was stopped: sub-agent %s %s. To continue it with new instructions, call spawn_agents with a task whose \"resume\" is %q. Running sub-agents: %s", agentID, state, agentID, running)}
 }
