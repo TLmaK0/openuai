@@ -94,16 +94,36 @@ install_deps_macos() {
 
 # npm: use exactly the version pinned in frontend/package.json
 # ("packageManager"), so `npm install` never rewrites package-lock.json with
-# another npm's format. Installed in the user's Node prefix when different.
+# another npm's format.
+#
+# When the installed npm differs, the pinned one is installed into a private
+# cache directory (one per version) and put first on PATH for this build;
+# the user's global npm is never touched. `npm install -g` is not used: it
+# fails with EEXIST when the global bin directory holds an npm/node that
+# another tool owns (e.g. symlinks into some other app's bundled Node), and
+# forcing it would break that tool.
 ensure_npm() {
   local want have
   want=$(node -p "(require('./frontend/package.json').packageManager || '').replace(/^npm@/, '')" 2>/dev/null)
   [[ -z "$want" ]] && return
   have=$(npm --version 2>/dev/null)
-  if [[ "$have" != "$want" ]]; then
-    echo "→ npm $have found, frontend/package.json pins npm $want: installing it..."
-    npm install -g "npm@$want" || { echo "⚠ Could not install npm $want (try: npm install -g npm@$want)"; exit 1; }
+  [[ "$have" == "$want" ]] && return
+
+  local cache="${XDG_CACHE_HOME:-$HOME/.cache}/openuai/npm-$want"
+  local bin="$cache/node_modules/.bin"
+  if [[ "$("$bin/npm" --version 2>/dev/null)" != "$want" ]]; then
+    echo "→ npm $have found, frontend/package.json pins npm $want: installing it in $cache..."
+    rm -rf "$cache"
+    mkdir -p "$cache"
+    if ! npm install --prefix "$cache" --no-save --no-audit --no-fund "npm@$want" ||
+      [[ "$("$bin/npm" --version 2>/dev/null)" != "$want" ]]; then
+      rm -rf "$cache"
+      echo "⚠ Could not install npm $want in $cache"
+      exit 1
+    fi
   fi
+  export PATH="$bin:$PATH"
+  echo "→ Using npm $want from $cache"
 }
 
 # Install Go tools
