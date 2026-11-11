@@ -44,6 +44,14 @@ func SetEnv(e Env) {
 	envMu.Unlock()
 }
 
+// SetProjectDir changes Env.ProjectDir: the conversation moved to another
+// project.
+func SetProjectDir(dir string) {
+	envMu.Lock()
+	env.ProjectDir = dir
+	envMu.Unlock()
+}
+
 func getEnv() Env {
 	envMu.RLock()
 	defer envMu.RUnlock()

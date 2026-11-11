@@ -181,6 +181,9 @@ type Config struct {
 	Hooks func() *hooks.Set
 	// WorkDir is where hooks run.
 	WorkDir string
+	// WorkDirInPrompt names WorkDir in the Environment section of the
+	// system prompt (the main conversation; sub-agent prompts name theirs).
+	WorkDirInPrompt bool
 	// AgentType and AgentID identify a sub-agent to its hooks.
 	AgentType string
 	AgentID   string
@@ -218,6 +221,9 @@ func New(cfg Config) *Agent {
 	// Inject environment info so the LLM knows what's available
 	prompt += "\n\n## Environment"
 	prompt += "\n- OS: " + runtime.GOOS + "/" + runtime.GOARCH
+	if cfg.WorkDirInPrompt && cfg.WorkDir != "" {
+		prompt += "\n- Working directory: " + cfg.WorkDir + " (bash, git, file tools and relative paths work here)"
+	}
 	switch runtime.GOOS {
 	case "darwin", "windows":
 		// macOS and Windows always have a graphical display

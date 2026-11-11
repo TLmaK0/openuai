@@ -26,7 +26,7 @@ func (a *App) RequestRestart(worktree string, window []int) (map[string]any, err
 	if window != nil && len(window) != 2 {
 		return nil, fmt.Errorf("window must be [x, y]")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := a.launchWorkDir()
 	if err != nil {
 		return nil, err
 	}

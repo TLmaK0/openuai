@@ -66,7 +66,10 @@ type App struct {
 	wake           *voice.WakeListener
 	lipRecorder    *lipreading.Recorder
 	whisperVersion string
-	version        string
+	// launchDir is the directory the process started in: dev restarts
+	// rebuild that checkout, whatever folder the conversation moved to.
+	launchDir string
+	version   string
 
 	permMu       sync.Mutex
 	permResponse chan permAnswer
@@ -113,7 +116,9 @@ type permAnswer struct {
 }
 
 func NewApp() *App {
+	launchDir, _ := os.Getwd()
 	return &App{
+		launchDir:     launchDir,
 		costTracker:   llm.NewCostTracker(),
 		permResponse:  make(chan permAnswer, 1),
 		watchedChats:  make(map[string]struct{}),
@@ -468,6 +473,7 @@ func (a *App) startup(ctx context.Context) {
 		}
 	}
 
+	a.restoreSessionWorkDir()
 	a.initHooks()
 	a.recoverAfterRestart()
 	// A conversation that starts as an agent sends its initialPrompt.
@@ -819,6 +825,7 @@ func (a *App) newMainAgent(setup *mainAgentSetup) *agent.Agent {
 			MemoryText:      memoryText,
 			Hooks:           a.loadHooks,
 			WorkDir:         a.GetWorkDir(),
+			WorkDirInPrompt: true,
 			SessionID:       a.sessionID(),
 			TranscriptPath:  a.transcriptPath(),
 			BackgroundTasks: a.backgroundTasks,
@@ -1984,6 +1991,12 @@ func (a *App) ResumeSession(id string) string {
 	a.costTracker.Reset()
 	// The resumed conversation runs as the agent chosen for it, if any.
 	a.loadMainAgentChoice()
+	// The resumed conversation goes back to its folder.
+	if dir := agent.PeekSessionWorkDir(a.cfg.ConfigDir(), id); dir != "" {
+		if err := a.changeWorkDir(dir); err != nil {
+			logger.Info("Resumed session keeps working in %s: %s", a.GetWorkDir(), err.Error())
+		}
+	}
 	choice := agent.PeekMainAgentChoice(a.cfg.ConfigDir(), id)
 	a.mainAg.mu.Lock()
 	a.mainAg.choice = choice

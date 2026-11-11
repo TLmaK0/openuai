@@ -1,5 +1,5 @@
 <script>
-  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles, GetMainAgent, SetMainAgent, SetMainAgentDefault, RunInitialPrompt } from '../wailsjs/go/app/App';
+  import { SendMessage, SendMessageWithImages, SendMessageWithAttachments, SaveAttachment, PickAttachments, ClipboardImage, EditMessage, AbortAgent, SetProviderSecret, GetModels, GetDefaultModel, SetDefaultModel, ClearChat, GetProvider, SetProvider, GetProviders, GetActiveProvider, ProviderLogin, RespondPermission, GetEventStats, GetMCPServers, AddMCPServer, RemoveMCPServer, ReauthMCPServer, AuthMCPServer, GetSessions, ResumeSession, DeleteSession, CallMCPTool, StartRecording, StopRecording, SpeakText, GetTTSVoice, SetTTSVoice, GetTTSVoices, PiperSupported, GetVoiceEnabled, SetVoiceEnabled, StopSpeaking, GetAudioDevices, GetAudioDevice, SetAudioDevice, GetSTTLanguage, SetSTTLanguage, GetWakeWord, SetWakeWord, GetWakeListening, SetWakeListening, SetWakePaused, GetVersion, ApplyUpdate, SkipVersion, LipReadingModelReady, DownloadLipReadingModel, StartLipRecording, StopLipRecording, GetBetaLipReading, SetBetaLipReading, GetMarketplace, RefreshMarketplace, GetInstalledNames, InstallMarketplace, CheckNpx, OpenPath, GetWorkDir, GetChatHistory, HasInterruptedWork, ResumeInterrupted, GetHooks, GetSkills, GetInstructionFiles, GetMainAgent, SetMainAgent, SetMainAgentDefault, RunInitialPrompt, SetWorkDir, GetRecentWorkDirs, PickWorkDir } from '../wailsjs/go/app/App';
   import { EventsOn, BrowserOpenURL } from '../wailsjs/runtime/runtime';
   import { onMount, afterUpdate, tick } from 'svelte';
   import { marked } from 'marked';
@@ -590,6 +590,38 @@
     await refreshMainAgent();
     if (!err) await runInitialIfPending();
   }
+  // Folder the conversation works in (issue #114): its AGENTS.md, agents,
+  // skills and hooks apply. Changed from the header or with /cd <path>.
+  let showFolders = false;
+  let recentDirs = [];
+  let workDirError = '';
+  const baseName = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p || '?';
+  async function toggleFolders() {
+    showFolders = !showFolders;
+    if (showFolders) { try { recentDirs = (await GetRecentWorkDirs()) || []; } catch (e) { recentDirs = []; } }
+  }
+  // changeWorkDir returns the error message, '' when it worked.
+  async function changeWorkDir(path) {
+    showFolders = false;
+    workDirError = '';
+    const err = await SetWorkDir(path);
+    if (err) { workDirError = err; return err; }
+    workDir = await GetWorkDir();
+    await refreshMainAgent();
+    if (showSettings) { refreshInstructions(); refreshSkills(); refreshHooks(); }
+    return '';
+  }
+  async function pickFolder() {
+    showFolders = false;
+    const dir = await PickWorkDir();
+    if (dir) await changeWorkDir(dir);
+  }
+  // /cd [path]: handled here, never sent to the model.
+  async function runCd(arg) {
+    const err = arg ? await changeWorkDir(arg) : '';
+    if (!err) messages = [...messages, { role: 'notice', content: (arg ? 'Now working in ' : 'Working in ') + workDir }];
+  }
+
   // A conversation that starts as an agent with an initialPrompt sends it as
   // its first message.
   async function runInitialIfPending() {
@@ -661,6 +693,7 @@
     // sends it (no UI was ready to do it).
     await refreshMainAgent();
     EventsOn('main_agent', () => refreshMainAgent());
+    EventsOn('work_dir_changed', (dir) => { workDir = dir; });
     EventsOn('main_agent_error', (e) => {
       messages = [...messages, { role: 'error', content: e.error }];
       refreshMainAgent();
@@ -1249,6 +1282,12 @@
 
   async function send() {
     const content = input.trim();
+    const cd = content.match(/^\/cd(?:\s+(.+))?$/s);
+    if (cd && !attachments.length && !files.length) {
+      input = '';
+      runCd((cd[1] || '').trim());
+      return;
+    }
     const images = attachments.map((a) => a.data);
     const sentFiles = files.map(({ name, path, size, mime }) => ({ name, path, size, mime }));
     if (!content && !images.length && !sentFiles.length) return;
@@ -1890,7 +1929,7 @@
   }
 </script>
 
-<svelte:window on:keydown={handleGlobalKeydown} on:click={onLinkClick} />
+<svelte:window on:keydown={handleGlobalKeydown} on:click={onLinkClick} on:mousedown={(e) => { if (showFolders && !e.target.closest?.('.folder-pick')) showFolders = false; }} />
 
 <div class="orb-bg" class:active={loading || speaking || listening}>
   <div class="orb-aura" style="transform: translate({auraTX}px, {auraTY}px)"></div>
@@ -1916,6 +1955,24 @@
   <header>
     <h1>OpenUAI</h1>
     <div class="header-right">
+      <div class="folder-pick">
+        <button class="folder-btn" on:click={toggleFolders} disabled={loading} title={'Working in ' + workDir + '\nClick to change folder, or type /cd <path>'} aria-label="Folder the conversation works in">
+          <span class="agent-pick-label">Folder</span>
+          <span class="folder-name">{baseName(workDir)}</span>
+        </button>
+        {#if showFolders}
+          <div class="folder-menu">
+            {#each recentDirs as d}
+              <button class="folder-item" class:folder-current={d === workDir} on:click={() => changeWorkDir(d)} title={d}>
+                <span class="folder-item-name">{baseName(d)}</span>
+                <span class="folder-item-path">{d}</span>
+              </button>
+            {/each}
+            {#if recentDirs.length}<div class="folder-sep"></div>{/if}
+            <button class="folder-item" on:click={pickFolder}>Choose folder…</button>
+          </div>
+        {/if}
+      </div>
       <label class="agent-pick" class:agent-pick-on={mainAgent.name} title={agentTitle}>
         <span class="agent-pick-label">Agent</span>
         <select value={mainAgent.name || ''} on:change={(e) => chooseMainAgent(e.target.value)} disabled={loading} aria-label="Agent the conversation runs as">
@@ -1932,6 +1989,12 @@
     </div>
   </header>
 
+  {#if workDirError}
+    <div class="agent-error">
+      <span>{workDirError}</span>
+      <button class="icon-btn" on:click={() => (workDirError = '')}>Dismiss</button>
+    </div>
+  {/if}
   {#if agentError || mainAgent.error}
     <div class="agent-error" role="alert">
       <span>{agentError || ('Agent "' + mainAgent.wanted + '" (' + mainAgent.source + ' setting) is not running: ' + mainAgent.error + '. Using the normal assistant.')}</span>
@@ -2305,7 +2368,7 @@
         <div class="session-entry">
           <button class="session-resume" on:click={() => resumeSession(sess.id)}>
             <span class="session-title">{sess.title}</span>
-            <span class="session-meta">{sess.messages} msgs · {sess.model} · {new Date(sess.updated_at).toLocaleDateString()}</span>
+            <span class="session-meta">{sess.messages} msgs · {sess.model} · {new Date(sess.updated_at).toLocaleDateString()}{sess.work_dir ? ' · ' + baseName(sess.work_dir) : ''}</span>
           </button>
           <button class="session-delete" on:click={() => deleteSession(sess.id)}>x</button>
         </div>
@@ -2728,6 +2791,81 @@
     padding: 0.15rem 0.3rem;
     font-size: 0.8rem;
     max-width: 11rem;
+  }
+  .folder-pick {
+    position: relative;
+  }
+  .folder-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.8rem;
+    color: #7f9bbd;
+    cursor: pointer;
+  }
+  .folder-btn:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .folder-name {
+    background: #0d1a2b;
+    color: #cfe3ff;
+    border: 1px solid #163050;
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    max-width: 11rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .folder-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 50;
+    min-width: 16rem;
+    max-width: 28rem;
+    background: #0d1a2b;
+    border: 1px solid #163050;
+    border-radius: 6px;
+    padding: 0.25rem;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  }
+  .folder-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    color: #cfe3ff;
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+  }
+  .folder-item:hover {
+    background: #163050;
+  }
+  .folder-current .folder-item-name {
+    color: #ffd98a;
+  }
+  .folder-item-path {
+    font-size: 0.65rem;
+    color: #7f9bbd;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .folder-sep {
+    height: 1px;
+    margin: 0.25rem 0;
+    background: #163050;
   }
   .agent-pick-on select {
     border-color: #f5b942;

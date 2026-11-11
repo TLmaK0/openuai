@@ -87,6 +87,7 @@ type settings struct {
 	WakeWord             string            `json:"wake_word,omitempty"` // name that triggers hands-free listening (e.g. "Pepito")
 	AudioDevice          string            `json:"audio_device,omitempty"`
 	SkippedVersion       string            `json:"skipped_version,omitempty"`
+	RecentWorkDirs       []string          `json:"recent_work_dirs,omitempty"` // most recent first
 	BetaLipReading       bool              `json:"beta_lip_reading,omitempty"`
 	ComputerUseEnabled   bool              `json:"computer_use_enabled,omitempty"`
 	ComputerUseDisplay   string            `json:"computer_use_display,omitempty"` // X display, e.g. ":0" (screen) or ":99" (virtual)
@@ -565,6 +566,32 @@ func (c *Config) SetAudioDevice(device string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data.AudioDevice = device
+}
+
+// --- Working directories ---
+
+// maxRecentWorkDirs bounds the recent working directories kept.
+const maxRecentWorkDirs = 10
+
+// RecentWorkDirs returns the working directories used most recently, most
+// recent first.
+func (c *Config) RecentWorkDirs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]string(nil), c.data.RecentWorkDirs...)
+}
+
+// AddRecentWorkDir puts dir first in the recent working directories.
+func (c *Config) AddRecentWorkDir(dir string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := []string{dir}
+	for _, d := range c.data.RecentWorkDirs {
+		if d != dir && len(out) < maxRecentWorkDirs {
+			out = append(out, d)
+		}
+	}
+	c.data.RecentWorkDirs = out
 }
 
 // --- Updates and betas ---

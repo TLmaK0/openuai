@@ -33,6 +33,8 @@ type SessionState struct {
 	// MainAgent is the agent chosen for this conversation (not a saved
 	// default): nil when none was chosen, "" for the normal assistant.
 	MainAgent *string `json:"main_agent,omitempty"`
+	// WorkDir is the directory the conversation works in.
+	WorkDir string `json:"work_dir,omitempty"`
 }
 
 // SessionInfo is a lightweight summary for listing sessions (without messages).
@@ -44,6 +46,7 @@ type SessionInfo struct {
 	Messages  int    `json:"messages"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	WorkDir   string `json:"work_dir,omitempty"`
 }
 
 // SaveSession persists the agent's conversation state to disk
@@ -65,6 +68,7 @@ func (a *Agent) SaveSession(configDir string) error {
 		ResumeAttempts: a.resumeAttempts,
 		ResumePending:  a.resumePending,
 		MainAgent:      a.mainAgent,
+		WorkDir:        a.workDir,
 	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -159,6 +163,22 @@ func PeekMainAgentChoice(configDir, id string) *string {
 	return state.MainAgent
 }
 
+// PeekSessionWorkDir reads the working directory of a saved session
+// ("current" or an archive ID); empty if it has none.
+func PeekSessionWorkDir(configDir, id string) string {
+	data, err := os.ReadFile(filepath.Join(configDir, "sessions", id+".json"))
+	if err != nil {
+		return ""
+	}
+	var state struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if json.Unmarshal(data, &state) != nil {
+		return ""
+	}
+	return state.WorkDir
+}
+
 // ArchiveSession saves the current session to history and removes current.json.
 // Returns the archive ID or empty string if there was nothing to archive.
 func ArchiveSession(configDir string) string {
@@ -245,6 +265,7 @@ func ListSessions(configDir string) []SessionInfo {
 			Messages:  len(state.Messages),
 			CreatedAt: state.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: state.UpdatedAt.Format(time.RFC3339),
+			WorkDir:   state.WorkDir,
 		})
 	}
 
