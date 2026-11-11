@@ -1983,29 +1983,24 @@ func historyPreview(s string) string {
 	return strings.Join(lines[:10], "\n") + fmt.Sprintf("\n... (%d lines)", len(lines))
 }
 
-// ResumeSession loads an archived session by ID.
+// ResumeSession makes archived session id the conversation in progress, in
+// its folder; the conversation that was in progress is archived.
 func (a *App) ResumeSession(id string) string {
 	logger.Info("Resuming session: %s", id)
-	a.endSession("resume")
-	a.currentAgent = nil
-	a.costTracker.Reset()
-	// The resumed conversation runs as the agent chosen for it, if any.
-	a.loadMainAgentChoice()
-	// The resumed conversation goes back to its folder.
-	if dir := agent.PeekSessionWorkDir(a.cfg.ConfigDir(), id); dir != "" {
-		if err := a.changeWorkDir(dir); err != nil {
-			logger.Info("Resumed session keeps working in %s: %s", a.GetWorkDir(), err.Error())
+	if !a.agentMu.TryLock() {
+		return "The assistant is busy: wait until it finishes (or stop it) before switching sessions."
+	}
+	defer a.agentMu.Unlock()
+	dir := agent.PeekSessionWorkDir(a.cfg.ConfigDir(), id)
+	if dir != "" {
+		if _, err := a.resolveWorkDir(dir); err != nil {
+			logger.Info("Session %s keeps working in %s: %s", id, a.GetWorkDir(), err.Error())
+			dir = ""
 		}
 	}
-	choice := agent.PeekMainAgentChoice(a.cfg.ConfigDir(), id)
-	a.mainAg.mu.Lock()
-	a.mainAg.choice = choice
-	a.mainAg.mu.Unlock()
-	ag := a.ensureAgent()
-	if err := ag.LoadSessionByID(a.cfg.ConfigDir(), id); err != nil {
+	if err := a.openSessionLocked(id, dir, "resume", true); err != nil {
 		return err.Error()
 	}
-	a.startSession("resume", false)
 	return ""
 }
 

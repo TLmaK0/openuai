@@ -44,6 +44,7 @@ func mainAgentApp(t *testing.T, agents map[string]string) *App {
 	cfg.SetProviderAndModel("p", "m")
 	a := appWith(map[string]llm.Provider{"p": inTreeProvider{name: "p"}})
 	a.cfg = cfg
+	a.costTracker = llm.NewCostTracker()
 	a.registry = tools.NewRegistry()
 	for _, n := range []string{"read_file", "write_file", "list_dir", "bash", "spawn_agents", "watch_chat"} {
 		a.registry.Register(stubTool{n})

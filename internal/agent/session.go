@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,13 +90,30 @@ func (a *Agent) SaveSession(configDir string) error {
 	return nil
 }
 
-// LoadSession restores the agent's conversation state from disk
-func (a *Agent) LoadSession(configDir string) error {
-	path := filepath.Join(configDir, "sessions", "current.json")
-	return a.loadSessionFrom(path)
+// SessionMismatchError is returned when a saved session was held with
+// another provider or model than the agent's, so it cannot be restored.
+type SessionMismatchError struct{ Provider, Model string }
+
+func (e *SessionMismatchError) Error() string {
+	return fmt.Sprintf("this conversation was held with %s (%s): switch to that provider and model to resume it", e.Model, e.Provider)
 }
 
-// LoadSessionByID restores a specific session by ID
+// LoadSession restores the agent's conversation state from disk. A session
+// of another provider or model is left alone and the agent starts fresh.
+func (a *Agent) LoadSession(configDir string) error {
+	path := filepath.Join(configDir, "sessions", "current.json")
+	err := a.loadSessionFrom(path)
+	var mismatch *SessionMismatchError
+	if errors.As(err, &mismatch) {
+		logger.Info("Session provider/model mismatch, starting fresh")
+		return nil
+	}
+	return err
+}
+
+// LoadSessionByID restores a specific session by ID. It returns a
+// *SessionMismatchError if the session was held with another provider or
+// model.
 func (a *Agent) LoadSessionByID(configDir, id string) error {
 	path := filepath.Join(configDir, "sessions", id+".json")
 	return a.loadSessionFrom(path)
@@ -117,8 +135,7 @@ func (a *Agent) loadSessionFrom(path string) error {
 
 	// Only restore if same provider and model
 	if state.Provider != a.provider.Name() || state.Model != a.model {
-		logger.Info("Session provider/model mismatch, starting fresh")
-		return nil
+		return &SessionMismatchError{Provider: state.Provider, Model: state.Model}
 	}
 
 	// Keep the freshly-built system prompt (messages[0]); restore only the conversation.
@@ -195,8 +212,8 @@ func ArchiveSession(configDir string) string {
 		return ""
 	}
 
-	// Don't archive empty sessions
-	if len(state.Messages) == 0 {
+	// Don't archive empty sessions (nothing but the system prompt)
+	if !hasConversation(state.Messages) {
 		os.Remove(currentPath)
 		return ""
 	}
@@ -224,6 +241,16 @@ func ArchiveSession(configDir string) string {
 	os.Remove(currentPath)
 	logger.Info("Session archived: %s (%d messages) -> %s", state.Title, len(state.Messages), id)
 	return id
+}
+
+// hasConversation reports whether msgs hold more than the system prompt.
+func hasConversation(msgs []llm.Message) bool {
+	for _, m := range msgs {
+		if m.Role != llm.RoleSystem {
+			return true
+		}
+	}
+	return false
 }
 
 // ClearSession archives the current session and removes current.json

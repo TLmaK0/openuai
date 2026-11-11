@@ -606,8 +606,9 @@
     workDirError = '';
     const err = await SetWorkDir(path);
     if (err) { workDirError = err; return err; }
-    workDir = await GetWorkDir();
-    await refreshMainAgent();
+    await showConversation();
+    await runInitialIfPending(); // a new conversation run as an agent
+    if (showSessions) sessions = await GetSessions();
     if (showSettings) { refreshInstructions(); refreshSkills(); refreshHooks(); }
     return '';
   }
@@ -619,7 +620,7 @@
   // /cd [path]: handled here, never sent to the model.
   async function runCd(arg) {
     const err = arg ? await changeWorkDir(arg) : '';
-    if (!err) messages = [...messages, { role: 'notice', content: (arg ? 'Now working in ' : 'Working in ') + workDir }];
+    if (!err) messages = [...messages, { role: 'notice', content: (arg ? 'Now working in ' : 'Working in ') + workDir + (arg ? ' (this folder\'s last session, or a new one)' : '') }];
   }
 
   // A conversation that starts as an agent with an initialPrompt sends it as
@@ -1450,13 +1451,38 @@
       alert('Failed to resume: ' + err);
       return;
     }
+    showSessions = false;
+    await showConversation('*Session restored. Continue the conversation.*');
+  }
+
+  // showConversation shows the conversation in progress after the backend
+  // switched sessions (resume or folder change); empty shows emptyNote, if any.
+  async function showConversation(emptyNote = '') {
     const history = await GetChatHistory();
     messages = history?.length
       ? history.map((m) => ({ role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }))
-      : [{ role: 'assistant', content: '*Session restored. Continue the conversation.*' }];
-    showSessions = false;
+      : emptyNote ? [{ role: 'assistant', content: emptyNote }] : [];
+    workDir = await GetWorkDir();
     totalCost = 0;
     totalTokens = 0;
+    agentError = '';
+    await refreshMainAgent();
+  }
+
+  // Sessions of the current folder first, then the others by folder.
+  $: sessionGroups = groupSessions(sessions, workDir);
+  function groupSessions(list, dir) {
+    const here = [], byDir = new Map();
+    for (const s of list || []) {
+      if (s.work_dir && s.work_dir === dir) { here.push(s); continue; }
+      const k = s.work_dir || '';
+      if (!byDir.has(k)) byDir.set(k, []);
+      byDir.get(k).push(s);
+    }
+    const out = [];
+    if (here.length) out.push({ dir, label: 'This folder · ' + baseName(dir), sessions: here });
+    for (const [k, v] of byDir) out.push({ dir: k, label: k ? baseName(k) : 'No folder', sessions: v });
+    return out;
   }
 
   async function deleteSession(id) {
@@ -2364,14 +2390,17 @@
       {#if sessions.length === 0}
         <div class="sessions-empty">No previous sessions</div>
       {/if}
-      {#each sessions as sess}
-        <div class="session-entry">
-          <button class="session-resume" on:click={() => resumeSession(sess.id)}>
-            <span class="session-title">{sess.title}</span>
-            <span class="session-meta">{sess.messages} msgs · {sess.model} · {new Date(sess.updated_at).toLocaleDateString()}{sess.work_dir ? ' · ' + baseName(sess.work_dir) : ''}</span>
-          </button>
-          <button class="session-delete" on:click={() => deleteSession(sess.id)}>x</button>
-        </div>
+      {#each sessionGroups as group}
+        <div class="session-group" title={group.dir}>{group.label}</div>
+        {#each group.sessions as sess}
+          <div class="session-entry">
+            <button class="session-resume" on:click={() => resumeSession(sess.id)}>
+              <span class="session-title">{sess.title}</span>
+              <span class="session-meta">{sess.messages} msgs · {sess.model} · {new Date(sess.updated_at).toLocaleDateString()}</span>
+            </button>
+            <button class="session-delete" on:click={() => deleteSession(sess.id)}>x</button>
+          </div>
+        {/each}
       {/each}
     </div>
   {/if}
@@ -3157,6 +3186,17 @@
 
   .session-title {
     font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-group {
+    font-size: 0.65rem;
+    color: #7f9bbd;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.4rem 0.3rem 0.15rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

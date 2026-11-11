@@ -34,34 +34,71 @@ func instructionPaths(a *App) []string {
 	return out
 }
 
-func TestSetWorkDirMovesTheConversation(t *testing.T) {
+// userTexts lists what the user said in the conversation in progress.
+func userTexts(a *App) []string {
+	var out []string
+	for _, m := range a.ensureAgent().Messages() {
+		if m.Role == llm.RoleUser {
+			out = append(out, m.Content)
+		}
+	}
+	return out
+}
+
+func sessionIDs(a *App) []string {
+	var out []string
+	for _, s := range agent.ListSessions(a.cfg.ConfigDir()) {
+		out = append(out, s.ID+"@"+s.WorkDir)
+	}
+	return out
+}
+
+func TestSetWorkDirSwitchesToTheFolderSessions(t *testing.T) {
 	a := mainAgentApp(t, nil)
-	ag := a.ensureAgent()
-	ag.Begin("hello")
+	home := a.GetWorkDir()
+	a.ensureAgent().Begin("in home")
 	proj := project(t, "PROJECT_RULE")
 
+	// A folder without sessions starts a new conversation; the one in
+	// progress is archived with its folder.
 	if msg := a.SetWorkDir(proj); msg != "" {
 		t.Fatal(msg)
 	}
 	if got := a.GetWorkDir(); got != proj {
 		t.Fatalf("work dir = %q, want %q", got, proj)
 	}
+	if got := userTexts(a); len(got) != 0 {
+		t.Fatalf("new folder: conversation = %v", got)
+	}
 	if got := instructionPaths(a); len(got) != 1 || got[0] != filepath.Join(proj, "AGENTS.md") {
 		t.Fatalf("instruction files = %v", got)
 	}
-	ag2 := a.ensureAgent()
-	if ag2 == ag || !hasUserMessages(ag2.Messages()) {
-		t.Fatal("the agent must be rebuilt keeping the conversation")
-	}
-	if !strings.Contains(ag2.SystemPrompt(), "Working directory: "+proj) {
+	if !strings.Contains(a.ensureAgent().SystemPrompt(), "Working directory: "+proj) {
 		t.Fatal("the system prompt must name the new working directory")
 	}
-	// Saved with the session, and remembered as a recent folder.
 	if got := agent.PeekSessionWorkDir(a.cfg.ConfigDir(), "current"); got != proj {
 		t.Fatalf("saved work dir = %q", got)
 	}
 	if got := a.GetRecentWorkDirs(); len(got) == 0 || got[0] != proj {
 		t.Fatalf("recent = %v", got)
+	}
+	a.ensureAgent().Begin("in project")
+
+	// Going back opens the folder's last session, which leaves the archive.
+	if msg := a.SetWorkDir(home); msg != "" {
+		t.Fatal(msg)
+	}
+	if got := userTexts(a); len(got) != 1 || got[0] != "in home" {
+		t.Fatalf("back home: conversation = %v", got)
+	}
+	if got := sessionIDs(a); len(got) != 1 || !strings.HasSuffix(got[0], "@"+proj) {
+		t.Fatalf("archive = %v", got)
+	}
+	if msg := a.SetWorkDir(proj); msg != "" {
+		t.Fatal(msg)
+	}
+	if got := userTexts(a); len(got) != 1 || got[0] != "in project" {
+		t.Fatalf("back to the project: conversation = %v", got)
 	}
 
 	// Relative paths start at the current folder.
@@ -118,55 +155,105 @@ func TestSetWorkDirExpandsHome(t *testing.T) {
 	}
 }
 
-func TestResumeAndStartupGoBackToTheSessionFolder(t *testing.T) {
+func TestResumeArchivesTheConversationInProgress(t *testing.T) {
 	a := mainAgentApp(t, nil)
-	a.costTracker = llm.NewCostTracker()
 	proj := project(t, "PROJECT_RULE")
 	if msg := a.SetWorkDir(proj); msg != "" {
 		t.Fatal(msg)
 	}
-	a.ensureAgent().Begin("hello")
+	a.ensureAgent().Begin("first")
 	a.saveSession(a.ensureAgent())
-	id := agent.ArchiveSession(a.cfg.ConfigDir())
-	if id == "" {
-		t.Fatal("nothing archived")
+	a.ClearChat()
+	ids := agent.ListSessions(a.cfg.ConfigDir())
+	if len(ids) != 1 {
+		t.Fatalf("sessions = %v", sessionIDs(a))
 	}
-	if s := agent.ListSessions(a.cfg.ConfigDir()); len(s) != 1 || s[0].WorkDir != proj {
-		t.Fatalf("sessions = %+v", s)
-	}
-
 	other := t.TempDir()
 	if msg := a.SetWorkDir(other); msg != "" {
 		t.Fatal(msg)
 	}
-	if msg := a.ResumeSession(id); msg != "" {
+	a.ensureAgent().Begin("second")
+
+	if msg := a.ResumeSession(ids[0].ID); msg != "" {
 		t.Fatal(msg)
 	}
 	if got := a.GetWorkDir(); got != proj {
 		t.Fatalf("after resume: %q", got)
 	}
+	if got := userTexts(a); len(got) != 1 || got[0] != "first" {
+		t.Fatalf("resumed conversation = %v", got)
+	}
+	// "second" was archived, "first" left the archive: no duplicates.
+	if got := sessionIDs(a); len(got) != 1 || !strings.HasSuffix(got[0], "@"+other) {
+		t.Fatalf("archive = %v", got)
+	}
 
-	// A launch from the home directory restores the session's folder; a
-	// launch from a specific folder keeps it.
+	// A session of another model is refused and nothing changes.
 	a.saveSession(a.ensureAgent())
+	a.ClearChat()
+	a.cfg.SetProviderAndModel("p", "m2")
+	a.currentAgent = nil
+	before := sessionIDs(a)
+	var firstID string
+	for _, s := range agent.ListSessions(a.cfg.ConfigDir()) {
+		if s.WorkDir == proj {
+			firstID = s.ID
+		}
+	}
+	if msg := a.ResumeSession(firstID); !strings.Contains(msg, "switch to that provider and model") {
+		t.Fatalf("mismatch: %q", msg)
+	}
+	if got := sessionIDs(a); strings.Join(got, ",") != strings.Join(before, ",") || a.GetWorkDir() != proj {
+		t.Fatalf("a refused resume changed things: %v in %s", got, a.GetWorkDir())
+	}
+}
+
+func TestStartupFolder(t *testing.T) {
+	a := mainAgentApp(t, nil)
+	proj := project(t, "PROJECT_RULE")
+	other := t.TempDir()
+	if msg := a.SetWorkDir(other); msg != "" {
+		t.Fatal(msg)
+	}
+	a.ensureAgent().Begin("in other")
+	if msg := a.SetWorkDir(proj); msg != "" {
+		t.Fatal(msg)
+	}
+	a.ensureAgent().Begin("in project")
+	a.saveSession(a.ensureAgent())
+
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	for _, tc := range []struct {
-		launch, want string
-	}{{home, proj}, {other, other}} {
+	newApp := func(launch string) *App {
 		b := appWith(map[string]llm.Provider{"p": inTreeProvider{name: "p"}})
-		b.cfg, b.registry = a.cfg, a.registry
-		if err := os.Chdir(tc.launch); err != nil {
+		b.cfg, b.registry, b.costTracker = a.cfg, a.registry, llm.NewCostTracker()
+		if err := os.Chdir(launch); err != nil {
 			t.Fatal(err)
 		}
 		b.restoreSessionWorkDir()
-		if got := b.GetWorkDir(); got != tc.want {
-			t.Errorf("launched from %s: work dir = %q, want %q", tc.launch, got, tc.want)
-		}
+		return b
+	}
+
+	// From home: back to the folder of the conversation in progress.
+	b := newApp(home)
+	if got := b.GetWorkDir(); got != proj {
+		t.Fatalf("launched from home: work dir = %q", got)
+	}
+	if got := userTexts(b); len(got) != 1 || got[0] != "in project" {
+		t.Fatalf("launched from home: conversation = %v", got)
+	}
+
+	// From another folder: that folder and its last session.
+	c := newApp(other)
+	if got := c.GetWorkDir(); got != other {
+		t.Fatalf("launched from other: work dir = %q", got)
+	}
+	if got := userTexts(c); len(got) != 1 || got[0] != "in other" {
+		t.Fatalf("launched from other: conversation = %v", got)
 	}
 }
 
