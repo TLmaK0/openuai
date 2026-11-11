@@ -240,40 +240,20 @@ func (a *App) PickWorkDir() string {
 }
 
 // restoreSessionWorkDir runs at startup, before the conversation is
-// restored. Launched from the home directory or the root (a desktop or menu
-// launch), the app goes back to the folder of the conversation in progress.
-// Launched from a specific folder, that folder wins: a conversation in
-// progress that belongs to another folder is archived and the folder's most
-// recent session is opened.
+// restored: the last conversation is always the one in progress, so the app
+// goes back to its folder, wherever it was launched from (a dev restart runs
+// from the checkout, a desktop launch from the home directory). Only a
+// conversation without a folder, or whose folder is gone, stays in the
+// launch directory.
 func (a *App) restoreSessionWorkDir() {
 	launch := filepath.Clean(a.GetWorkDir())
 	current := agent.PeekSessionWorkDir(a.cfg.ConfigDir(), "current")
-	if !isGenericLaunchDir(launch) {
-		a.rememberWorkDir(launch)
-		if current == "" || filepath.Clean(current) == launch {
+	if current != "" && filepath.Clean(current) != launch {
+		err := a.changeWorkDir(current)
+		if err == nil {
 			return
 		}
-		a.agentMu.Lock()
-		defer a.agentMu.Unlock()
-		if err := a.openFolderLocked(launch, false); err != nil {
-			logger.Error("Cannot open the sessions of %s: %s", launch, err.Error())
-		}
-		return
-	}
-	if current == "" || filepath.Clean(current) == launch {
-		return
-	}
-	if err := a.changeWorkDir(current); err != nil {
 		logger.Info("Restored session keeps working in %s: %s", launch, err.Error())
 	}
-}
-
-// isGenericLaunchDir reports whether dir is where a desktop or menu launch
-// starts (home or a filesystem root) rather than a folder chosen by the user.
-func isGenericLaunchDir(dir string) bool {
-	if dir == filepath.VolumeName(dir)+string(filepath.Separator) {
-		return true
-	}
-	home, err := os.UserHomeDir()
-	return err == nil && home != "" && dir == filepath.Clean(home)
+	a.rememberWorkDir(launch)
 }

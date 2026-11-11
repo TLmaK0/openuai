@@ -238,22 +238,36 @@ func TestStartupFolder(t *testing.T) {
 		return b
 	}
 
-	// From home: back to the folder of the conversation in progress.
-	b := newApp(home)
-	if got := b.GetWorkDir(); got != proj {
-		t.Fatalf("launched from home: work dir = %q", got)
-	}
-	if got := userTexts(b); len(got) != 1 || got[0] != "in project" {
-		t.Fatalf("launched from home: conversation = %v", got)
+	// Wherever it is launched from (home, another folder, the checkout of a
+	// dev restart), the last conversation and its folder come back.
+	for _, launch := range []string{home, other} {
+		b := newApp(launch)
+		if got := b.GetWorkDir(); got != proj {
+			t.Errorf("launched from %s: work dir = %q", launch, got)
+		}
+		if got := userTexts(b); len(got) != 1 || got[0] != "in project" {
+			t.Errorf("launched from %s: conversation = %v", launch, got)
+		}
 	}
 
-	// From another folder: that folder and its last session.
-	c := newApp(other)
-	if got := c.GetWorkDir(); got != other {
-		t.Fatalf("launched from other: work dir = %q", got)
+	// A conversation whose folder is gone stays where the app was launched.
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(gone, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if got := userTexts(c); len(got) != 1 || got[0] != "in other" {
-		t.Fatalf("launched from other: conversation = %v", got)
+	if msg := a.SetWorkDir(gone); msg != "" {
+		t.Fatal(msg)
+	}
+	a.ensureAgent().Begin("in gone")
+	a.saveSession(a.ensureAgent())
+	if err := os.Chdir(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if got := newApp(other).GetWorkDir(); got != other {
+		t.Fatalf("folder gone: work dir = %q", got)
 	}
 }
 
