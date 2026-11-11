@@ -683,11 +683,7 @@
     // otherwise the chat looks empty while the agent remembers everything.
     try {
       const history = await GetChatHistory();
-      if (history?.length && !messages.length) {
-        messages = history.map((m) => (m.role === 'tools'
-          ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
-          : { role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }));
-      }
+      if (history?.length && !messages.length) messages = historyMessages(history);
     } catch (e) { /* no history — start empty */ }
 
     // Agent the conversation runs as, and its initialPrompt when the backend
@@ -1455,12 +1451,20 @@
     await showConversation('*Session restored. Continue the conversation.*');
   }
 
+  // historyMessages turns GetChatHistory into chat messages; tool groups
+  // need their steps.
+  function historyMessages(history) {
+    return history.map((m) => (m.role === 'tools'
+      ? { role: 'tools', steps: (m.steps || []).map((st) => ({ ...st })), expanded: false, active: false }
+      : { role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }));
+  }
+
   // showConversation shows the conversation in progress after the backend
   // switched sessions (resume or folder change); empty shows emptyNote, if any.
   async function showConversation(emptyNote = '') {
     const history = await GetChatHistory();
     messages = history?.length
-      ? history.map((m) => ({ role: m.role, content: m.content, images: m.images || [], files: m.attachments || [] }))
+      ? historyMessages(history)
       : emptyNote ? [{ role: 'assistant', content: emptyNote }] : [];
     workDir = await GetWorkDir();
     totalCost = 0;
