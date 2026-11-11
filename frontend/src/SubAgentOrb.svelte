@@ -3,7 +3,7 @@
   // in the sub-agent's own colour, its name and what it is doing right now.
   // Clicking the tile jumps to its card in the chat; x cancels it.
   import { createEventDispatcher } from 'svelte';
-  import { CancelSubAgent } from '../wailsjs/go/main/App';
+  import { CancelSubAgent } from '../wailsjs/go/app/App';
   export let sa;
   export let main = false;   // the main agent: no cancel, shows busy/idle
 

@@ -78,7 +78,7 @@ Prototypes: `/tmp/cu/cu_codex.py` (gpt-5.4/any model, **validated**),
   results with images are sent as `input_text`+`input_image` parts. `llm.Message.Images`
   and `tools.Result.Images` added; agent attaches screenshots to tool-result messages and
   drops old ones in MicroCompact (token control).
-- `app.go`: gated by config `computer_use_enabled` + `computer_use_display`; Wails methods
+- `internal/app/app.go`: gated by config `computer_use_enabled` + `computer_use_display`; Wails methods
   `Get/SetComputerUseEnabled`, `Get/SetComputerUseDisplay`, `CheckComputerUseDeps`.
 - `computer_screenshot` is permission-free (read-only); actions use "session" permission.
 

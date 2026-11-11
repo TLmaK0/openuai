@@ -1,7 +1,7 @@
 <script>
   // One sub-agent in its own view: what it was asked, what it ran, what it
   // produced and what it cost. It can be cancelled while it runs.
-  import { CancelSubAgent } from '../wailsjs/go/main/App';
+  import { CancelSubAgent } from '../wailsjs/go/app/App';
   export let sa;
 
   let expanded = false;

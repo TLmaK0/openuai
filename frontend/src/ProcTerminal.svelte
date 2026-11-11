@@ -3,7 +3,7 @@
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
-  import { GetProcSnapshot, ProcInput, ProcResize, KillProc } from '../wailsjs/go/main/App';
+  import { GetProcSnapshot, ProcInput, ProcResize, KillProc } from '../wailsjs/go/app/App';
   import { EventsOn } from '../wailsjs/runtime/runtime';
 
   // Initial process info (id, command, status...) from the proc_start event.
